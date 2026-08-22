@@ -10,6 +10,7 @@
 #include "apps/backflush/BackflushScreen.h"
 #include "apps/extraction/ExtractionApp.h"
 #include "apps/onboarding/OnboardingScreen.h"
+#include "apps/system/StorageRecoveryScreen.h"
 #include "apps/wifi/WifiStatusScreen.h"
 #include "ble/BleScaleService.h"
 #include "diagnostics/DiagnosticsModule.h"
@@ -46,11 +47,12 @@ WifiStatusScreen wifiStatusScreen;
 
 Menu mainMenu;
 NetworkServicesHost onlineServices;
-DiagnosticsModule diagnosticsModule{
-    vibrationSensor, power::powerManager.eventLog(), onlineServices};
+StorageRecoveryScreen storageRecoveryScreen;
+DiagnosticsModule diagnosticsModule{vibrationSensor,
+                                    power::powerManager.eventLog(),
+                                    onlineServices, storageRecoveryScreen};
 MainNavigation mainNavigation{mainMenu, extractionApp.extractionScreen(),
-                              onboardingScreen,
-                              diagnosticsModule.storageRecoveryScreen()};
+                              onboardingScreen, storageRecoveryScreen};
 UiHost uiHost{orientation};
 UiDebugRemote uiDebugRemote{uiHost};
 ButtonInput buttonInput{uiDebugRemote};

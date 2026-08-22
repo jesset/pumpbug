@@ -27,11 +27,13 @@ class DiagnosticsModule {
  public:
   DiagnosticsModule(VibrationSensor& vibrationSensor,
                     power::PowerEventLog& powerEventLog,
-                    NetworkServicesHost& networkServices)
+                    NetworkServicesHost& networkServices,
+                    StorageRecoveryScreen& storageRecoveryScreen)
       : _powerEventLog(powerEventLog),
         _logsScreen(powerEventLog),
         _pumpSignalScreen(vibrationSensor),
-        _eraseDataScreen(networkServices) {}
+        _eraseDataScreen(networkServices),
+        _storageRecoveryScreen(storageRecoveryScreen) {}
 
   void begin(HttpServer& http) {
     registerDiagnosticsRoutes(http, _powerEventLog);
@@ -49,9 +51,6 @@ class DiagnosticsModule {
   }
 
   Screen& menu() { return _menu; }
-  StorageRecoveryScreen& storageRecoveryScreen() {
-    return _storageRecoveryScreen;
-  }
 
  private:
   power::PowerEventLog& _powerEventLog;
@@ -60,6 +59,6 @@ class DiagnosticsModule {
   BleScanScreen _bleScanScreen;
   ScaleMsgScreen _scaleMsgScreen;
   EraseDataScreen _eraseDataScreen;
-  StorageRecoveryScreen _storageRecoveryScreen;
+  StorageRecoveryScreen& _storageRecoveryScreen;
   Menu _menu;
 };
