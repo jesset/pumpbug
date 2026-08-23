@@ -90,6 +90,92 @@ bool ShotStore::_scanIdsUnlocked(std::vector<uint32_t>& ids) {
   return true;
 }
 
+bool ShotStore::_buildShotIdCacheUnlocked() {
+  _cachedShotIdCount = 0;
+  _shotIdCacheValid = false;
+  bool overflow = false;
+  if (!LittleFS.exists(kShotsDir)) {
+    _shotIdCacheValid = true;
+    return true;
+  }
+
+  File dir = LittleFS.open(kShotsDir);
+  if (!dir || !dir.isDirectory()) {
+    M5_LOGE("ShotStore: cannot open %s for history listing", kShotsDir);
+    return false;
+  }
+
+  File file = dir.openNextFile();
+  while (file) {
+    if (!file.isDirectory()) {
+      const uint32_t id = parseIdFromName(file.name());
+      if (id != 0) {
+        uint8_t header[kCompactHeaderBytes];
+        const size_t got =
+            file.readBytes(reinterpret_cast<char*>(header), sizeof(header));
+        if (isValidShotHeader(header, got)) {
+          if (_cachedShotIdCount < _cachedShotIds.size()) {
+            _cachedShotIds[_cachedShotIdCount++] = id;
+          } else {
+            overflow = true;
+            const auto oldest =
+                std::min_element(_cachedShotIds.begin(),
+                                 _cachedShotIds.begin() + _cachedShotIdCount);
+            if (id > *oldest) *oldest = id;
+          }
+        }
+      }
+    }
+    file = dir.openNextFile();
+  }
+
+  std::sort(_cachedShotIds.begin(), _cachedShotIds.begin() + _cachedShotIdCount,
+            std::greater<uint32_t>());
+  if (overflow) {
+    M5_LOGW("ShotStore: showing newest %u valid records; history exceeds cap",
+            static_cast<unsigned>(_cachedShotIds.size()));
+  }
+  _shotIdCacheValid = true;
+  return true;
+}
+
+void ShotStore::_invalidateShotIdCacheUnlocked() {
+  // A failed save may leave a record behind if cleanup also fails, so advance
+  // the list validator even when there is no valid index to discard.
+  ++_revision;
+  if (!_shotIdCacheValid) return;
+  _cachedShotIdCount = 0;
+  _shotIdCacheValid = false;
+}
+
+void ShotStore::_cacheAddedShotUnlocked(uint32_t id) {
+  if (!_shotIdCacheValid) return;
+  if (_cachedShotIdCount == _cachedShotIds.size()) {
+    // Reserved IDs are monotonic, so a new record becomes the first entry and
+    // the oldest logical entry falls outside the bounded history view.
+    std::move_backward(_cachedShotIds.begin(), _cachedShotIds.end() - 1,
+                       _cachedShotIds.end());
+    _cachedShotIds[0] = id;
+    return;
+  }
+  std::move_backward(_cachedShotIds.begin(),
+                     _cachedShotIds.begin() + _cachedShotIdCount,
+                     _cachedShotIds.begin() + _cachedShotIdCount + 1);
+  _cachedShotIds[0] = id;
+  ++_cachedShotIdCount;
+}
+
+void ShotStore::_cacheRemovedShotUnlocked(uint32_t id) {
+  if (!_shotIdCacheValid) return;
+  const auto end = _cachedShotIds.begin() + _cachedShotIdCount;
+  const auto found = std::find(_cachedShotIds.begin(), end, id);
+  // Retention also visits strictly named files whose headers are invalid;
+  // those files were intentionally never members of this index.
+  if (found == end) return;
+  std::move(found + 1, end, found);
+  --_cachedShotIdCount;
+}
+
 bool ShotStore::_readMetaUnlocked(uint32_t id, ShotMeta& out) {
   char path[32];
   _pathFor(id, path, sizeof(path));
@@ -160,6 +246,7 @@ void ShotStore::_enforceRetentionUnlocked(const std::vector<uint32_t>& ids) {
       M5_LOGE("ShotStore: cannot remove oldest record %s", path);
       break;
     }
+    _cacheRemovedShotUnlocked(ids[index]);
     ++_revision;
   }
 }
@@ -192,50 +279,39 @@ bool ShotStore::save(const Extraction& ext) {
       shot_store_detail::reserveNextShotId(greatestExistingShotId);
   if (id == 0) return false;
 
-  if (!_writeRecordUnlocked(ext, id, encodedSize)) return false;
+  if (!_writeRecordUnlocked(ext, id, encodedSize)) {
+    _invalidateShotIdCacheUnlocked();
+    return false;
+  }
 
   ++_revision;
   ids.push_back(id);
   _enforceRetentionUnlocked(ids);
+  _cacheAddedShotUnlocked(id);
 
   M5_LOGI("ShotStore: saved shot id=%u", static_cast<unsigned>(id));
   return true;
 }
 
-std::vector<uint32_t> ShotStore::page(uint32_t before, size_t limit,
-                                      bool* hasMore, size_t* total,
-                                      uint32_t* outRevision) {
+bool ShotStore::page(uint32_t before, size_t limit, std::vector<uint32_t>& ids,
+                     bool* hasMore, size_t* total, uint32_t* outRevision) {
   Lock lock(_mutex);
+  ids.clear();
+  if (!_shotIdCacheValid && !_buildShotIdCacheUnlocked()) return false;
+
   // The page and its ETag revision describe the same locked filesystem view.
   if (outRevision) *outRevision = _revision;
+  if (total) *total = _cachedShotIdCount;
 
-  std::vector<uint32_t> ids;
-  size_t totalCount = 0;
-  File dir = LittleFS.open(kShotsDir);
-  if (dir && dir.isDirectory()) {
-    File file = dir.openNextFile();
-    while (file) {
-      if (!file.isDirectory()) {
-        const uint32_t id = parseIdFromName(file.name());
-        // A valid filename is insufficient: a partial record must not consume
-        // a page slot or leave valid older records hidden behind an empty page.
-        uint8_t header[kCompactHeaderBytes];
-        const size_t got =
-            file.readBytes(reinterpret_cast<char*>(header), sizeof(header));
-        if (id != 0 && isValidShotHeader(header, got)) {
-          ++totalCount;
-          if (before == 0 || id < before) ids.push_back(id);
-        }
-      }
-      file = dir.openNextFile();
-    }
+  size_t eligibleCount = 0;
+  for (size_t index = 0; index < _cachedShotIdCount; ++index) {
+    const uint32_t id = _cachedShotIds[index];
+    if (before != 0 && id >= before) continue;
+    ++eligibleCount;
+    if (ids.size() < limit) ids.push_back(id);
   }
-  if (total) *total = totalCount;
-
-  std::sort(ids.begin(), ids.end(), std::greater<uint32_t>());
-  if (hasMore) *hasMore = ids.size() > limit;
-  if (ids.size() > limit) ids.resize(limit);
-  return ids;
+  if (hasMore) *hasMore = eligibleCount > ids.size();
+  return true;
 }
 
 bool ShotStore::readMeta(uint32_t id, ShotMeta& out) {
@@ -294,7 +370,16 @@ bool ShotStore::erase(uint32_t id) {
   char path[32];
   _pathFor(id, path, sizeof(path));
   if (!LittleFS.remove(path)) return false;
-  ++_revision;
+  // Below capacity no records were omitted, so incremental removal is safe. A
+  // full cache may be truncated and needs a rebuild to promote the next ID.
+  if (_shotIdCacheValid && _cachedShotIdCount < _cachedShotIds.size()) {
+    _cacheRemovedShotUnlocked(id);
+    ++_revision;
+  } else if (_shotIdCacheValid) {
+    _invalidateShotIdCacheUnlocked();
+  } else {
+    ++_revision;
+  }
   return true;
 }
 

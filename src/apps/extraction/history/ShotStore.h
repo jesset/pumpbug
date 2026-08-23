@@ -6,6 +6,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -41,8 +42,9 @@ struct ShotBinary {
 // the partition before filesystem metadata.
 //
 // Each save writes and verifies the new record before removing older records.
-// A failed write therefore preserves the existing history. History pages
-// validate record headers and omit incomplete or corrupt files.
+// A failed write therefore preserves the existing history. History listing
+// uses a lazy in-memory index so pagination does not rescan the filesystem for
+// every page.
 class ShotStore {
  public:
   static constexpr size_t kMaxShots = 250;
@@ -54,11 +56,13 @@ class ShotStore {
   // without removing existing history when the new record cannot be saved.
   bool save(const Extraction& ext);
 
-  // Newest-first page of valid records with id < `before`; before == 0 starts
-  // at the newest record. Headers are validated during the directory walk so
-  // corrupt records neither consume a page slot nor hide older valid shots.
-  std::vector<uint32_t> page(uint32_t before, size_t limit, bool* hasMore,
-                             size_t* total, uint32_t* outRevision);
+  // Produces a newest-first page of valid records with id < `before`;
+  // before == 0 starts at the newest record. The first call lazily builds the
+  // index by validating file headers. At most the newest kMaxShots records are
+  // visible, and `total` reports that bounded logical count. Returns false if
+  // the directory cannot be read.
+  bool page(uint32_t before, size_t limit, std::vector<uint32_t>& ids,
+            bool* hasMore, size_t* total, uint32_t* outRevision);
 
   // Reads one record's compact-header metadata without decoding its samples.
   // Returns false when the file is missing or its header is invalid.
@@ -87,9 +91,18 @@ class ShotStore {
   mutable SemaphoreHandle_t _mutex;
   uint32_t _bootNonce = 0;
   uint32_t _revision = 0;
+  // Cache correctness assumes /shots changes only through ShotStore. Data-
+  // erasure flows stop shot-history consumers before formatting and reboot.
+  std::array<uint32_t, kMaxShots> _cachedShotIds{};
+  size_t _cachedShotIdCount = 0;
+  bool _shotIdCacheValid = false;
 
   // Helpers require _mutex.
   bool _scanIdsUnlocked(std::vector<uint32_t>& ids);
+  bool _buildShotIdCacheUnlocked();
+  void _invalidateShotIdCacheUnlocked();
+  void _cacheAddedShotUnlocked(uint32_t id);
+  void _cacheRemovedShotUnlocked(uint32_t id);
   bool _writeRecordUnlocked(const Extraction& ext, uint32_t id,
                             size_t encodedSize);
   void _enforceRetentionUnlocked(const std::vector<uint32_t>& ids);

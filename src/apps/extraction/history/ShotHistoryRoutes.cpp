@@ -85,10 +85,8 @@ void writeShotRow(JsonStream& j, const ShotMeta& m) {
 void handleShotList(WebServer& server, ShotStore& store) {
   if (!requireShotStorage(server)) return;
 
-  // List: a newest-first page, re-derived from the directory each request (no
-  // cached model). The ETag (per-boot nonce + change counter) lets an unchanged
-  // in-app revalidation return 304 with no directory walk; a full page reload
-  // simply loses the client's in-memory validator and pays one bounded page().
+  // If the client's ETag matches the current per-boot nonce and list revision,
+  // return 304 (Not Modified).
   const uint32_t nonce = store.bootNonce();
   char etag[48];
   std::snprintf(etag, sizeof(etag), "W/\"shots-%08lx-%lu\"",
@@ -114,8 +112,12 @@ void handleShotList(WebServer& server, ShotStore& store) {
   bool hasMore = false;
   size_t total = 0;
   uint32_t rev = 0;
-  const std::vector<uint32_t> ids =
-      store.page(before, limit, &hasMore, &total, &rev);
+  std::vector<uint32_t> ids;
+  if (!store.page(before, limit, ids, &hasMore, &total, &rev)) {
+    server.send(500, "application/json",
+                "{\"error\":\"shot history listing failed\"}");
+    return;
+  }
 
   // Stamp the 200's ETag from the page snapshot's revision, so validator and
   // body describe the same moment.

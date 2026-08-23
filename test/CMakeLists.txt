@@ -27,6 +27,18 @@ add_host_test(
 target_include_directories(
   test_shot_id_reservation BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/stubs"
 )
+add_host_test(
+  test_shot_store
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/ShotStore.cpp"
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/shot_id_reservation.cpp"
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/ExtractionWire.cpp"
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/extraction_encoding.cpp"
+)
+target_include_directories(
+  test_shot_store
+  BEFORE PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/stubs"
+)
 add_host_test(test_storage "${PROJECT_SOURCE_DIR}/src/util/storage.cpp")
 target_include_directories(
   test_storage BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/stubs"
