@@ -146,6 +146,7 @@ ul.shotlist .head {
   font-size: 0.875rem;
 }
 ul.shotlist .head .when { color: var(--fg); }
+ul.shotlist li.unavailable .head .when { color: var(--bad); }
 ul.shotlist .head .id { color: var(--dim); }
 ul.shotlist .body {
   margin-top: 6px;

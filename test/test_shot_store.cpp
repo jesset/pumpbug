@@ -86,16 +86,62 @@ void testLazyBuildAndWarmPagination() {
   size_t total = 0;
   uint32_t revision = 99;
   assert((page(store, 0, 2, hasMore, total, &revision) ==
-          std::vector<uint32_t>{3, 2}));
+          std::vector<uint32_t>{4, 3}));
   assert(hasMore);
-  assert(total == 3);
+  assert(total == 4);
   assert(revision == 0);
   assert(LittleFS.directoryOpenCalls == 1);
 
-  assert((page(store, 2, 2, hasMore, total) == std::vector<uint32_t>{1}));
+  assert((page(store, 3, 2, hasMore, total) == std::vector<uint32_t>{2, 1}));
   assert(!hasMore);
-  assert(total == 3);
+  assert(total == 4);
   assert(LittleFS.directoryOpenCalls == 1);
+}
+
+void testUnreadableRecordsRemainPageMembers() {
+  resetStorage();
+  for (uint32_t id = 1; id <= 22; ++id) {
+    LittleFS.addFile(shotPath(id), {'B', 'A', 'D'});
+  }
+
+  ShotStore store;
+  bool hasMore = false;
+  size_t total = 0;
+  const auto firstPage = page(store, 0, 20, hasMore, total);
+  assert(firstPage.size() == 20);
+  assert(firstPage.front() == 22);
+  assert(firstPage.back() == 3);
+  assert(hasMore);
+  assert(total == 22);
+
+  pump_scale::ShotMeta meta{};
+  assert(!store.readMeta(firstPage.front(), meta));
+  assert((page(store, firstPage.back(), 20, hasMore, total) ==
+          std::vector<uint32_t>{2, 1}));
+  assert(!hasMore);
+  assert(total == 22);
+}
+
+void testBinaryReadDistinguishesMissingAndInvalidRecords() {
+  resetStorage();
+  ShotStore store;
+  pump_scale::ShotBinary binary;
+
+  assert(store.readBinary(1, binary) ==
+         pump_scale::ShotBinaryReadResult::Missing);
+
+  LittleFS.addFile(shotPath(1), {'B', 'A', 'D'});
+  assert(store.readBinary(1, binary) ==
+         pump_scale::ShotBinaryReadResult::Invalid);
+
+  LittleFS.failFileOpen = true;
+  assert(store.readBinary(1, binary) ==
+         pump_scale::ShotBinaryReadResult::Error);
+  LittleFS.failFileOpen = false;
+
+  addValidShot(2);
+  assert(store.readBinary(2, binary) == pump_scale::ShotBinaryReadResult::Ok);
+  assert(binary.size == pump_scale::kCompactHeaderBytes);
 }
 
 void testColdMutationsRemainDiscoverable() {
@@ -166,8 +212,8 @@ void testEraseMaintainsUnderCapacityWarmCache() {
 
   assert(store.erase(2));
   assert(store.revision() == 1);
-  assert((page(store, 0, 20, hasMore, total) == std::vector<uint32_t>{1}));
-  assert(total == 1);
+  assert((page(store, 0, 20, hasMore, total) == std::vector<uint32_t>{3, 1}));
+  assert(total == 2);
   assert(LittleFS.directoryOpenCalls == warmOpenCalls);
 
   assert(store.erase(3));
@@ -251,7 +297,7 @@ void testSaveRotatesAFullWarmCache() {
   assert(LittleFS.directoryOpenCalls == saveOpenCalls);
 }
 
-void testRetentionRemovesValidRecordFromUnderCapacityWarmCache() {
+void testRetentionRemovesNamedRecordFromWarmCache() {
   resetStorage();
   for (uint32_t id = 1; id <= ShotStore::kMaxShots; ++id) addValidShot(id);
   LittleFS.addFile(shotPath(2), {'B', 'A', 'D'});
@@ -260,15 +306,16 @@ void testRetentionRemovesValidRecordFromUnderCapacityWarmCache() {
   bool hasMore = false;
   size_t total = 0;
   page(store, 0, 1, hasMore, total);
-  assert(total == ShotStore::kMaxShots - 1);
+  assert(total == ShotStore::kMaxShots);
 
   assert(store.save(encodableShot()));
   const unsigned saveOpenCalls = LittleFS.directoryOpenCalls;
   const auto ids = page(store, 0, ShotStore::kMaxShots, hasMore, total);
 
-  assert(total == ShotStore::kMaxShots - 1);
-  assert(ids.size() == ShotStore::kMaxShots - 1);
+  assert(total == ShotStore::kMaxShots);
+  assert(ids.size() == ShotStore::kMaxShots);
   assert(std::find(ids.begin(), ids.end(), 1) == ids.end());
+  assert(std::find(ids.begin(), ids.end(), 2) != ids.end());
   assert(!LittleFS.hasFile(shotPath(1)));
   assert(LittleFS.directoryOpenCalls == saveOpenCalls);
 }
@@ -332,6 +379,8 @@ void testFailedRotationKeepsNewestHistoryReadable() {
 
 int main() {
   testLazyBuildAndWarmPagination();
+  testUnreadableRecordsRemainPageMembers();
+  testBinaryReadDistinguishesMissingAndInvalidRecords();
   testColdMutationsRemainDiscoverable();
   testDirectoryFailureIsNotCachedAsEmpty();
   testCacheShowsNewestRecordsWhenHistoryExceedsCap();
@@ -340,7 +389,7 @@ int main() {
   testEraseFromOverflowPromotesNewestHiddenRecord();
   testSaveMaintainsWarmMembership();
   testSaveRotatesAFullWarmCache();
-  testRetentionRemovesValidRecordFromUnderCapacityWarmCache();
+  testRetentionRemovesNamedRecordFromWarmCache();
   testFailedWriteAdvancesColdRevision();
   testFailedWriteInvalidatesWarmCacheAndRevision();
   testFailedRotationKeepsNewestHistoryReadable();

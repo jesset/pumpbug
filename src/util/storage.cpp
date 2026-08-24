@@ -15,7 +15,6 @@ namespace storage {
 namespace {
 
 constexpr const char* kPartitionLabel = "history";
-constexpr const char* kBasePath = "/littlefs";
 constexpr uint8_t kMaxOpenFiles = 10;
 constexpr size_t kLittleFsBlockBytes = SPI_FLASH_SEC_SIZE;
 
@@ -24,7 +23,7 @@ std::atomic<MountState> currentState{MountState::Unavailable};
 enum class ErasedState : uint8_t { Erased, Programmed, Unreadable };
 
 bool beginHistory() {
-  return LittleFS.begin(/*formatOnFail=*/false, kBasePath, kMaxOpenFiles,
+  return LittleFS.begin(/*formatOnFail=*/false, kMountPath, kMaxOpenFiles,
                         kPartitionLabel);
 }
 

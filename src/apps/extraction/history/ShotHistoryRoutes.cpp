@@ -52,9 +52,19 @@ void handleShotDetail(WebServer& server, ShotStore& store) {
   if (httpEtagOr304(server, detailEtag)) return;
 
   ShotBinary record;
-  if (!store.readBinary(id, record)) {
-    server.send(404, "application/json", "{\"error\":\"not found\"}");
-    return;
+  switch (store.readBinary(id, record)) {
+    case ShotBinaryReadResult::Missing:
+      server.send(404, "application/json", "{\"error\":\"not found\"}");
+      return;
+    case ShotBinaryReadResult::Invalid:
+      server.send(422, "application/json", "{\"error\":\"record unreadable\"}");
+      return;
+    case ShotBinaryReadResult::Error:
+      server.send(500, "application/json",
+                  "{\"error\":\"record read failed\"}");
+      return;
+    case ShotBinaryReadResult::Ok:
+      break;
   }
 
   server.sendHeader("ETag", detailEtag);
@@ -65,11 +75,15 @@ void handleShotDetail(WebServer& server, ShotStore& store) {
                      record.size);
 }
 
-void writeShotRow(JsonStream& j, const ShotMeta& m) {
-  j.open()
-      .key("id")
-      .u(m.id)
-      .key("startUtcSec")
+void writeShotRow(JsonStream& j, uint32_t id, const ShotMeta* meta) {
+  j.open().key("id").u(id);
+  if (!meta) {
+    j.close();
+    return;
+  }
+
+  const ShotMeta& m = *meta;
+  j.key("startUtcSec")
       .u(m.startUtcSec)
       .key("beginMs")
       .u(m.beginMs)
@@ -134,10 +148,13 @@ void handleShotList(WebServer& server, ShotStore& store) {
   bool first = true;
   ShotMeta meta;
   for (const uint32_t id : ids) {
-    if (!store.readMeta(id, meta)) continue;  // evicted between snapshot & read
     if (!first) j.comma();
     first = false;
-    writeShotRow(j, meta);
+    // Even if a file cannot be read, we keep it in the response list.
+    // This keeps the cursor for the next page and the totals consistent, and
+    // lets the user see when entries have been corrupted and delete them if
+    // desired.
+    writeShotRow(j, id, store.readMeta(id, meta) ? &meta : nullptr);
   }
   j.arrayClose()
       .key("hasMore")

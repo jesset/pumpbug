@@ -123,7 +123,9 @@ and history requests are unaffected.
 ## Shot history
 
 Choose `History` on the dashboard to list saved shots, newest first. Each row
-shows its date and time, shot ID, duration, final yield, and pump-on time.
+normally shows its date and time, shot ID, duration, final yield, and pump-on
+time. A record whose summary cannot be read remains in its history position and
+appears as `Record unavailable`; opening it reports the record problem.
 
 ![Pump Bug browser History list](images/web-guide/history.png)
 

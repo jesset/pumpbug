@@ -33,6 +33,7 @@ add_host_test(
   "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/shot_id_reservation.cpp"
   "${PROJECT_SOURCE_DIR}/src/apps/extraction/ExtractionWire.cpp"
   "${PROJECT_SOURCE_DIR}/src/apps/extraction/extraction_encoding.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/stubs/storage_file_access.cpp"
 )
 target_include_directories(
   test_shot_store

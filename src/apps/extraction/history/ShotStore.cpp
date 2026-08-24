@@ -17,6 +17,7 @@
 #include "shot_id_reservation.h"
 #include "util/scoped_lock.h"
 #include "util/storage.h"
+#include "util/storage_file_access.h"
 
 namespace pump_scale {
 namespace {
@@ -70,22 +71,19 @@ void ShotStore::_pathFor(uint32_t id, char* buf, size_t cap) {
 
 bool ShotStore::_scanIdsUnlocked(std::vector<uint32_t>& ids) {
   ids.clear();
-  if (!LittleFS.exists(kShotsDir)) return true;
+  storage::DirectoryReader directory;
+  const auto opened = directory.open(kShotsDir);
+  if (opened == storage::DirectoryOpenResult::Missing) return true;
+  if (opened == storage::DirectoryOpenResult::Error) return false;
 
-  File dir = LittleFS.open(kShotsDir);
-  if (!dir || !dir.isDirectory()) {
-    M5_LOGE("ShotStore: cannot open %s", kShotsDir);
-    return false;
+  const char* name = nullptr;
+  storage::DirectoryReadResult readResult;
+  while ((readResult = directory.next(name)) ==
+         storage::DirectoryReadResult::Entry) {
+    const uint32_t id = parseIdFromName(name);
+    if (id != 0) ids.push_back(id);
   }
-
-  File file = dir.openNextFile();
-  while (file) {
-    if (!file.isDirectory()) {
-      const uint32_t id = parseIdFromName(file.name());
-      if (id != 0) ids.push_back(id);
-    }
-    file = dir.openNextFile();
-  }
+  if (readResult == storage::DirectoryReadResult::Error) return false;
   std::sort(ids.begin(), ids.end());
   return true;
 }
@@ -94,45 +92,40 @@ bool ShotStore::_buildShotIdCacheUnlocked() {
   _cachedShotIdCount = 0;
   _shotIdCacheValid = false;
   bool overflow = false;
-  if (!LittleFS.exists(kShotsDir)) {
+  storage::DirectoryReader directory;
+  const auto opened = directory.open(kShotsDir);
+  if (opened == storage::DirectoryOpenResult::Missing) {
     _shotIdCacheValid = true;
     return true;
   }
+  if (opened == storage::DirectoryOpenResult::Error) return false;
 
-  File dir = LittleFS.open(kShotsDir);
-  if (!dir || !dir.isDirectory()) {
-    M5_LOGE("ShotStore: cannot open %s for history listing", kShotsDir);
-    return false;
-  }
-
-  File file = dir.openNextFile();
-  while (file) {
-    if (!file.isDirectory()) {
-      const uint32_t id = parseIdFromName(file.name());
-      if (id != 0) {
-        uint8_t header[kCompactHeaderBytes];
-        const size_t got =
-            file.readBytes(reinterpret_cast<char*>(header), sizeof(header));
-        if (isValidShotHeader(header, got)) {
-          if (_cachedShotIdCount < _cachedShotIds.size()) {
-            _cachedShotIds[_cachedShotIdCount++] = id;
-          } else {
-            overflow = true;
-            const auto oldest =
-                std::min_element(_cachedShotIds.begin(),
-                                 _cachedShotIds.begin() + _cachedShotIdCount);
-            if (id > *oldest) *oldest = id;
-          }
-        }
+  const char* name = nullptr;
+  storage::DirectoryReadResult readResult;
+  while ((readResult = directory.next(name)) ==
+         storage::DirectoryReadResult::Entry) {
+    const uint32_t id = parseIdFromName(name);
+    if (id != 0) {
+      if (_cachedShotIdCount < _cachedShotIds.size()) {
+        _cachedShotIds[_cachedShotIdCount++] = id;
+      } else {
+        overflow = true;
+        const auto oldest =
+            std::min_element(_cachedShotIds.begin(),
+                             _cachedShotIds.begin() + _cachedShotIdCount);
+        if (id > *oldest) *oldest = id;
       }
     }
-    file = dir.openNextFile();
+  }
+  if (readResult == storage::DirectoryReadResult::Error) {
+    _cachedShotIdCount = 0;
+    return false;
   }
 
   std::sort(_cachedShotIds.begin(), _cachedShotIds.begin() + _cachedShotIdCount,
             std::greater<uint32_t>());
   if (overflow) {
-    M5_LOGW("ShotStore: showing newest %u valid records; history exceeds cap",
+    M5_LOGW("ShotStore: showing newest %u shot files; history exceeds cap",
             static_cast<unsigned>(_cachedShotIds.size()));
   }
   _shotIdCacheValid = true;
@@ -169,26 +162,22 @@ void ShotStore::_cacheRemovedShotUnlocked(uint32_t id) {
   if (!_shotIdCacheValid) return;
   const auto end = _cachedShotIds.begin() + _cachedShotIdCount;
   const auto found = std::find(_cachedShotIds.begin(), end, id);
-  // Retention also visits strictly named files whose headers are invalid;
-  // those files were intentionally never members of this index.
+  // When the directory exceeds the cache limit, its oldest IDs are not cached.
   if (found == end) return;
   std::move(found + 1, end, found);
   --_cachedShotIdCount;
 }
 
 bool ShotStore::_readMetaUnlocked(uint32_t id, ShotMeta& out) {
+  out = ShotMeta{};
   char path[32];
   _pathFor(id, path, sizeof(path));
-  File file = LittleFS.open(path, "r");
-  if (!file) return false;
-
   uint8_t header[kCompactHeaderBytes];
-  const size_t got =
-      file.readBytes(reinterpret_cast<char*>(header), sizeof(header));
-  file.close();
-  if (!isValidShotHeader(header, got)) return false;
+  if (!storage::readFilePrefix(path, header, sizeof(header)) ||
+      !isValidShotHeader(header, sizeof(header))) {
+    return false;
+  }
 
-  out = ShotMeta{};
   out.id = id;
   out.beginMs = readU32LE(header + 8);
   // Unsigned subtraction preserves the duration across a millis() wrap.
@@ -319,35 +308,38 @@ bool ShotStore::readMeta(uint32_t id, ShotMeta& out) {
   return _readMetaUnlocked(id, out);
 }
 
-bool ShotStore::readBinary(uint32_t id, ShotBinary& out) {
+ShotBinaryReadResult ShotStore::readBinary(uint32_t id, ShotBinary& out) {
   Lock lock(_mutex);
   out = ShotBinary{};
 
   char path[32];
   _pathFor(id, path, sizeof(path));
   File file = LittleFS.open(path, "r");
-  if (!file) return false;
+  if (!file) {
+    return storage::fileStatus(path) == storage::FileStatus::Missing
+               ? ShotBinaryReadResult::Missing
+               : ShotBinaryReadResult::Error;
+  }
 
   const size_t size = file.size();
   if (size < kCompactHeaderBytes || size > kMaxCompactRecordBytes) {
     file.close();
-    return false;
+    return ShotBinaryReadResult::Invalid;
   }
 
   std::unique_ptr<uint8_t[]> data(new (std::nothrow) uint8_t[size]);
   if (!data) {
     file.close();
-    return false;
+    return ShotBinaryReadResult::Error;
   }
   const bool readOk =
       file.readBytes(reinterpret_cast<char*>(data.get()), size) == size;
   file.close();
-  if (!readOk || !hasSupportedShotHeader(data.get())) {
-    return false;
-  }
+  if (!readOk) return ShotBinaryReadResult::Error;
+  if (!hasSupportedShotHeader(data.get())) return ShotBinaryReadResult::Invalid;
   out.data = std::move(data);
   out.size = size;
-  return true;
+  return ShotBinaryReadResult::Ok;
 }
 
 bool ShotStore::load(uint32_t id, Extraction& out) {
@@ -385,8 +377,6 @@ bool ShotStore::erase(uint32_t id) {
 
 uint32_t ShotStore::newestId() {
   Lock lock(_mutex);
-  if (!LittleFS.exists(kShotsDir)) return 0;
-
   std::vector<uint32_t> ids;
   if (!_scanIdsUnlocked(ids)) return 0;
 

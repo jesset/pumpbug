@@ -7,6 +7,9 @@
 
 namespace storage {
 
+// LittleFS VFS mount path.
+inline constexpr const char* kMountPath = "/littlefs";
+
 // Serialized in the extraction STATE packet. Keep the numeric values aligned
 // with SHOT_STORAGE_STATUS in web-src/app/extraction/constants.js.
 enum class MountState : uint8_t {

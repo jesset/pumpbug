@@ -41,9 +41,16 @@ async function fetchBinary(path) {
   // Default cache mode lets the browser revalidate a previously viewed shot
   // with its ETag instead of downloading it again.
   const r = await fetchWithTimeout(path, { cache: 'default' });
-  if (r.status === 404) return null;
+  if (r.status === 404) return { status: 'missing' };
+  if (r.status === 422) return { status: 'invalid' };
   if (!r.ok) throw new Error(path + ' ' + r.status);
-  return parseExtraction(await r.arrayBuffer());
+  const bytes = await r.arrayBuffer();
+  try {
+    return { status: 'ok', shot: parseExtraction(bytes) };
+  } catch (err) {
+    console.warn('parseExtraction failed', err);
+    return { status: 'invalid' };
+  }
 }
 
 // Fetch one page (before=0 → newest). Returns { status:304 } when the cached
@@ -166,15 +173,11 @@ async function selectShot(id) {
   view = 'detail';
   scheduleRender();
   try {
-    const blob = await fetchBinary('/app/extraction/shots?id=' + id);
+    const result = await fetchBinary('/app/extraction/shots?id=' + id);
     if (selectedShotId !== id) return;  // user navigated away
-    if (blob) {
-      selectedShot = blob;
-    } else {
-      // fetchBinary returns null on 404 — the shot was likely
-      // FIFO-evicted between the list render and this fetch.
-      selectedShotError = 'not_found';
-    }
+    if (result.status === 'ok') selectedShot = result.shot;
+    else if (result.status === 'missing') selectedShotError = 'not_found';
+    else selectedShotError = 'invalid';
     scheduleRender();
   } catch (err) {
     if (selectedShotId !== id) return;
@@ -257,6 +260,19 @@ function renderList(app) {
   }
   const ul = el('ul', { class: 'shotlist' });
   for (const s of shots) {
+    const hasSummary = Number.isFinite(s.startUtcSec) &&
+      Number.isFinite(s.beginMs) && Number.isFinite(s.durationMs) &&
+      Number.isFinite(s.yieldCg) && Number.isFinite(s.totalPumpOnMs);
+    if (!hasSummary) {
+      ul.append(el('li', { class: 'unavailable',
+                           onclick: () => selectShot(s.id) },
+        el('div', { class: 'head' },
+          el('span', { class: 'when' }, 'Record unavailable'),
+          el('span', { class: 'id' }, '#' + s.id),
+        ),
+      ));
+      continue;
+    }
     const when = fmtDate(s.startUtcSec) || 'time unknown';
     ul.append(el('li', { onclick: () => selectShot(s.id) },
       el('div', { class: 'head' },
@@ -294,6 +310,12 @@ function renderDetail(app) {
     app.append(el('p', { class: 'empty' },
       `Shot #${selectedShotId} is no longer available ` +
       `(likely evicted to make room for newer shots).`));
+    return;
+  }
+  if (selectedShotError === 'invalid') {
+    app.append(el('p', { class: 'empty err' },
+      `Shot #${selectedShotId} cannot be read because its record is damaged ` +
+      `or unsupported.`));
     return;
   }
   if (selectedShotError === 'error') {

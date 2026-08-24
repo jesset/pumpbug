@@ -66,6 +66,8 @@ class TestLittleFS : public fs::FS {
       return File(key, std::move(data), _control);
     }
 
+    if (failFileOpen) return {};
+
     const auto found = files.find(key);
     if (found == files.end()) return {};
     return File(found->first, found->second, _control);
@@ -89,6 +91,7 @@ class TestLittleFS : public fs::FS {
     failedRemovals.clear();
     directoryExists = false;
     failDirectoryOpen = false;
+    failFileOpen = false;
     failMkdir = false;
     reverseDirectoryOrder = false;
     _control->failWrites = false;
@@ -115,6 +118,7 @@ class TestLittleFS : public fs::FS {
   unsigned formatCalls = 0;
   bool directoryExists = false;
   bool failDirectoryOpen = false;
+  bool failFileOpen = false;
   bool failMkdir = false;
   bool reverseDirectoryOrder = false;
   unsigned directoryOpenCalls = 0;

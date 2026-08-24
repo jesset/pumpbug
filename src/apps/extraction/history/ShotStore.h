@@ -33,6 +33,13 @@ struct ShotBinary {
   size_t size = 0;
 };
 
+enum class ShotBinaryReadResult : uint8_t {
+  Ok,
+  Missing,
+  Invalid,
+  Error,
+};
+
 // Persistent FIFO of finalized extractions.
 //
 // Records are compact blobs named /shots/00000001.bin, with a monotonically
@@ -56,28 +63,30 @@ class ShotStore {
   // without removing existing history when the new record cannot be saved.
   bool save(const Extraction& ext);
 
-  // Produces a newest-first page of valid records with id < `before`;
-  // before == 0 starts at the newest record. The first call lazily builds the
-  // index by validating file headers. At most the newest kMaxShots records are
-  // visible, and `total` reports that bounded logical count. Returns false if
+  // Produces a newest-first page from files named /shots/NNNNNNNN.bin with id
+  // < `before`; before == 0 starts at the newest file. At most the newest
+  // kMaxShots files are visible, and `total` reports that bounded count.
+  // Records are not checked for integrity, just for existence. Returns false if
   // the directory cannot be read.
   bool page(uint32_t before, size_t limit, std::vector<uint32_t>& ids,
             bool* hasMore, size_t* total, uint32_t* outRevision);
 
   // Reads one record's compact-header metadata without decoding its samples.
-  // Returns false when the file is missing or its header is invalid.
+  // Returns false and clears `out` when the file is missing or its header is
+  // invalid.
   bool readMeta(uint32_t id, ShotMeta& out);
 
   // Reads a record's bytes into `out` after checking the file size and
   // supported EXTR header.
-  bool readBinary(uint32_t id, ShotBinary& out);
+  ShotBinaryReadResult readBinary(uint32_t id, ShotBinary& out);
 
   // Decodes one stored record into `out`.
   bool load(uint32_t id, Extraction& out);
   // Removes one record and advances the HTTP list revision.
   bool erase(uint32_t id);
   // Newest record with a valid compact header, or zero when history is empty.
-  // The filesystem is authoritative so restore still works after NVS loss.
+  // Unlike page(), this filters record contents because its caller restores
+  // the record for replay.
   uint32_t newestId();
 
   // Mutations advance the O(1) revision without requiring a directory scan.
