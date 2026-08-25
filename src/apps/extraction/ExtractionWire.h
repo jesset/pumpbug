@@ -115,14 +115,13 @@ inline constexpr bool isCompactVersionSupported(uint8_t version) {
          version == static_cast<uint8_t>(ExtractionVersion::V7);
 }
 
-// Sink receives encoded bytes in chunks. Returns nothing — the encoder
-// trusts the sink not to throw. WebServer wrapper calls sendContent; a
-// disk writer would call File::write.
-using WireSink = std::function<void(const uint8_t* data, size_t len)>;
+// Sink receives encoded bytes in chunks. False stops the encoder.
+using WireSink = std::function<bool(const uint8_t* data, size_t len)>;
 
 // Encodes records using the current EXTR schema. If the input extraction record
 // has an older schema, new fields default at zero. encodeCompactSize counts
 // the bytes produced by encodeCompact for allocation and HTTP Content-Length.
+// Both functions return false if encoding cannot be completed.
 bool encodeCompactSize(const Extraction& ext, size_t& out);
 bool encodeCompact(const Extraction& ext, const WireSink& sink);
 
@@ -137,5 +136,8 @@ using WireSource = std::function<bool(uint8_t* dst, size_t len)>;
 // would overrun Extraction's fixed arrays, or a truncated stream; `out` is
 // left partially filled on failure, so discard it.
 bool decodeCompact(const WireSource& src, Extraction& out);
+
+// Validates and consumes one compact record without materializing it.
+bool scanCompact(const WireSource& src);
 
 }  // namespace pump_scale

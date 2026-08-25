@@ -14,6 +14,7 @@
 
 #include "apps/extraction/Extraction.h"
 #include "apps/extraction/ExtractionWire.h"
+#include "apps/extraction/history/shot_metadata_codec.h"
 
 namespace pump_scale {
 
@@ -40,13 +41,36 @@ enum class ShotBinaryReadResult : uint8_t {
   Error,
 };
 
+inline constexpr size_t kMaxStoredShotRecordBytes =
+    kMaxCompactRecordBytes + kShotExtractionCrcBytes +
+    kMaxShotMetadataJsonBytes + kShotMetadataFooterBytes;
+// With the current filesystem settings, 3 filesystem blocks can fit files up to
+// 12,276 bytes long. Measured with mklittlefs 0.2.3-35-g943d2f7.
+static_assert(kMaxStoredShotRecordBytes <= 12276,
+              "maximum shot record no longer fits in three data blocks");
+
 // Persistent FIFO of finalized extractions.
 //
 // Records are compact blobs named /shots/00000001.bin, with a monotonically
-// increasing eight-digit ID stored in NVS. The 4.375 MiB history partition
-// retains at most 250 records. A maximum-size compact record encodes to 10,634
-// bytes and fits in three 4 KiB filesystem blocks, so the cap uses about 67% of
-// the partition before filesystem metadata.
+// increasing eight-digit ID. We use a 4.375 MiB history partition and limit
+// history to at most 250 records and each record to three filesystem data
+// blocks. This effectively caps shot history size to about 67% of the partition
+// size, not including filesystem metadata.
+//
+// Every file begins with the EXTR extraction record: a fixed 54-byte header,
+// variable-length events, variable-length samples, and a fixed 20-byte
+// target/alarm block. See ExtractionWire.
+//
+// Stored files use one of these layouts:
+//
+//   EXTR
+//   EXTR | EXTR CRC32
+//   EXTR | EXTR CRC32 | user metadata JSON | inactive capacity | PBMD footer
+//
+// EXTR-only ("bare") files are from earlier firmware versions. Records written
+// by this firmware include the EXTR CRC and the metadata trailer, but a record
+// without metadata (or with corrupt metadata) can also be read as long as
+// there's no CRC or the CRC matches. See shot_metadata_codec.h.
 //
 // Each save writes and verifies the new record before removing older records.
 // A failed write therefore preserves the existing history. History listing
@@ -76,11 +100,13 @@ class ShotStore {
   // invalid.
   bool readMeta(uint32_t id, ShotMeta& out);
 
-  // Reads a record's bytes into `out` after checking the file size and
-  // supported EXTR header.
+  // Reads the complete EXTR record—header, events, samples, and target block.
+  // Performs structural and CRC validation (if the record includes a CRC).
+  // Metadata state does not affect the result and is not returned.
   ShotBinaryReadResult readBinary(uint32_t id, ShotBinary& out);
 
-  // Decodes one stored record into `out`.
+  // Decodes and validates one stored EXTR record into `out`. Metadata state
+  // does not affect the result. Discard `out` when this returns false.
   bool load(uint32_t id, Extraction& out);
   // Removes one record and advances the HTTP list revision.
   bool erase(uint32_t id);

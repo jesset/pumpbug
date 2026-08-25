@@ -195,10 +195,10 @@ bool ExtractionStream::_sendFullRecord(WiFiClient& client, Session& s,
   // append the encoded EXTR body after the packet header.
   size_t pos = kPacketHeaderBytes;
   const WireSink sink = [&](const uint8_t* data, size_t len) {
-    if (pos + len <= totalLen) {
-      std::memcpy(buf.get() + pos, data, len);
-      pos += len;
-    }
+    if (pos + len > totalLen) return false;
+    std::memcpy(buf.get() + pos, data, len);
+    pos += len;
+    return true;
   };
   const bool encoded = encodeCompact(ext, sink);
   if (!encoded || pos != totalLen) {

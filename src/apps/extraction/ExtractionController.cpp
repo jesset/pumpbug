@@ -333,9 +333,8 @@ bool ExtractionController::processPendingLoad() {
     Lock l(_mutex);
     _hasLoadedShot = false;
   }
-  // Decode straight from the store into the slot. A failed decode (near-
-  // impossible: the HTTP route pre-validates the id) frees the buffer and keeps
-  // the flag off so nothing stale shows.
+  // Decode straight from the store into the slot. A failed decode frees the
+  // buffer and keeps the flag off so nothing stale shows.
   if (_shotStore.load(id, *_loadedShot)) {
     _loadedFlowStats =
         computeFlowSeriesStats(_loadedShot->samples, _loadedShot->sampleCount);
@@ -465,6 +464,7 @@ void ExtractionController::_sendSnapshot(WebServer& server) {
   server.send(200, "application/octet-stream", "");
   const WireSink sink = [&server](const uint8_t* data, size_t len) {
     server.sendContent(reinterpret_cast<const char*>(data), len);
+    return true;
   };
   encodeCompact(_snapshot, sink);
 }

@@ -33,19 +33,20 @@ void writeTargetBlock(uint8_t* dst, const Extraction& e) {
   writeI16LE(dst + 18, e.alarm.ctx.projectedFinalCg);
 }
 
-bool readTargetBlock(const WireSource& src, Extraction& out) {
+bool readTargetBlock(const WireSource& src, Extraction* out) {
   uint8_t buf[kCompactTargetBlockBytes];
   if (!src(buf, sizeof(buf))) return false;
-  out.target.targetCg = readU16LE(buf + 0);
-  out.target.armed = buf[2] != 0;
-  out.target.tauMs = readU16LE(buf + 3);
-  out.target.cCg = readI16LE(buf + 5);
-  out.target.reactionLeadMs = readU16LE(buf + 7);
-  out.alarm.tMs = readU32LE(buf + 9);
-  out.alarm.ctx.yieldCg = readI16LE(buf + 13);
-  out.alarm.ctx.flowCgPerS = readI16LE(buf + 15);
-  out.alarm.ctx.flowValid = buf[17] != 0;
-  out.alarm.ctx.projectedFinalCg = readI16LE(buf + 18);
+  if (!out) return true;
+  out->target.targetCg = readU16LE(buf + 0);
+  out->target.armed = buf[2] != 0;
+  out->target.tauMs = readU16LE(buf + 3);
+  out->target.cCg = readI16LE(buf + 5);
+  out->target.reactionLeadMs = readU16LE(buf + 7);
+  out->alarm.tMs = readU32LE(buf + 9);
+  out->alarm.ctx.yieldCg = readI16LE(buf + 13);
+  out->alarm.ctx.flowCgPerS = readI16LE(buf + 15);
+  out->alarm.ctx.flowValid = buf[17] != 0;
+  out->alarm.ctx.projectedFinalCg = readI16LE(buf + 18);
   return true;
 }
 
@@ -62,13 +63,12 @@ constexpr uint8_t FLAG_SCALE_TIMERS = 0x02;
 class ChunkedWriter {
  public:
   explicit ChunkedWriter(const WireSink& sink) : _sink(sink) {}
-  ~ChunkedWriter() { flush(); }
 
-  void put(const uint8_t* data, size_t len) {
+  bool put(const uint8_t* data, size_t len) {
     while (len) {
       size_t avail = sizeof(_buf) - _n;
       if (avail == 0) {
-        flush();
+        if (!flush()) return false;
         avail = sizeof(_buf);
       }
       const size_t take = len < avail ? len : avail;
@@ -77,16 +77,20 @@ class ChunkedWriter {
       data += take;
       len -= take;
     }
+    return true;
   }
 
-  void flush() {
-    if (_n) {
-      _sink(_buf, _n);
-      _n = 0;
-    }
-  }
+  bool finish() { return flush(); }
 
  private:
+  bool flush() {
+    if (_n) {
+      if (!_sink(_buf, _n)) return false;
+      _n = 0;
+    }
+    return true;
+  }
+
   const WireSink& _sink;
   uint8_t _buf[256];
   size_t _n = 0;
@@ -219,7 +223,7 @@ bool encodeCompact(const Extraction& ext, const WireSink& sink) {
   hdr[45] = 0;  // reserved
   writeU32LE(hdr + 46, ext.pourMs);
   writeI32LE(hdr + 50, ext.decisionGainCg);
-  w.put(hdr, sizeof(hdr));
+  if (!w.put(hdr, sizeof(hdr))) return false;
 
   uint8_t scratch[kMaxSampleDeltaBytes];
 
@@ -227,7 +231,7 @@ bool encodeCompact(const Extraction& ext, const WireSink& sink) {
   uint32_t prevT = ext.beginMs;
   for (uint16_t i = 0; i < ext.eventCount; ++i) {
     const size_t n = writeEvent(scratch, prevT, ext.events[i]);
-    w.put(scratch, n);
+    if (!w.put(scratch, n)) return false;
     prevT = ext.events[i].tMs;
   }
 
@@ -236,19 +240,19 @@ bool encodeCompact(const Extraction& ext, const WireSink& sink) {
   SampleDeltaCursor sampleCursor{ext.beginMs, 0, includeScaleTimers};
   for (uint16_t i = 0; i < ext.sampleCount; ++i) {
     const size_t n = writeSampleDelta(scratch, sampleCursor, ext.samples[i]);
-    w.put(scratch, n);
+    if (!w.put(scratch, n)) return false;
   }
 
   // Trailing target/alarm block.
   uint8_t targetBlock[kCompactTargetBlockBytes];
   writeTargetBlock(targetBlock, ext);
-  w.put(targetBlock, sizeof(targetBlock));
+  if (!w.put(targetBlock, sizeof(targetBlock))) return false;
 
-  return true;
+  return w.finish();
 }
 
-bool decodeCompact(const WireSource& src, Extraction& out) {
-  out = Extraction{};
+static bool decodeCompactImpl(const WireSource& src, Extraction* out) {
+  if (out) *out = Extraction{};
 
   // The header is a fixed 54 bytes (kCompactHeaderBytes), the same layout
   // encodeCompact() writes. Pull it all at once; the variable-length event and
@@ -262,42 +266,48 @@ bool decodeCompact(const WireSource& src, Extraction& out) {
   if (!isCompactVersionSupported(version)) return false;
   if (hdr[6] > static_cast<uint8_t>(EndCause::TIMEOUT)) return false;
 
-  out.phase = static_cast<Phase>(hdr[5]);
-  out.endCause = static_cast<EndCause>(hdr[6]);
-  out.version = static_cast<ExtractionVersion>(version);
   const uint8_t flags = hdr[7];
-  out.eventsOverflowed = (flags & FLAG_EVENTS_OVERFLOWED) != 0;
-  out.beginMs = readU32LE(hdr + 8);
-  out.lastPumpOffConfirmedMs = readU32LE(hdr + 12);
-  out.stableMs = readU32LE(hdr + 16);
-  out.endMs = readU32LE(hdr + 20);
-  out.totalPumpOnMs = readU32LE(hdr + 24);
-  out.startUtcSec = readU32LE(hdr + 28);
-  out.yieldCg = readI16LE(hdr + 32);
-  out.startRawCg = readI16LE(hdr + 34);
-  out.settledRawCg = readI16LE(hdr + 36);
-  out.observedSampleCount = readU16LE(hdr + 38);
+  const uint32_t beginMs = readU32LE(hdr + 8);
   const uint16_t eventCount = readU16LE(hdr + 40);
   const uint16_t sampleCount = readU16LE(hdr + 42);
-  out.yieldStatus = static_cast<YieldStatus>(hdr[44]);
-  // hdr[45] reserved
-  out.pourMs = readU32LE(hdr + 46);
-  out.decisionGainCg = readI32LE(hdr + 50);
 
   // A corrupt or forged count must never overrun the fixed arrays.
   if (eventCount > Extraction::MAX_EVENTS) return false;
   if (sampleCount > Extraction::MAX_SAMPLES) return false;
 
-  uint32_t prevT = out.beginMs;
-  for (uint16_t i = 0; i < eventCount; ++i) {
-    if (!readEvent(src, version, prevT, out.events[i])) return false;
+  if (out) {
+    out->phase = static_cast<Phase>(hdr[5]);
+    out->endCause = static_cast<EndCause>(hdr[6]);
+    out->version = static_cast<ExtractionVersion>(version);
+    out->eventsOverflowed = (flags & FLAG_EVENTS_OVERFLOWED) != 0;
+    out->beginMs = beginMs;
+    out->lastPumpOffConfirmedMs = readU32LE(hdr + 12);
+    out->stableMs = readU32LE(hdr + 16);
+    out->endMs = readU32LE(hdr + 20);
+    out->totalPumpOnMs = readU32LE(hdr + 24);
+    out->startUtcSec = readU32LE(hdr + 28);
+    out->yieldCg = readI16LE(hdr + 32);
+    out->startRawCg = readI16LE(hdr + 34);
+    out->settledRawCg = readI16LE(hdr + 36);
+    out->observedSampleCount = readU16LE(hdr + 38);
+    out->yieldStatus = static_cast<YieldStatus>(hdr[44]);
+    // hdr[45] reserved
+    out->pourMs = readU32LE(hdr + 46);
+    out->decisionGainCg = readI32LE(hdr + 50);
   }
-  out.eventCount = eventCount;
+
+  uint32_t prevT = beginMs;
+  for (uint16_t i = 0; i < eventCount; ++i) {
+    Event event{};
+    if (!readEvent(src, version, prevT, event)) return false;
+    if (out) out->events[i] = event;
+  }
+  if (out) out->eventCount = eventCount;
 
   // Samples: uvarint tMsDelta + svarint cgDelta (raw scale centigrams), then a
   // raw uvarint scaleTimerMs when the scale-timer flag is set.
   const bool haveScaleTimers = (flags & FLAG_SCALE_TIMERS) != 0;
-  uint32_t sPrevT = out.beginMs;
+  uint32_t sPrevT = beginMs;
   int32_t prevCg = 0;
   for (uint16_t i = 0; i < sampleCount; ++i) {
     uint32_t dt;
@@ -307,17 +317,25 @@ bool decodeCompact(const WireSource& src, Extraction& out) {
     prevCg += dc;
     uint32_t scaleTimerMs = scale_time::UNKNOWN_MS;
     if (haveScaleTimers && !readUvarintSrc(src, scaleTimerMs)) return false;
-    out.samples[i] = {sPrevT, saturateCg(prevCg), scaleTimerMs};
+    if (out) out->samples[i] = {sPrevT, saturateCg(prevCg), scaleTimerMs};
   }
-  out.sampleCount = sampleCount;
+  if (out) out->sampleCount = sampleCount;
 
   if (!readTargetBlock(src, out)) return false;
 
   // Current-version records always include the target/alarm block. In-flight
   // records remain false until setTargetSnapshot() captures their settings.
-  out.hasTargetSnapshot = true;
+  if (out) out->hasTargetSnapshot = true;
 
   return true;
+}
+
+bool decodeCompact(const WireSource& src, Extraction& out) {
+  return decodeCompactImpl(src, &out);
+}
+
+bool scanCompact(const WireSource& src) {
+  return decodeCompactImpl(src, nullptr);
 }
 
 }  // namespace pump_scale

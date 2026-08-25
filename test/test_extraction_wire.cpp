@@ -30,6 +30,7 @@ std::vector<uint8_t> encode(const pump_scale::Extraction& e) {
   const bool encoded =
       pump_scale::encodeCompact(e, [&](const uint8_t* data, size_t len) {
         out.insert(out.end(), data, data + len);
+        return true;
       });
   size_t expectedSize = 0;
   CHECK(encoded);
@@ -66,6 +67,16 @@ bool decode(const std::vector<uint8_t>& bytes, pump_scale::Extraction& out) {
         return true;
       },
       out);
+}
+
+bool scan(const std::vector<uint8_t>& bytes, size_t& consumed) {
+  consumed = 0;
+  return pump_scale::scanCompact([&](uint8_t* dst, size_t len) {
+    if (consumed + len > bytes.size()) return false;
+    std::memcpy(dst, bytes.data() + consumed, len);
+    consumed += len;
+    return true;
+  });
 }
 
 // Field-by-field equality over the serialized surface. `hasTargetSnapshot` is
@@ -178,6 +189,29 @@ void testRoundTripFullShot() {
   CHECK(sameSerialized(e, d));
 }
 
+void testScanMatchesDecodeWithoutConsumingAppendedData() {
+  const std::vector<uint8_t> encoded = encode(makeShot());
+  std::vector<uint8_t> stored = encoded;
+  stored.insert(stored.end(), {1, 2, 3, 4, 5});
+
+  size_t consumed = 0;
+  CHECK(scan(stored, consumed));
+  CHECK(consumed == encoded.size());
+
+  pump_scale::Extraction decoded{};
+  CHECK(decode(encoded, decoded));
+
+  std::vector<uint8_t> invalid = encoded;
+  invalid[0] = 'X';
+  CHECK(!scan(invalid, consumed));
+  CHECK(!decode(invalid, decoded));
+
+  invalid = encoded;
+  invalid.pop_back();
+  CHECK(!scan(invalid, consumed));
+  CHECK(!decode(invalid, decoded));
+}
+
 void testPumpSignalDecayOnsetAcrossMillisRollover() {
   pump_scale::Extraction e{};
   e.version = pump_scale::kCurrentExtractionVersion;
@@ -272,6 +306,7 @@ void testHistoricalTranscoding() {
   std::vector<uint8_t> display;
   CHECK(pump_scale::encodeCompact(e, [&](const uint8_t* data, size_t len) {
     display.insert(display.end(), data, data + len);
+    return true;
   }));
   size_t size = 0;
   CHECK(pump_scale::encodeCompactSize(e, size));
@@ -288,8 +323,25 @@ void testHistoricalTranscoding() {
   size = 123;
   CHECK(!pump_scale::encodeCompactSize(e, size));
   CHECK(size == 0);
-  CHECK(!pump_scale::encodeCompact(
-      e, [](const uint8_t*, size_t) { CHECK(false); }));
+  CHECK(!pump_scale::encodeCompact(e, [](const uint8_t*, size_t) {
+    CHECK(false);
+    return false;
+  }));
+}
+
+void testSinkCanStopEncoding() {
+  pump_scale::Extraction e = makeShot();
+  e.sampleCount = pump_scale::Extraction::MAX_SAMPLES;
+  size_t encodedSize = 0;
+  CHECK(pump_scale::encodeCompactSize(e, encodedSize));
+  CHECK(encodedSize > 256);
+
+  size_t sinkCalls = 0;
+  CHECK(!pump_scale::encodeCompact(e, [&](const uint8_t*, size_t) {
+    ++sinkCalls;
+    return false;
+  }));
+  CHECK(sinkCalls == 1);
 }
 
 void testRejectsUnknownEndCause() {
@@ -536,6 +588,7 @@ int main() {
   testRawScaleTimerField();
   testScaleTimerFieldOmittedWhenAbsent();
   testRoundTripFullShot();
+  testScanMatchesDecodeWithoutConsumingAppendedData();
   testPumpSignalDecayOnsetAcrossMillisRollover();
   testRoundTripDisturbedYieldStatus();
   testRoundTripNoScaleTimers();
@@ -543,6 +596,7 @@ int main() {
   testRejectsBadMagic();
   testVersionCompatibility();
   testHistoricalTranscoding();
+  testSinkCanStopEncoding();
   testRejectsUnknownEndCause();
   testRejectsTruncated();
   testRejectsTruncatedHeader();

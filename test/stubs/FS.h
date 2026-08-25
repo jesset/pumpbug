@@ -14,6 +14,7 @@
 
 struct TestFileControl {
   bool failWrites = false;
+  size_t bytesRead = 0;
 };
 
 class File {
@@ -32,6 +33,7 @@ class File {
     if (count != 0) {
       std::memcpy(destination, _data->data() + _position, count);
       _position += count;
+      if (_control) _control->bytesRead += count;
     }
     return count;
   }
@@ -43,6 +45,14 @@ class File {
     _data->insert(_data->end(), source, source + length);
     _position += length;
     return length;
+  }
+
+  bool seek(size_t position) {
+    if (!_valid || _directory || !_data || position > _data->size()) {
+      return false;
+    }
+    _position = position;
+    return true;
   }
 
   File openNextFile() {

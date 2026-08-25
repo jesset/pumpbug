@@ -23,7 +23,110 @@ bool absolutePath(const char* volumePath, char* destination, size_t capacity) {
   return length >= 0 && static_cast<size_t>(length) < capacity;
 }
 
+bool readExactly(int descriptor, uint8_t* destination, size_t size) {
+  if (!destination && size != 0) return false;
+  size_t offset = 0;
+  while (offset < size) {
+    const ssize_t count =
+        ::read(descriptor, destination + offset, size - offset);
+    if (count > 0) {
+      offset += static_cast<size_t>(count);
+    } else if (count == 0) {
+      return false;
+    } else if (errno != EINTR) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool writeExactly(int descriptor, const uint8_t* source, size_t size) {
+  if (!source && size != 0) return false;
+  size_t offset = 0;
+  while (offset < size) {
+    const ssize_t count = ::write(descriptor, source + offset, size - offset);
+    if (count > 0) {
+      offset += static_cast<size_t>(count);
+    } else if (count == 0) {
+      return false;
+    } else if (errno != EINTR) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
+
+FileReader::~FileReader() {
+  if (_descriptor >= 0) ::close(_descriptor);
+}
+
+FileOpenResult FileReader::open(const char* volumePath) {
+  if (_descriptor >= 0) {
+    ::close(_descriptor);
+    _descriptor = -1;
+    _size = 0;
+  }
+
+  char path[64];
+  if (!absolutePath(volumePath, path, sizeof(path))) {
+    return FileOpenResult::Error;
+  }
+
+  errno = 0;
+  const int descriptor = ::open(path, O_RDONLY);
+  if (descriptor < 0) {
+    return errno == ENOENT ? FileOpenResult::Missing : FileOpenResult::Error;
+  }
+
+  struct stat info;
+  if (::fstat(descriptor, &info) != 0 || info.st_size < 0) {
+    ::close(descriptor);
+    return FileOpenResult::Error;
+  }
+
+  _descriptor = descriptor;
+  _size = static_cast<size_t>(info.st_size);
+  return FileOpenResult::Opened;
+}
+
+size_t FileReader::size() const { return _size; }
+
+bool FileReader::readExactly(uint8_t* destination, size_t size) {
+  return _descriptor >= 0 &&
+         storage::readExactly(_descriptor, destination, size);
+}
+
+bool FileReader::seek(size_t offset) {
+  if (_descriptor < 0 || offset > _size) return false;
+  return ::lseek(_descriptor, static_cast<off_t>(offset), SEEK_SET) >= 0;
+}
+
+FileWriter::~FileWriter() {
+  if (_descriptor >= 0) ::close(_descriptor);
+}
+
+bool FileWriter::open(const char* volumePath) {
+  if (_descriptor >= 0 && !close()) return false;
+
+  char path[64];
+  if (!absolutePath(volumePath, path, sizeof(path))) return false;
+
+  _descriptor = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  return _descriptor >= 0;
+}
+
+bool FileWriter::writeExactly(const uint8_t* source, size_t size) {
+  return _descriptor >= 0 && storage::writeExactly(_descriptor, source, size);
+}
+
+bool FileWriter::close() {
+  if (_descriptor < 0) return true;
+  const int descriptor = _descriptor;
+  _descriptor = -1;
+  return ::close(descriptor) == 0;
+}
 
 DirectoryReader::~DirectoryReader() {
   if (_handle) ::closedir(static_cast<DIR*>(_handle));
@@ -73,22 +176,11 @@ bool readFilePrefix(const char* volumePath, uint8_t* destination, size_t size) {
   char path[64];
   if (!absolutePath(volumePath, path, sizeof(path))) return false;
 
-  const int file = ::open(path, O_RDONLY);
-  if (file < 0) return false;
-
-  size_t offset = 0;
-  while (offset < size) {
-    const ssize_t count = ::read(file, destination + offset, size - offset);
-    if (count > 0) {
-      offset += static_cast<size_t>(count);
-    } else if (count == 0) {
-      break;
-    } else if (errno != EINTR) {
-      break;
-    }
-  }
-  ::close(file);
-  return offset == size;
+  const int descriptor = ::open(path, O_RDONLY);
+  if (descriptor < 0) return false;
+  const bool read = readExactly(descriptor, destination, size);
+  ::close(descriptor);
+  return read;
 }
 
 FileStatus fileStatus(const char* volumePath) {

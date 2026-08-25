@@ -15,6 +15,8 @@
 
 #include "apps/extraction/extraction_encoding.h"
 #include "shot_id_reservation.h"
+#include "shot_metadata_codec.h"
+#include "util/crc32.h"
 #include "util/scoped_lock.h"
 #include "util/storage.h"
 #include "util/storage_file_access.h"
@@ -49,6 +51,154 @@ bool hasSupportedShotHeader(const uint8_t* header) {
 
 bool isValidShotHeader(const uint8_t* header, size_t size) {
   return size == kCompactHeaderBytes && hasSupportedShotHeader(header);
+}
+
+struct StoredRecordInfo {
+  size_t rawLength = 0;
+  bool hasExtractionCrc = false;
+};
+
+using StoredRecordDecoder = std::function<bool(const WireSource&)>;
+
+// Reads the EXTR data through the decoder and checks its CRC if present.
+// Metadata bytes after the CRC are ignored.
+ShotBinaryReadResult readStoredExtraction(storage::FileReader& file,
+                                          size_t fileSize,
+                                          uint8_t* encodedExtractionBytes,
+                                          const StoredRecordDecoder& decoder,
+                                          StoredRecordInfo& out) {
+  out = StoredRecordInfo{};
+  Crc32 computedExtractionCrc;
+  bool readError = false;
+  const size_t capacity = std::min(fileSize, kMaxCompactRecordBytes);
+  const WireSource source = [&](uint8_t* destination, size_t length) {
+    if (out.rawLength + length > capacity) return false;
+    if (!file.readExactly(destination, length)) {
+      readError = out.rawLength + length <= fileSize;
+      return false;
+    }
+    if (encodedExtractionBytes) {
+      std::memcpy(encodedExtractionBytes + out.rawLength, destination, length);
+    }
+    computedExtractionCrc.update(destination, length);
+    out.rawLength += length;
+    return true;
+  };
+  if (!decoder(source)) {
+    return readError ? ShotBinaryReadResult::Error
+                     : ShotBinaryReadResult::Invalid;
+  }
+
+  const size_t trailingBytes = fileSize - out.rawLength;
+  if (trailingBytes == 0) return ShotBinaryReadResult::Ok;
+  if (trailingBytes < kShotExtractionCrcBytes) {
+    return ShotBinaryReadResult::Invalid;
+  }
+
+  uint8_t encodedExtractionCrc[kShotExtractionCrcBytes];
+  if (!file.readExactly(encodedExtractionCrc, sizeof(encodedExtractionCrc))) {
+    return ShotBinaryReadResult::Error;
+  }
+  if (readU32LE(encodedExtractionCrc) != computedExtractionCrc.value()) {
+    return ShotBinaryReadResult::Invalid;
+  }
+  out.hasExtractionCrc = true;
+  return ShotBinaryReadResult::Ok;
+}
+
+bool verifyRecord(const char* path, size_t expectedRawLength) {
+  storage::FileReader file;
+  if (file.open(path) != storage::FileOpenResult::Opened) return false;
+
+  const size_t fileSize = file.size();
+  StoredRecordInfo info;
+  if (readStoredExtraction(file, fileSize, nullptr, scanCompact, info) !=
+          ShotBinaryReadResult::Ok ||
+      info.rawLength != expectedRawLength || !info.hasExtractionCrc ||
+      fileSize != expectedRawLength + kShotExtractionCrcBytes +
+                      kShotMetadataFooterBytes) {
+    return false;
+  }
+
+  uint8_t encodedFooter[kShotMetadataFooterBytes];
+  if (!file.seek(fileSize - sizeof(encodedFooter)) ||
+      !file.readExactly(encodedFooter, sizeof(encodedFooter))) {
+    return false;
+  }
+  ShotMetadataFooter footer;
+  return decodeShotMetadataFooter(encodedFooter, fileSize, footer) ==
+             ShotMetadataFooterReadResult::Supported &&
+         footer.state == ShotMetadataStoredState::Absent &&
+         footer.rawLength == expectedRawLength && footer.jsonLength == 0 &&
+         validateShotMetadataEnvelope(footer, nullptr, 0, encodedFooter);
+}
+
+ShotBinaryReadResult openShotFile(const char* path, storage::FileReader& file) {
+  switch (file.open(path)) {
+    case storage::FileOpenResult::Opened:
+      return ShotBinaryReadResult::Ok;
+    case storage::FileOpenResult::Missing:
+      return ShotBinaryReadResult::Missing;
+    case storage::FileOpenResult::Error:
+      return ShotBinaryReadResult::Error;
+  }
+  return ShotBinaryReadResult::Error;
+}
+
+// Returns the validated, encoded (wire) extraction data without the appended
+// envelope.
+ShotBinaryReadResult readShotFileBytes(const char* path,
+                                       std::unique_ptr<uint8_t[]>& encodedBytes,
+                                       StoredRecordInfo& info) {
+  storage::FileReader file;
+  const auto opened = openShotFile(path, file);
+  if (opened != ShotBinaryReadResult::Ok) return opened;
+
+  const size_t capacity = std::min(file.size(), kMaxCompactRecordBytes);
+  encodedBytes.reset(new (std::nothrow) uint8_t[capacity]);
+  if (!encodedBytes) return ShotBinaryReadResult::Error;
+  return readStoredExtraction(file, file.size(), encodedBytes.get(),
+                              scanCompact, info);
+}
+
+// Returns a validated, decoded Extraction.
+ShotBinaryReadResult decodeShotFile(const char* path, Extraction& decoded,
+                                    StoredRecordInfo& info) {
+  storage::FileReader file;
+  const auto opened = openShotFile(path, file);
+  if (opened != ShotBinaryReadResult::Ok) return opened;
+
+  const StoredRecordDecoder decoder = [&](const WireSource& source) {
+    return decodeCompact(source, decoded);
+  };
+  return readStoredExtraction(file, file.size(), nullptr, decoder, info);
+}
+
+bool writeRecord(storage::FileWriter& file, const Extraction& ext,
+                 size_t encodedSize) {
+  Crc32 extractionCrc;
+  if (!encodeCompact(ext, [&](const uint8_t* data, size_t len) {
+        if (!file.writeExactly(data, len)) return false;
+        extractionCrc.update(data, len);
+        return true;
+      })) {
+    return false;
+  }
+
+  uint8_t extractionCrcBytes[kShotExtractionCrcBytes];
+  writeU32LE(extractionCrcBytes, extractionCrc.value());
+  if (!file.writeExactly(extractionCrcBytes, sizeof(extractionCrcBytes))) {
+    return false;
+  }
+
+  uint8_t footer[kShotMetadataFooterBytes];
+  if (!encodeShotMetadataFooter(ShotMetadataStoredState::Absent,
+                                static_cast<uint32_t>(encodedSize), nullptr, 0,
+                                0, footer) ||
+      !file.writeExactly(footer, sizeof(footer))) {
+    return false;
+  }
+  return true;
 }
 }  // namespace
 
@@ -188,35 +338,21 @@ bool ShotStore::_readMetaUnlocked(uint32_t id, ShotMeta& out) {
   return true;
 }
 
+// Writes a new record and verifies it by reading it immediately after.
 bool ShotStore::_writeRecordUnlocked(const Extraction& ext, uint32_t id,
                                      size_t encodedSize) {
   char path[32];
   _pathFor(id, path, sizeof(path));
-  File file = LittleFS.open(path, "w");
-  if (!file) {
-    M5_LOGE("ShotStore: cannot open %s", path);
-    return false;
+  bool written = false;
+  {
+    storage::FileWriter file;
+    if (!file.open(path)) {
+      M5_LOGE("ShotStore: cannot open %s", path);
+      return false;
+    }
+    written = writeRecord(file, ext, encodedSize) && file.close();
   }
-
-  bool writeOk = true;
-  const bool encoded = encodeCompact(ext, [&](const uint8_t* data, size_t len) {
-    if (writeOk && file.write(data, len) != len) writeOk = false;
-  });
-  file.close();
-
-  File check = LittleFS.open(path, "r");
-  uint8_t header[kCompactHeaderBytes];
-  size_t headerBytes = 0;
-  size_t fileSize = 0;
-  if (check) {
-    fileSize = check.size();
-    headerBytes =
-        check.readBytes(reinterpret_cast<char*>(header), sizeof(header));
-    check.close();
-  }
-  const bool verified = encoded && writeOk && fileSize == encodedSize &&
-                        isValidShotHeader(header, headerBytes);
-  if (verified) return true;
+  if (written && verifyRecord(path, encodedSize)) return true;
 
   if (!LittleFS.remove(path)) {
     M5_LOGW("ShotStore: could not remove incomplete %s", path);
@@ -311,50 +447,24 @@ bool ShotStore::readMeta(uint32_t id, ShotMeta& out) {
 ShotBinaryReadResult ShotStore::readBinary(uint32_t id, ShotBinary& out) {
   Lock lock(_mutex);
   out = ShotBinary{};
-
   char path[32];
   _pathFor(id, path, sizeof(path));
-  File file = LittleFS.open(path, "r");
-  if (!file) {
-    return storage::fileStatus(path) == storage::FileStatus::Missing
-               ? ShotBinaryReadResult::Missing
-               : ShotBinaryReadResult::Error;
+  std::unique_ptr<uint8_t[]> data;
+  StoredRecordInfo info;
+  const auto result = readShotFileBytes(path, data, info);
+  if (result == ShotBinaryReadResult::Ok) {
+    out.data = std::move(data);
+    out.size = info.rawLength;
   }
-
-  const size_t size = file.size();
-  if (size < kCompactHeaderBytes || size > kMaxCompactRecordBytes) {
-    file.close();
-    return ShotBinaryReadResult::Invalid;
-  }
-
-  std::unique_ptr<uint8_t[]> data(new (std::nothrow) uint8_t[size]);
-  if (!data) {
-    file.close();
-    return ShotBinaryReadResult::Error;
-  }
-  const bool readOk =
-      file.readBytes(reinterpret_cast<char*>(data.get()), size) == size;
-  file.close();
-  if (!readOk) return ShotBinaryReadResult::Error;
-  if (!hasSupportedShotHeader(data.get())) return ShotBinaryReadResult::Invalid;
-  out.data = std::move(data);
-  out.size = size;
-  return ShotBinaryReadResult::Ok;
+  return result;
 }
 
 bool ShotStore::load(uint32_t id, Extraction& out) {
   Lock lock(_mutex);
   char path[32];
   _pathFor(id, path, sizeof(path));
-  File file = LittleFS.open(path, "r");
-  if (!file) return false;
-  const bool ok = decodeCompact(
-      [&](uint8_t* dst, size_t len) {
-        return file.readBytes(reinterpret_cast<char*>(dst), len) == len;
-      },
-      out);
-  file.close();
-  return ok;
+  StoredRecordInfo info;
+  return decodeShotFile(path, out, info) == ShotBinaryReadResult::Ok;
 }
 
 bool ShotStore::erase(uint32_t id) {

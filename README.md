@@ -186,10 +186,11 @@ The flash partition retains up to
 records are removed when necessary to stay within that limit. A failed write
 therefore does not discard the existing history.
 
-Each shot uses the same versioned, compact record format in flash and when sent
-to a browser. This includes the pump events and scale readings needed to draw
-the chart, recalculate flow, download the data, or replay the shot on the
-device.
+Each shot file contains a versioned, compact EXTR record that is sent to a
+browser. Records written by current firmware append integrity and user-metadata
+fields that are not part of that wire representation. The EXTR record includes
+the pump events and scale readings needed to draw the chart, recalculate flow,
+download the data, or replay the shot on the device.
 
 Start with
 [`src/apps/extraction/history/ShotStore.h`](src/apps/extraction/history/ShotStore.h)

@@ -5,12 +5,16 @@
 #include <M5Unified.h>
 #include <nvs.h>
 
+#include <array>
 #include <cassert>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "apps/extraction/extraction_encoding.h"
 #include "apps/extraction/history/ShotStore.h"
+#include "apps/extraction/history/shot_metadata_codec.h"
+#include "util/crc32.h"
 #include "util/storage.h"
 
 TestLittleFS LittleFS;
@@ -48,6 +52,24 @@ std::vector<uint8_t> validHeader() {
   return header;
 }
 
+std::vector<uint8_t> encodedShot(const Extraction& shot) {
+  std::vector<uint8_t> data;
+  assert(
+      pump_scale::encodeCompact(shot, [&](const uint8_t* bytes, size_t size) {
+        data.insert(data.end(), bytes, bytes + size);
+        return true;
+      }));
+  return data;
+}
+
+void appendRawCrc(std::vector<uint8_t>& data) {
+  pump_scale::Crc32 crc;
+  crc.update(data.data(), data.size());
+  const size_t offset = data.size();
+  data.resize(offset + pump_scale::kShotExtractionCrcBytes);
+  pump_scale::writeU32LE(data.data() + offset, crc.value());
+}
+
 void addValidShot(uint32_t id) {
   LittleFS.addFile(shotPath(id), validHeader());
 }
@@ -57,6 +79,15 @@ Extraction encodableShot() {
   shot.version = pump_scale::kCurrentExtractionVersion;
   shot.phase = pump_scale::Phase::DONE;
   return shot;
+}
+
+std::vector<uint8_t> readFile(const std::string& path) {
+  File file = LittleFS.open(path.c_str(), "r");
+  assert(file);
+  std::vector<uint8_t> data(file.size());
+  assert(file.readBytes(reinterpret_cast<char*>(data.data()), data.size()) ==
+         data.size());
+  return data;
 }
 
 void resetStorage() {
@@ -139,9 +170,9 @@ void testBinaryReadDistinguishesMissingAndInvalidRecords() {
          pump_scale::ShotBinaryReadResult::Error);
   LittleFS.failFileOpen = false;
 
-  addValidShot(2);
+  LittleFS.addFile(shotPath(2), encodedShot(encodableShot()));
   assert(store.readBinary(2, binary) == pump_scale::ShotBinaryReadResult::Ok);
-  assert(binary.size == pump_scale::kCompactHeaderBytes);
+  assert(binary.size == encodedShot(encodableShot()).size());
 }
 
 void testColdMutationsRemainDiscoverable() {
@@ -279,6 +310,115 @@ void testSaveMaintainsWarmMembership() {
   assert(LittleFS.directoryOpenCalls == saveOpenCalls);
 }
 
+void testSaveAppendsAndValidatesAbsentEnvelope() {
+  resetStorage();
+  const Extraction shot = encodableShot();
+  size_t rawSize = 0;
+  assert(pump_scale::encodeCompactSize(shot, rawSize));
+
+  ShotStore store;
+  assert(store.save(shot));
+  const std::vector<uint8_t> stored = readFile(shotPath(1));
+  assert(stored.size() == rawSize + pump_scale::kShotExtractionCrcBytes +
+                              pump_scale::kShotMetadataFooterBytes);
+
+  pump_scale::ShotMetadataFooter footer{};
+  const uint8_t* encodedFooter =
+      stored.data() + stored.size() - pump_scale::kShotMetadataFooterBytes;
+  assert(pump_scale::decodeShotMetadataFooter(encodedFooter, stored.size(),
+                                              footer) ==
+         pump_scale::ShotMetadataFooterReadResult::Supported);
+  assert(footer.state == pump_scale::ShotMetadataStoredState::Absent);
+  assert(footer.rawLength == rawSize);
+  assert(footer.payloadCapacity == 0);
+  assert(pump_scale::validateShotMetadataEnvelope(footer, nullptr, 0,
+                                                  encodedFooter));
+
+  pump_scale::Crc32 extractionCrc;
+  extractionCrc.update(stored.data(), rawSize);
+  assert(pump_scale::readU32LE(stored.data() + rawSize) ==
+         extractionCrc.value());
+
+  pump_scale::ShotBinary canonical;
+  assert(store.readBinary(1, canonical) ==
+         pump_scale::ShotBinaryReadResult::Ok);
+  assert(canonical.size == rawSize);
+  assert(std::memcmp(canonical.data.get(), stored.data(), rawSize) == 0);
+}
+
+void testSaveRejectsCorruptReadback() {
+  resetStorage();
+  LittleFS.corruptNextWrittenFileOnClose = true;
+
+  ShotStore store;
+  assert(!store.save(encodableShot()));
+  assert(!LittleFS.hasFile(shotPath(1)));
+}
+
+void testRawCrcAndMetadataAreValidatedIndependently() {
+  resetStorage();
+  std::vector<uint8_t> stored = encodedShot(encodableShot());
+  const size_t rawSize = stored.size();
+  appendRawCrc(stored);
+
+  constexpr std::array<uint8_t, 7> json = {'{', '"', 'x', '"', ':', '1', '}'};
+  constexpr size_t capacity = 32;
+  stored.insert(stored.end(), json.begin(), json.end());
+  stored.resize(rawSize + pump_scale::kShotExtractionCrcBytes + capacity, 0xA5);
+  std::array<uint8_t, pump_scale::kShotMetadataFooterBytes> footer{};
+  assert(pump_scale::encodeShotMetadataFooter(
+      pump_scale::ShotMetadataStoredState::Active,
+      static_cast<uint32_t>(rawSize), json.data(), json.size(), capacity,
+      footer.data()));
+  stored.insert(stored.end(), footer.begin(), footer.end());
+  LittleFS.addFile(shotPath(1), stored);
+
+  ShotStore store;
+  pump_scale::ShotBinary binary;
+  LittleFS.resetBytesRead();
+  assert(store.readBinary(1, binary) == pump_scale::ShotBinaryReadResult::Ok);
+  assert(LittleFS.bytesRead() == rawSize + pump_scale::kShotExtractionCrcBytes);
+
+  Extraction decoded;
+  LittleFS.resetBytesRead();
+  assert(store.load(1, decoded));
+  assert(LittleFS.bytesRead() == rawSize + pump_scale::kShotExtractionCrcBytes);
+
+  LittleFS.xorFileByte(shotPath(1), stored.size() - 1, 1);
+  assert(store.readBinary(1, binary) == pump_scale::ShotBinaryReadResult::Ok);
+
+  LittleFS.xorFileByte(shotPath(1), 8, 1);
+  assert(store.readBinary(1, binary) ==
+         pump_scale::ShotBinaryReadResult::Invalid);
+}
+
+void testChecksumOnlyAndPartialChecksumRecords() {
+  resetStorage();
+  std::vector<uint8_t> checksumOnly = encodedShot(encodableShot());
+  appendRawCrc(checksumOnly);
+  LittleFS.addFile(shotPath(1), checksumOnly);
+
+  ShotStore store;
+  pump_scale::ShotBinary binary;
+  assert(store.readBinary(1, binary) == pump_scale::ShotBinaryReadResult::Ok);
+  LittleFS.xorFileByte(shotPath(1), 8, 1);
+  assert(store.readBinary(1, binary) ==
+         pump_scale::ShotBinaryReadResult::Invalid);
+
+  std::vector<uint8_t> partialChecksum = encodedShot(encodableShot());
+  partialChecksum.push_back(0);
+  partialChecksum.push_back(0);
+  LittleFS.addFile(shotPath(2), partialChecksum);
+  assert(store.readBinary(2, binary) ==
+         pump_scale::ShotBinaryReadResult::Invalid);
+
+  std::vector<uint8_t> truncatedMetadata = encodedShot(encodableShot());
+  appendRawCrc(truncatedMetadata);
+  truncatedMetadata.push_back(0);
+  LittleFS.addFile(shotPath(3), truncatedMetadata);
+  assert(store.readBinary(3, binary) == pump_scale::ShotBinaryReadResult::Ok);
+}
+
 void testSaveRotatesAFullWarmCache() {
   resetStorage();
   for (uint32_t id = 1; id <= ShotStore::kMaxShots; ++id) addValidShot(id);
@@ -388,6 +528,10 @@ int main() {
   testEraseFromExactCapacityRebuildsCache();
   testEraseFromOverflowPromotesNewestHiddenRecord();
   testSaveMaintainsWarmMembership();
+  testSaveAppendsAndValidatesAbsentEnvelope();
+  testSaveRejectsCorruptReadback();
+  testRawCrcAndMetadataAreValidatedIndependently();
+  testChecksumOnlyAndPartialChecksumRecords();
   testSaveRotatesAFullWarmCache();
   testRetentionRemovesNamedRecordFromWarmCache();
   testFailedWriteAdvancesColdRevision();

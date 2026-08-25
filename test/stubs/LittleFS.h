@@ -94,7 +94,9 @@ class TestLittleFS : public fs::FS {
     failFileOpen = false;
     failMkdir = false;
     reverseDirectoryOrder = false;
+    corruptNextWrittenFileOnClose = false;
     _control->failWrites = false;
+    _control->bytesRead = 0;
     directoryOpenCalls = 0;
   }
 
@@ -107,7 +109,15 @@ class TestLittleFS : public fs::FS {
     return files.find(path) != files.end();
   }
 
+  void xorFileByte(const std::string& path, size_t index, uint8_t mask) {
+    const auto found = files.find(path);
+    if (found == files.end() || index >= found->second->size()) return;
+    (*found->second)[index] ^= mask;
+  }
+
   void setFailWrites(bool fail) { _control->failWrites = fail; }
+  void resetBytesRead() { _control->bytesRead = 0; }
+  size_t bytesRead() const { return _control->bytesRead; }
 
   bool beginSucceeds = true;
   bool formatSucceeds = true;
@@ -121,6 +131,7 @@ class TestLittleFS : public fs::FS {
   bool failFileOpen = false;
   bool failMkdir = false;
   bool reverseDirectoryOrder = false;
+  bool corruptNextWrittenFileOnClose = false;
   unsigned directoryOpenCalls = 0;
   std::set<std::string> failedRemovals;
 
