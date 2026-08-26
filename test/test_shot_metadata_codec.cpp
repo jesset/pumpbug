@@ -142,13 +142,13 @@ void testFooterClassificationAndCorruption() {
   noMagic[0] = 'X';
   assert(decodeShotMetadataFooter(noMagic.data(),
                                   kRawLength + kEnvelopeOverhead + 2, footer) ==
-         ShotMetadataFooterReadResult::NoFooter);
+         ShotMetadataFooterReadResult::MagicMismatch);
 
   auto unsupported = encoded;
   unsupported[4] = 2;
   assert(decodeShotMetadataFooter(unsupported.data(),
                                   kRawLength + kEnvelopeOverhead + 2, footer) ==
-         ShotMetadataFooterReadResult::Unsupported);
+         ShotMetadataFooterReadResult::UnsupportedVersion);
 
   auto unknownState = encoded;
   unknownState[5] = 3;

@@ -308,6 +308,18 @@ void ExtractionController::registerWith(HttpServer& server) {
                     [this](WebServer& s) {
                       pump_scale::handleShotHistory(s, _shotStore);
                     }},
+          HttpRoute{"/shot-metadata", HTTP_GET,
+                    [this](WebServer& s) {
+                      pump_scale::handleShotMetadataGet(s, _shotStore);
+                    }},
+          HttpRoute{"/shot-metadata", HTTP_PUT,
+                    [this](WebServer& s) {
+                      pump_scale::handleShotMetadataPut(s, _shotStore);
+                    }},
+          HttpRoute{"/shot-metadata", HTTP_DELETE,
+                    [this](WebServer& s) {
+                      pump_scale::handleShotMetadataDelete(s, _shotStore);
+                    }},
           HttpRoute{"/loaded", HTTP_POST,
                     [this](WebServer& s) { _handleSetLoaded(s); }},
       });
@@ -432,8 +444,8 @@ void ExtractionController::_handleSetLoaded(WebServer& server) {
                 "{\"error\":\"shot history unavailable\"}");
     return;
   }
-  ShotMeta meta;
-  if (!_shotStore.readMeta(static_cast<uint32_t>(id), meta)) {
+  ShotSummary summary;
+  if (!_shotStore.readSummary(static_cast<uint32_t>(id), summary)) {
     server.send(404, "application/json", "{\"error\":\"no such shot\"}");
     return;
   }

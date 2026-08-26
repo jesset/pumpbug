@@ -42,13 +42,16 @@ class File {
     if (!_valid || _directory || !_data || (_control && _control->failWrites)) {
       return 0;
     }
-    _data->insert(_data->end(), source, source + length);
+    if (_position + length > _data->size()) {
+      _data->resize(_position + length);
+    }
+    std::memcpy(_data->data() + _position, source, length);
     _position += length;
     return length;
   }
 
   bool seek(size_t position) {
-    if (!_valid || _directory || !_data || position > _data->size()) {
+    if (!_valid || _directory || !_data) {
       return false;
     }
     _position = position;

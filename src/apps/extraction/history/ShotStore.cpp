@@ -17,6 +17,7 @@
 #include "shot_id_reservation.h"
 #include "shot_metadata_codec.h"
 #include "util/crc32.h"
+#include "util/json_validate.h"
 #include "util/scoped_lock.h"
 #include "util/storage.h"
 #include "util/storage_file_access.h"
@@ -53,21 +54,39 @@ bool isValidShotHeader(const uint8_t* header, size_t size) {
   return size == kCompactHeaderBytes && hasSupportedShotHeader(header);
 }
 
-struct StoredRecordInfo {
+struct StoredExtractionInfo {
   size_t rawLength = 0;
-  bool hasExtractionCrc = false;
+  uint32_t crc = 0;
+  bool hasStoredCrc = false;
+
+  size_t storedLength() const {
+    return rawLength + (hasStoredCrc ? kShotExtractionCrcBytes : 0);
+  }
+};
+
+struct StoredMetadataInfo {
+  ShotUserMetadata metadata;
+  ShotMetadataFooter footer;
+  size_t payloadCapacity = 0;
+};
+
+enum class StoredMetadataReadResult : uint8_t {
+  Valid,
+  NoValidFooter,
+  UnsupportedVersion,
+  Error,
 };
 
 using StoredRecordDecoder = std::function<bool(const WireSource&)>;
 
 // Reads the EXTR data through the decoder and checks its CRC if present.
 // Metadata bytes after the CRC are ignored.
-ShotBinaryReadResult readStoredExtraction(storage::FileReader& file,
-                                          size_t fileSize,
-                                          uint8_t* encodedExtractionBytes,
-                                          const StoredRecordDecoder& decoder,
-                                          StoredRecordInfo& out) {
-  out = StoredRecordInfo{};
+ShotStoreReadResult readStoredExtraction(storage::FileReader& file,
+                                         size_t fileSize,
+                                         uint8_t* encodedExtractionBytes,
+                                         const StoredRecordDecoder& decoder,
+                                         StoredExtractionInfo& out) {
+  out = StoredExtractionInfo{};
   Crc32 computedExtractionCrc;
   bool readError = false;
   const size_t capacity = std::min(fileSize, kMaxCompactRecordBytes);
@@ -85,88 +104,164 @@ ShotBinaryReadResult readStoredExtraction(storage::FileReader& file,
     return true;
   };
   if (!decoder(source)) {
-    return readError ? ShotBinaryReadResult::Error
-                     : ShotBinaryReadResult::Invalid;
+    return readError ? ShotStoreReadResult::Error
+                     : ShotStoreReadResult::InvalidRecord;
   }
 
+  out.crc = computedExtractionCrc.value();
+
   const size_t trailingBytes = fileSize - out.rawLength;
-  if (trailingBytes == 0) return ShotBinaryReadResult::Ok;
+  if (trailingBytes == 0) return ShotStoreReadResult::Ok;
   if (trailingBytes < kShotExtractionCrcBytes) {
-    return ShotBinaryReadResult::Invalid;
+    return ShotStoreReadResult::InvalidRecord;
   }
 
   uint8_t encodedExtractionCrc[kShotExtractionCrcBytes];
   if (!file.readExactly(encodedExtractionCrc, sizeof(encodedExtractionCrc))) {
-    return ShotBinaryReadResult::Error;
+    return ShotStoreReadResult::Error;
   }
   if (readU32LE(encodedExtractionCrc) != computedExtractionCrc.value()) {
-    return ShotBinaryReadResult::Invalid;
+    return ShotStoreReadResult::InvalidRecord;
   }
-  out.hasExtractionCrc = true;
-  return ShotBinaryReadResult::Ok;
+  out.hasStoredCrc = true;
+  return ShotStoreReadResult::Ok;
 }
 
-bool verifyRecord(const char* path, size_t expectedRawLength) {
-  storage::FileReader file;
-  if (file.open(path) != storage::FileOpenResult::Opened) return false;
-
-  const size_t fileSize = file.size();
-  StoredRecordInfo info;
-  if (readStoredExtraction(file, fileSize, nullptr, scanCompact, info) !=
-          ShotBinaryReadResult::Ok ||
-      info.rawLength != expectedRawLength || !info.hasExtractionCrc ||
-      fileSize != expectedRawLength + kShotExtractionCrcBytes +
-                      kShotMetadataFooterBytes) {
-    return false;
+// Reads and validates the user metadata at the end of the file.
+StoredMetadataReadResult readStoredMetadata(storage::FileReader& file,
+                                            size_t fileSize,
+                                            StoredMetadataInfo& out) {
+  out = StoredMetadataInfo{};
+  if (fileSize < kShotMetadataFooterBytes) {
+    return StoredMetadataReadResult::NoValidFooter;
   }
 
   uint8_t encodedFooter[kShotMetadataFooterBytes];
   if (!file.seek(fileSize - sizeof(encodedFooter)) ||
       !file.readExactly(encodedFooter, sizeof(encodedFooter))) {
-    return false;
+    return StoredMetadataReadResult::Error;
   }
-  ShotMetadataFooter footer;
-  return decodeShotMetadataFooter(encodedFooter, fileSize, footer) ==
-             ShotMetadataFooterReadResult::Supported &&
-         footer.state == ShotMetadataStoredState::Absent &&
-         footer.rawLength == expectedRawLength && footer.jsonLength == 0 &&
-         validateShotMetadataEnvelope(footer, nullptr, 0, encodedFooter);
+
+  const auto footerResult =
+      decodeShotMetadataFooter(encodedFooter, fileSize, out.footer);
+  switch (footerResult) {
+    case ShotMetadataFooterReadResult::Supported:
+      break;
+    case ShotMetadataFooterReadResult::UnsupportedVersion:
+      out = StoredMetadataInfo{};
+      out.metadata.available = true;
+      out.metadata.state = ShotUserMetadataState::Unsupported;
+      return StoredMetadataReadResult::UnsupportedVersion;
+    case ShotMetadataFooterReadResult::MagicMismatch:
+    case ShotMetadataFooterReadResult::Corrupt:
+      out = StoredMetadataInfo{};
+      return StoredMetadataReadResult::NoValidFooter;
+  }
+  if (out.footer.rawLength < kCompactHeaderBytes ||
+      out.footer.rawLength > kMaxCompactRecordBytes) {
+    // While this may mean that the footer or the data is corrupt, we can only
+    // know for sure by examining the EXTR and making sure this is not part of a
+    // legacy record that matches the magic by chance.
+    out = StoredMetadataInfo{};
+    return StoredMetadataReadResult::NoValidFooter;
+  }
+
+  out.payloadCapacity = out.footer.payloadCapacity;
+  if (out.footer.jsonLength != 0) {
+    out.metadata.json.resize(out.footer.jsonLength);
+    if (!file.seek(out.footer.rawLength + kShotExtractionCrcBytes) ||
+        !file.readExactly(reinterpret_cast<uint8_t*>(out.metadata.json.data()),
+                          out.metadata.json.size())) {
+      out.metadata.json.clear();
+      return StoredMetadataReadResult::Error;
+    }
+  }
+  if (!validateShotMetadataEnvelope(
+          out.footer,
+          reinterpret_cast<const uint8_t*>(out.metadata.json.data()),
+          out.metadata.json.size(), encodedFooter)) {
+    out.metadata.json.clear();
+    out = StoredMetadataInfo{};
+    // While this may mean that the footer or the data is corrupt, we can only
+    // know for sure by examining the EXTR and making sure this is not part of a
+    // legacy record that matches the magic by chance.
+    return StoredMetadataReadResult::NoValidFooter;
+  }
+
+  out.metadata.crc32 = out.footer.metadataCrc;
+  out.metadata.available = true;
+  switch (out.footer.state) {
+    case ShotMetadataStoredState::Absent:
+      out.metadata.state = ShotUserMetadataState::Absent;
+      break;
+    case ShotMetadataStoredState::Active:
+      out.metadata.state = ShotUserMetadataState::Active;
+      break;
+    case ShotMetadataStoredState::Cleared:
+      out.metadata.state = ShotUserMetadataState::Cleared;
+      break;
+  }
+  return StoredMetadataReadResult::Valid;
 }
 
-ShotBinaryReadResult openShotFile(const char* path, storage::FileReader& file) {
+// Discerns whether the absence of a valid footer is because it's a legacy bare
+// record (metadata absent) or because of potential damage.
+StoredMetadataInfo resolveMetadataWithoutValidFooter(
+    size_t fileSize, const StoredExtractionInfo& extraction) {
+  StoredMetadataInfo out;
+  out.metadata.available = true;
+  if (fileSize == extraction.storedLength()) {
+    // Legacy bare record with no metadata at the end
+    out.metadata.state = ShotUserMetadataState::Absent;
+    return out;
+  }
+
+  // Extra bytes at the end that don't end in a valid footer. Metadata was
+  // truncated or damaged.
+  out.metadata.state = ShotUserMetadataState::Corrupt;
+  if (fileSize > extraction.storedLength()) {
+    const size_t tailBytes = fileSize - extraction.storedLength();
+    if (tailBytes >= kShotMetadataFooterBytes) {
+      out.payloadCapacity = tailBytes - kShotMetadataFooterBytes;
+    }
+  }
+  return out;
+}
+
+ShotStoreReadResult openShotFile(const char* path, storage::FileReader& file) {
   switch (file.open(path)) {
     case storage::FileOpenResult::Opened:
-      return ShotBinaryReadResult::Ok;
+      return ShotStoreReadResult::Ok;
     case storage::FileOpenResult::Missing:
-      return ShotBinaryReadResult::Missing;
+      return ShotStoreReadResult::Missing;
     case storage::FileOpenResult::Error:
-      return ShotBinaryReadResult::Error;
+      return ShotStoreReadResult::Error;
   }
-  return ShotBinaryReadResult::Error;
+  return ShotStoreReadResult::Error;
 }
 
 // Returns the validated, encoded (wire) extraction data without the appended
 // envelope.
-ShotBinaryReadResult readShotFileBytes(const char* path,
-                                       std::unique_ptr<uint8_t[]>& encodedBytes,
-                                       StoredRecordInfo& info) {
+ShotStoreReadResult readShotFileBytes(const char* path,
+                                      std::unique_ptr<uint8_t[]>& encodedBytes,
+                                      StoredExtractionInfo& info) {
   storage::FileReader file;
   const auto opened = openShotFile(path, file);
-  if (opened != ShotBinaryReadResult::Ok) return opened;
+  if (opened != ShotStoreReadResult::Ok) return opened;
 
   const size_t capacity = std::min(file.size(), kMaxCompactRecordBytes);
   encodedBytes.reset(new (std::nothrow) uint8_t[capacity]);
-  if (!encodedBytes) return ShotBinaryReadResult::Error;
+  if (!encodedBytes) return ShotStoreReadResult::Error;
   return readStoredExtraction(file, file.size(), encodedBytes.get(),
                               scanCompact, info);
 }
 
 // Returns a validated, decoded Extraction.
-ShotBinaryReadResult decodeShotFile(const char* path, Extraction& decoded,
-                                    StoredRecordInfo& info) {
+ShotStoreReadResult decodeShotFile(const char* path, Extraction& decoded,
+                                   StoredExtractionInfo& info) {
   storage::FileReader file;
   const auto opened = openShotFile(path, file);
-  if (opened != ShotBinaryReadResult::Ok) return opened;
+  if (opened != ShotStoreReadResult::Ok) return opened;
 
   const StoredRecordDecoder decoder = [&](const WireSource& source) {
     return decodeCompact(source, decoded);
@@ -198,6 +293,88 @@ bool writeRecord(storage::FileWriter& file, const Extraction& ext,
       !file.writeExactly(footer, sizeof(footer))) {
     return false;
   }
+  return true;
+}
+
+ShotUserMetadataWriteResult validateMetadataWriteInput(
+    ShotMetadataStoredState state, const uint8_t* json, size_t jsonLength) {
+  if (jsonLength > kMaxShotMetadataJsonBytes) {
+    return ShotUserMetadataWriteResult::TooLarge;
+  }
+  if (state != ShotMetadataStoredState::Active) {
+    return json == nullptr && jsonLength == 0
+               ? ShotUserMetadataWriteResult::Ok
+               : ShotUserMetadataWriteResult::Error;
+  }
+  if (json == nullptr || jsonLength == 0) {
+    return ShotUserMetadataWriteResult::InvalidJson;
+  }
+  switch (json::validateObject(reinterpret_cast<const char*>(json), jsonLength,
+                               kMaxShotMetadataJsonBytes,
+                               kMaxShotMetadataJsonNesting)) {
+    case json::ObjectValidationResult::Valid:
+      return ShotUserMetadataWriteResult::Ok;
+    case json::ObjectValidationResult::TooLarge:
+      return ShotUserMetadataWriteResult::TooLarge;
+    case json::ObjectValidationResult::NotObject:
+      return ShotUserMetadataWriteResult::NotObject;
+    case json::ObjectValidationResult::InvalidUtf8:
+    case json::ObjectValidationResult::InvalidJson:
+      return ShotUserMetadataWriteResult::InvalidJson;
+  }
+  return ShotUserMetadataWriteResult::InvalidJson;
+}
+
+bool writeStoredMetadata(storage::FileWriter& file,
+                         const StoredExtractionInfo& record,
+                         ShotMetadataStoredState state, const uint8_t* json,
+                         size_t jsonLength, size_t payloadCapacity) {
+  uint8_t encodedFooter[kShotMetadataFooterBytes];
+  if (!encodeShotMetadataFooter(state, static_cast<uint32_t>(record.rawLength),
+                                json, jsonLength, payloadCapacity,
+                                encodedFooter)) {
+    return false;
+  }
+
+  // Legacy records do not have the EXTR CRC; add it before the metadata.
+  if (!record.hasStoredCrc) {
+    uint8_t encodedExtractionCrc[kShotExtractionCrcBytes];
+    writeU32LE(encodedExtractionCrc, record.crc);
+    if (!file.seek(record.rawLength) ||
+        !file.writeExactly(encodedExtractionCrc,
+                           sizeof(encodedExtractionCrc))) {
+      return false;
+    }
+  }
+
+  const size_t payloadOffset = record.rawLength + kShotExtractionCrcBytes;
+  if (jsonLength != 0 &&
+      (!file.seek(payloadOffset) || !file.writeExactly(json, jsonLength))) {
+    return false;
+  }
+  return file.seek(payloadOffset + payloadCapacity) &&
+         file.writeExactly(encodedFooter, sizeof(encodedFooter));
+}
+
+bool verifyStoredMetadata(const char* path, size_t rawLength,
+                          ShotMetadataStoredState state, const uint8_t* json,
+                          size_t jsonLength, ShotUserMetadata& saved) {
+  storage::FileReader file;
+  if (file.open(path) != storage::FileOpenResult::Opened) return false;
+
+  StoredMetadataInfo verified;
+  if (readStoredMetadata(file, file.size(), verified) !=
+          StoredMetadataReadResult::Valid ||
+      verified.footer.rawLength != rawLength ||
+      verified.metadata.state != (state == ShotMetadataStoredState::Active
+                                      ? ShotUserMetadataState::Active
+                                      : ShotUserMetadataState::Cleared) ||
+      verified.metadata.json.size() != jsonLength ||
+      (jsonLength != 0 &&
+       std::memcmp(verified.metadata.json.data(), json, jsonLength) != 0)) {
+    return false;
+  }
+  saved = std::move(verified.metadata);
   return true;
 }
 }  // namespace
@@ -318,23 +495,46 @@ void ShotStore::_cacheRemovedShotUnlocked(uint32_t id) {
   --_cachedShotIdCount;
 }
 
-bool ShotStore::_readMetaUnlocked(uint32_t id, ShotMeta& out) {
-  out = ShotMeta{};
+bool ShotStore::_readHistoryEntryUnlocked(uint32_t id, ShotSummary& summary,
+                                          ShotUserMetadata* userMetadata) {
+  summary = ShotSummary{};
+  if (userMetadata) {
+    *userMetadata = ShotUserMetadata{};
+  }
   char path[32];
   _pathFor(id, path, sizeof(path));
-  uint8_t header[kCompactHeaderBytes];
-  if (!storage::readFilePrefix(path, header, sizeof(header)) ||
-      !isValidShotHeader(header, sizeof(header))) {
-    return false;
-  }
+  storage::FileReader file;
+  if (file.open(path) != storage::FileOpenResult::Opened) return false;
 
-  out.id = id;
-  out.beginMs = readU32LE(header + 8);
+  uint8_t header[kCompactHeaderBytes];
+  bool validHeader = false;
+  if (file.size() >= sizeof(header)) {
+    if (!file.readExactly(header, sizeof(header))) return false;
+    validHeader = isValidShotHeader(header, sizeof(header));
+  }
+  if (userMetadata) {
+    StoredMetadataInfo metadata;
+    switch (readStoredMetadata(file, file.size(), metadata)) {
+      case StoredMetadataReadResult::Valid:
+      case StoredMetadataReadResult::UnsupportedVersion:
+        *userMetadata = std::move(metadata.metadata);
+        break;
+      case StoredMetadataReadResult::NoValidFooter:
+        break;
+      case StoredMetadataReadResult::Error:
+        return false;
+    }
+  }
+  if (!validHeader) return true;
+
+  summary.available = true;
+  summary.id = id;
+  summary.beginMs = readU32LE(header + 8);
   // Unsigned subtraction preserves the duration across a millis() wrap.
-  out.durationMs = readU32LE(header + 20) - out.beginMs;
-  out.totalPumpOnMs = readU32LE(header + 24);
-  out.startUtcSec = readU32LE(header + 28);
-  out.yieldCg = readI16LE(header + 32);
+  summary.durationMs = readU32LE(header + 20) - summary.beginMs;
+  summary.totalPumpOnMs = readU32LE(header + 24);
+  summary.startUtcSec = readU32LE(header + 28);
+  summary.yieldCg = readI16LE(header + 32);
   return true;
 }
 
@@ -352,7 +552,25 @@ bool ShotStore::_writeRecordUnlocked(const Extraction& ext, uint32_t id,
     }
     written = writeRecord(file, ext, encodedSize) && file.close();
   }
-  if (written && verifyRecord(path, encodedSize)) return true;
+
+  bool verified = false;
+  if (written) {
+    storage::FileReader file;
+    if (file.open(path) == storage::FileOpenResult::Opened) {
+      StoredExtractionInfo extraction;
+      const auto extractionResult = readStoredExtraction(
+          file, file.size(), nullptr, scanCompact, extraction);
+      if (extractionResult == ShotStoreReadResult::Ok &&
+          extraction.rawLength == encodedSize && extraction.hasStoredCrc) {
+        StoredMetadataInfo metadata;
+        verified = readStoredMetadata(file, file.size(), metadata) ==
+                       StoredMetadataReadResult::Valid &&
+                   metadata.metadata.state == ShotUserMetadataState::Absent &&
+                   metadata.footer.rawLength == encodedSize;
+      }
+    }
+  }
+  if (verified) return true;
 
   if (!LittleFS.remove(path)) {
     M5_LOGW("ShotStore: could not remove incomplete %s", path);
@@ -439,32 +657,209 @@ bool ShotStore::page(uint32_t before, size_t limit, std::vector<uint32_t>& ids,
   return true;
 }
 
-bool ShotStore::readMeta(uint32_t id, ShotMeta& out) {
+bool ShotStore::readSummary(uint32_t id, ShotSummary& out) {
   Lock lock(_mutex);
-  return _readMetaUnlocked(id, out);
+  return _readHistoryEntryUnlocked(id, out) && out.available;
 }
 
-ShotBinaryReadResult ShotStore::readBinary(uint32_t id, ShotBinary& out) {
+bool ShotStore::readHistoryEntry(uint32_t id, ShotHistoryEntry& out) {
   Lock lock(_mutex);
-  out = ShotBinary{};
+  out = ShotHistoryEntry{};
+  return _readHistoryEntryUnlocked(id, out.summary, &out.userMetadata);
+}
+
+ShotStoreReadResult ShotStore::readEncodedExtraction(uint32_t id,
+                                                     EncodedExtraction& out) {
+  Lock lock(_mutex);
+  out = EncodedExtraction{};
   char path[32];
   _pathFor(id, path, sizeof(path));
   std::unique_ptr<uint8_t[]> data;
-  StoredRecordInfo info;
+  StoredExtractionInfo info;
   const auto result = readShotFileBytes(path, data, info);
-  if (result == ShotBinaryReadResult::Ok) {
+  if (result == ShotStoreReadResult::Ok) {
     out.data = std::move(data);
     out.size = info.rawLength;
   }
   return result;
 }
 
+ShotStoreReadResult ShotStore::readStoredFile(uint32_t id,
+                                              storage::FileSnapshot& out) {
+  Lock lock(_mutex);
+  out = storage::FileSnapshot{};
+  char path[32];
+  _pathFor(id, path, sizeof(path));
+  storage::FileReader file;
+  switch (file.open(path)) {
+    case storage::FileOpenResult::Missing:
+      return ShotStoreReadResult::Missing;
+    case storage::FileOpenResult::Error:
+      return ShotStoreReadResult::Error;
+    case storage::FileOpenResult::Opened:
+      break;
+  }
+  const size_t fileSize = file.size();
+  if (fileSize > kMaxRecoverableShotFileBytes) {
+    M5_LOGE("ShotStore: recovery file too large size=%u limit=%u",
+            static_cast<unsigned>(fileSize),
+            static_cast<unsigned>(kMaxRecoverableShotFileBytes));
+    return ShotStoreReadResult::Error;
+  }
+  return out.read(file, kMaxRecoverableShotFileBytes)
+             ? ShotStoreReadResult::Ok
+             : ShotStoreReadResult::Error;
+}
+
 bool ShotStore::load(uint32_t id, Extraction& out) {
   Lock lock(_mutex);
   char path[32];
   _pathFor(id, path, sizeof(path));
-  StoredRecordInfo info;
-  return decodeShotFile(path, out, info) == ShotBinaryReadResult::Ok;
+  StoredExtractionInfo info;
+  return decodeShotFile(path, out, info) == ShotStoreReadResult::Ok;
+}
+
+ShotStoreReadResult ShotStore::readUserMetadata(uint32_t id,
+                                                ShotUserMetadata& out) {
+  Lock lock(_mutex);
+  out = ShotUserMetadata{};
+  char path[32];
+  _pathFor(id, path, sizeof(path));
+  storage::FileReader file;
+  const auto opened = openShotFile(path, file);
+  if (opened != ShotStoreReadResult::Ok) return opened;
+
+  StoredMetadataInfo metadata;
+  switch (readStoredMetadata(file, file.size(), metadata)) {
+    case StoredMetadataReadResult::Valid:
+    case StoredMetadataReadResult::UnsupportedVersion:
+      out = std::move(metadata.metadata);
+      return ShotStoreReadResult::Ok;
+    case StoredMetadataReadResult::Error:
+      return ShotStoreReadResult::Error;
+    case StoredMetadataReadResult::NoValidFooter:
+      break;
+  }
+
+  // Differentiate between metadata absent in a legacy record without a footer,
+  // and record with corrupt metadata by finding out if there's extra bytes
+  // after the extraction data.
+  if (!file.seek(0)) return ShotStoreReadResult::Error;
+  StoredExtractionInfo extraction;
+  const auto extractionResult =
+      readStoredExtraction(file, file.size(), nullptr, scanCompact, extraction);
+  if (extractionResult != ShotStoreReadResult::Ok) return extractionResult;
+  out = resolveMetadataWithoutValidFooter(file.size(), extraction).metadata;
+  return ShotStoreReadResult::Ok;
+}
+
+ShotUserMetadataWriteResult ShotStore::_writeUserMetadataUnlocked(
+    uint32_t id, const uint8_t* json, size_t jsonLength,
+    ShotMetadataStoredState newState, const ShotUserMetadata& expected,
+    ShotUserMetadata& saved) {
+  const bool expectedAvailable = expected.available;
+  const ShotUserMetadataState expectedState = expected.state;
+  const uint32_t expectedCrc = expected.crc32;
+  saved = ShotUserMetadata{};
+  const auto inputResult =
+      validateMetadataWriteInput(newState, json, jsonLength);
+  if (inputResult != ShotUserMetadataWriteResult::Ok) return inputResult;
+  if (!expectedAvailable) return ShotUserMetadataWriteResult::Conflict;
+
+  char path[32];
+  _pathFor(id, path, sizeof(path));
+  StoredExtractionInfo record;
+  StoredMetadataInfo current;
+  {
+    storage::FileReader file;
+    switch (openShotFile(path, file)) {
+      case ShotStoreReadResult::Missing:
+        return ShotUserMetadataWriteResult::Missing;
+      case ShotStoreReadResult::InvalidRecord:
+        return ShotUserMetadataWriteResult::InvalidRecord;
+      case ShotStoreReadResult::Error:
+        return ShotUserMetadataWriteResult::Error;
+      case ShotStoreReadResult::Ok:
+        break;
+    }
+    const size_t fileSize = file.size();
+    const auto metadataResult = readStoredMetadata(file, fileSize, current);
+    switch (metadataResult) {
+      case StoredMetadataReadResult::Valid:
+        record.rawLength = current.footer.rawLength;
+        record.hasStoredCrc = true;
+        break;
+      case StoredMetadataReadResult::UnsupportedVersion:
+        break;
+      case StoredMetadataReadResult::Error:
+        return ShotUserMetadataWriteResult::Error;
+      case StoredMetadataReadResult::NoValidFooter:
+        if (!file.seek(0)) return ShotUserMetadataWriteResult::Error;
+        switch (readStoredExtraction(file, fileSize, nullptr, scanCompact,
+                                     record)) {
+          case ShotStoreReadResult::InvalidRecord:
+            return ShotUserMetadataWriteResult::InvalidRecord;
+          case ShotStoreReadResult::Missing:
+          case ShotStoreReadResult::Error:
+            return ShotUserMetadataWriteResult::Error;
+          case ShotStoreReadResult::Ok:
+            break;
+        }
+        current = resolveMetadataWithoutValidFooter(fileSize, record);
+        break;
+    }
+  }
+
+  if (current.metadata.state != expectedState ||
+      current.metadata.crc32 != expectedCrc) {
+    return ShotUserMetadataWriteResult::Conflict;
+  }
+  if (current.metadata.state == ShotUserMetadataState::Unsupported) {
+    return ShotUserMetadataWriteResult::Unsupported;
+  }
+  if (newState == ShotMetadataStoredState::Cleared &&
+      current.metadata.state == ShotUserMetadataState::Cleared) {
+    saved = current.metadata;
+    return ShotUserMetadataWriteResult::Ok;
+  }
+  if (current.metadata.state == ShotUserMetadataState::Corrupt &&
+      current.payloadCapacity > kMaxShotMetadataJsonBytes) {
+    return ShotUserMetadataWriteResult::CannotRepair;
+  }
+
+  const size_t payloadCapacity = std::max(current.payloadCapacity, jsonLength);
+
+  {
+    storage::FileWriter file;
+    if (!file.openForUpdate(path)) return ShotUserMetadataWriteResult::Error;
+    ++_revision;
+    if (!writeStoredMetadata(file, record, newState, json, jsonLength,
+                             payloadCapacity) ||
+        !file.close()) {
+      return ShotUserMetadataWriteResult::Error;
+    }
+  }
+
+  if (!verifyStoredMetadata(path, record.rawLength, newState, json, jsonLength,
+                            saved)) {
+    return ShotUserMetadataWriteResult::Error;
+  }
+  return ShotUserMetadataWriteResult::Ok;
+}
+
+ShotUserMetadataWriteResult ShotStore::writeUserMetadata(
+    uint32_t id, const uint8_t* json, size_t jsonLength,
+    const ShotUserMetadata& expected, ShotUserMetadata& saved) {
+  Lock lock(_mutex);
+  return _writeUserMetadataUnlocked(
+      id, json, jsonLength, ShotMetadataStoredState::Active, expected, saved);
+}
+
+ShotUserMetadataWriteResult ShotStore::clearUserMetadata(
+    uint32_t id, const ShotUserMetadata& expected, ShotUserMetadata& saved) {
+  Lock lock(_mutex);
+  return _writeUserMetadataUnlocked(
+      id, nullptr, 0, ShotMetadataStoredState::Cleared, expected, saved);
 }
 
 bool ShotStore::erase(uint32_t id) {
@@ -490,9 +885,11 @@ uint32_t ShotStore::newestId() {
   std::vector<uint32_t> ids;
   if (!_scanIdsUnlocked(ids)) return 0;
 
-  ShotMeta meta{};
+  ShotSummary summary{};
   for (auto it = ids.rbegin(); it != ids.rend(); ++it) {
-    if (_readMetaUnlocked(*it, meta)) return *it;
+    if (_readHistoryEntryUnlocked(*it, summary) && summary.available) {
+      return *it;
+    }
   }
   return 0;
 }

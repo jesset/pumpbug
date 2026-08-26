@@ -9,9 +9,12 @@ class WebServer;
 
 namespace pump_scale {
 
-// HTTP adapter for GET /app/extraction/shots. ShotStore owns persistence,
-// paging, and validation; this layer owns query parsing, ETags, and response
-// streaming.
+// Handles shot-history and user-metadata HTTP requests. ShotStore owns file
+// access, pagination, and metadata updates; these functions parse HTTP inputs,
+// enforce HTTP preconditions, and build responses.
 void handleShotHistory(WebServer& server, ShotStore& store);
+void handleShotMetadataGet(WebServer& server, ShotStore& store);
+void handleShotMetadataPut(WebServer& server, ShotStore& store);
+void handleShotMetadataDelete(WebServer& server, ShotStore& store);
 
 }  // namespace pump_scale

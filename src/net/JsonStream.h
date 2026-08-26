@@ -25,11 +25,9 @@ void escapeAppend(std::string& out, const char* s);
 // application-side double-buffer peaks near 2x the body size. The trade-off is
 // no Content-Length header so only chunked transfer encoding.
 //
-// What it does NOT buy: it does not make a large response safe. The bytes still
-// pile up in the lwIP TCP send buffer (also internal heap) until the client
-// ACKs, so peak heap tracks the *total response size* regardless of how small
-// the flush chunks are. Keep each response to ~2-3KB; a ~8KB body still drops
-// free heap to near zero mid-send and wedges under concurrent requests.
+// Streaming does not reduce the number of bytes sent. Network writes may block
+// while the client acknowledges queued data, so callers must still bound
+// response sizes and account for their transfer time.
 //
 // Usage — construct, write, let it fall out of scope:
 //

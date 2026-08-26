@@ -73,10 +73,10 @@ ShotMetadataFooterReadResult decodeShotMetadataFooter(
     ShotMetadataFooter& out) {
   out = ShotMetadataFooter{};
   if (!encoded || std::memcmp(encoded, kMagic, sizeof(kMagic)) != 0) {
-    return ShotMetadataFooterReadResult::NoFooter;
+    return ShotMetadataFooterReadResult::MagicMismatch;
   }
   if (encoded[4] != kVersion) {
-    return ShotMetadataFooterReadResult::Unsupported;
+    return ShotMetadataFooterReadResult::UnsupportedVersion;
   }
   if (!isKnownState(encoded[kStateOffset])) {
     return ShotMetadataFooterReadResult::Corrupt;

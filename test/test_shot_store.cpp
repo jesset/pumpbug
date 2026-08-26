@@ -35,6 +35,8 @@ namespace {
 using pump_scale::Extraction;
 using pump_scale::ShotStore;
 
+Extraction encodableShot();
+
 std::string shotPath(uint32_t id) {
   char path[32];
   std::snprintf(path, sizeof(path), "/shots/%08u.bin",
@@ -68,6 +70,23 @@ void appendRawCrc(std::vector<uint8_t>& data) {
   const size_t offset = data.size();
   data.resize(offset + pump_scale::kShotExtractionCrcBytes);
   pump_scale::writeU32LE(data.data() + offset, crc.value());
+}
+
+std::vector<uint8_t> storedShotWithMetadata(
+    pump_scale::ShotMetadataStoredState state, const std::vector<uint8_t>& json,
+    size_t capacity) {
+  std::vector<uint8_t> stored = encodedShot(encodableShot());
+  const size_t rawLength = stored.size();
+  appendRawCrc(stored);
+  stored.insert(stored.end(), json.begin(), json.end());
+  stored.resize(rawLength + pump_scale::kShotExtractionCrcBytes + capacity,
+                0xA5);
+  std::array<uint8_t, pump_scale::kShotMetadataFooterBytes> footer{};
+  assert(pump_scale::encodeShotMetadataFooter(
+      state, static_cast<uint32_t>(rawLength), json.data(), json.size(),
+      capacity, footer.data()));
+  stored.insert(stored.end(), footer.begin(), footer.end());
+  return stored;
 }
 
 void addValidShot(uint32_t id) {
@@ -145,8 +164,9 @@ void testUnreadableRecordsRemainPageMembers() {
   assert(hasMore);
   assert(total == 22);
 
-  pump_scale::ShotMeta meta{};
-  assert(!store.readMeta(firstPage.front(), meta));
+  pump_scale::ShotSummary summary{};
+  assert(!store.readSummary(firstPage.front(), summary));
+  assert(!summary.available);
   assert((page(store, firstPage.back(), 20, hasMore, total) ==
           std::vector<uint32_t>{2, 1}));
   assert(!hasMore);
@@ -156,23 +176,52 @@ void testUnreadableRecordsRemainPageMembers() {
 void testBinaryReadDistinguishesMissingAndInvalidRecords() {
   resetStorage();
   ShotStore store;
-  pump_scale::ShotBinary binary;
+  pump_scale::EncodedExtraction binary;
 
-  assert(store.readBinary(1, binary) ==
-         pump_scale::ShotBinaryReadResult::Missing);
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::Missing);
 
   LittleFS.addFile(shotPath(1), {'B', 'A', 'D'});
-  assert(store.readBinary(1, binary) ==
-         pump_scale::ShotBinaryReadResult::Invalid);
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::InvalidRecord);
 
   LittleFS.failFileOpen = true;
-  assert(store.readBinary(1, binary) ==
-         pump_scale::ShotBinaryReadResult::Error);
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::Error);
   LittleFS.failFileOpen = false;
 
   LittleFS.addFile(shotPath(2), encodedShot(encodableShot()));
-  assert(store.readBinary(2, binary) == pump_scale::ShotBinaryReadResult::Ok);
+  assert(store.readEncodedExtraction(2, binary) ==
+         pump_scale::ShotStoreReadResult::Ok);
   assert(binary.size == encodedShot(encodableShot()).size());
+}
+
+void testStoredFileRecoveryReturnsExactPhysicalBytes() {
+  resetStorage();
+  std::vector<uint8_t> stored = encodedShot(encodableShot());
+  appendRawCrc(stored);
+  stored.insert(stored.end(), {'d', 'a', 'm', 'a', 'g', 'e', 'd'});
+  LittleFS.addFile(shotPath(1), stored);
+
+  ShotStore store;
+  storage::FileSnapshot recovered;
+  assert(store.readStoredFile(1, recovered) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(recovered.size() == stored.size());
+  assert(std::equal(stored.begin(), stored.end(), recovered.data()));
+
+  std::vector<uint8_t> oversized(pump_scale::kMaxRecoverableShotFileBytes + 1,
+                                 0xA5);
+  LittleFS.addFile(shotPath(2), oversized);
+  assert(store.readStoredFile(2, recovered) ==
+         pump_scale::ShotStoreReadResult::Error);
+  assert(recovered.size() == 0);
+  assert(!recovered.data());
+
+  assert(store.readStoredFile(3, recovered) ==
+         pump_scale::ShotStoreReadResult::Missing);
+  assert(recovered.size() == 0);
+  assert(!recovered.data());
 }
 
 void testColdMutationsRemainDiscoverable() {
@@ -339,9 +388,9 @@ void testSaveAppendsAndValidatesAbsentEnvelope() {
   assert(pump_scale::readU32LE(stored.data() + rawSize) ==
          extractionCrc.value());
 
-  pump_scale::ShotBinary canonical;
-  assert(store.readBinary(1, canonical) ==
-         pump_scale::ShotBinaryReadResult::Ok);
+  pump_scale::EncodedExtraction canonical;
+  assert(store.readEncodedExtraction(1, canonical) ==
+         pump_scale::ShotStoreReadResult::Ok);
   assert(canonical.size == rawSize);
   assert(std::memcmp(canonical.data.get(), stored.data(), rawSize) == 0);
 }
@@ -374,9 +423,10 @@ void testRawCrcAndMetadataAreValidatedIndependently() {
   LittleFS.addFile(shotPath(1), stored);
 
   ShotStore store;
-  pump_scale::ShotBinary binary;
+  pump_scale::EncodedExtraction binary;
   LittleFS.resetBytesRead();
-  assert(store.readBinary(1, binary) == pump_scale::ShotBinaryReadResult::Ok);
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::Ok);
   assert(LittleFS.bytesRead() == rawSize + pump_scale::kShotExtractionCrcBytes);
 
   Extraction decoded;
@@ -385,11 +435,12 @@ void testRawCrcAndMetadataAreValidatedIndependently() {
   assert(LittleFS.bytesRead() == rawSize + pump_scale::kShotExtractionCrcBytes);
 
   LittleFS.xorFileByte(shotPath(1), stored.size() - 1, 1);
-  assert(store.readBinary(1, binary) == pump_scale::ShotBinaryReadResult::Ok);
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::Ok);
 
   LittleFS.xorFileByte(shotPath(1), 8, 1);
-  assert(store.readBinary(1, binary) ==
-         pump_scale::ShotBinaryReadResult::Invalid);
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::InvalidRecord);
 }
 
 void testChecksumOnlyAndPartialChecksumRecords() {
@@ -399,24 +450,389 @@ void testChecksumOnlyAndPartialChecksumRecords() {
   LittleFS.addFile(shotPath(1), checksumOnly);
 
   ShotStore store;
-  pump_scale::ShotBinary binary;
-  assert(store.readBinary(1, binary) == pump_scale::ShotBinaryReadResult::Ok);
+  pump_scale::EncodedExtraction binary;
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::Ok);
   LittleFS.xorFileByte(shotPath(1), 8, 1);
-  assert(store.readBinary(1, binary) ==
-         pump_scale::ShotBinaryReadResult::Invalid);
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::InvalidRecord);
 
   std::vector<uint8_t> partialChecksum = encodedShot(encodableShot());
   partialChecksum.push_back(0);
   partialChecksum.push_back(0);
   LittleFS.addFile(shotPath(2), partialChecksum);
-  assert(store.readBinary(2, binary) ==
-         pump_scale::ShotBinaryReadResult::Invalid);
+  assert(store.readEncodedExtraction(2, binary) ==
+         pump_scale::ShotStoreReadResult::InvalidRecord);
 
   std::vector<uint8_t> truncatedMetadata = encodedShot(encodableShot());
   appendRawCrc(truncatedMetadata);
   truncatedMetadata.push_back(0);
   LittleFS.addFile(shotPath(3), truncatedMetadata);
-  assert(store.readBinary(3, binary) == pump_scale::ShotBinaryReadResult::Ok);
+  assert(store.readEncodedExtraction(3, binary) ==
+         pump_scale::ShotStoreReadResult::Ok);
+}
+
+void testMetadataReadStates() {
+  resetStorage();
+  const std::vector<uint8_t> bare = encodedShot(encodableShot());
+  LittleFS.addFile(shotPath(1), bare);
+
+  std::vector<uint8_t> checksumOnly = encodedShot(encodableShot());
+  appendRawCrc(checksumOnly);
+  LittleFS.addFile(shotPath(2), checksumOnly);
+
+  const std::vector<uint8_t> json = {'{', '"', 'x', '"', ':', '1', '}'};
+  LittleFS.addFile(shotPath(3),
+                   storedShotWithMetadata(
+                       pump_scale::ShotMetadataStoredState::Active, json, 32));
+  LittleFS.addFile(shotPath(4),
+                   storedShotWithMetadata(
+                       pump_scale::ShotMetadataStoredState::Cleared, {}, 32));
+
+  std::vector<uint8_t> corrupt = storedShotWithMetadata(
+      pump_scale::ShotMetadataStoredState::Active, json, 32);
+  corrupt.back() ^= 1;
+  LittleFS.addFile(shotPath(5), corrupt);
+
+  std::vector<uint8_t> unsupported = storedShotWithMetadata(
+      pump_scale::ShotMetadataStoredState::Active, json, 32);
+  unsupported[unsupported.size() - pump_scale::kShotMetadataFooterBytes + 4] =
+      2;
+  LittleFS.addFile(shotPath(6), unsupported);
+  LittleFS.addFile(shotPath(7), {'B', 'A', 'D'});
+  LittleFS.addFile(shotPath(8), storedShotWithMetadata(
+                                    pump_scale::ShotMetadataStoredState::Active,
+                                    {'[', ']'}, 2));
+
+  ShotStore store;
+  pump_scale::ShotUserMetadata metadata;
+  LittleFS.resetBytesRead();
+  assert(store.readUserMetadata(1, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.available);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Absent);
+  assert(metadata.crc32 == 0);
+  assert(LittleFS.bytesRead() ==
+         bare.size() + pump_scale::kShotMetadataFooterBytes);
+  assert(store.readUserMetadata(2, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Absent);
+  assert(metadata.crc32 == 0);
+  assert(store.readUserMetadata(3, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Active);
+  assert(metadata.json == std::string(json.begin(), json.end()));
+  assert(metadata.crc32 != 0);
+  assert(store.readUserMetadata(4, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Cleared);
+  assert(metadata.json.empty());
+  assert(store.readUserMetadata(5, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.available);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Corrupt);
+  assert(store.readUserMetadata(6, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.available);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Unsupported);
+  assert(store.readUserMetadata(7, metadata) ==
+         pump_scale::ShotStoreReadResult::InvalidRecord);
+  assert(store.readUserMetadata(8, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Active);
+  assert(metadata.json == "[]");
+  assert(store.readUserMetadata(9, metadata) ==
+         pump_scale::ShotStoreReadResult::Missing);
+}
+
+void testMetadataListingDoesNotScanExtractionPayload() {
+  resetStorage();
+  const std::vector<uint8_t> json = {'{', '"', 'x', '"', ':', '1', '}'};
+  std::vector<uint8_t> stored = storedShotWithMetadata(
+      pump_scale::ShotMetadataStoredState::Active, json, 32);
+  stored[60] ^= 1;  // Damage EXTR outside the compact summary header.
+  LittleFS.addFile(shotPath(1), stored);
+
+  ShotStore store;
+  LittleFS.resetBytesRead();
+  pump_scale::ShotHistoryEntry entry;
+  assert(store.readHistoryEntry(1, entry));
+  assert(entry.summary.available);
+  assert(entry.userMetadata.available);
+  assert(entry.userMetadata.state == pump_scale::ShotUserMetadataState::Active);
+  assert(entry.userMetadata.json == std::string(json.begin(), json.end()));
+  assert(LittleFS.bytesRead() == pump_scale::kCompactHeaderBytes +
+                                     pump_scale::kShotMetadataFooterBytes +
+                                     json.size());
+
+  pump_scale::ShotUserMetadata metadata;
+  LittleFS.resetBytesRead();
+  assert(store.readUserMetadata(1, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Active);
+  assert(metadata.json == std::string(json.begin(), json.end()));
+  assert(LittleFS.bytesRead() ==
+         pump_scale::kShotMetadataFooterBytes + json.size());
+
+  assert(!store.readHistoryEntry(2, entry));
+
+  LittleFS.addFile(shotPath(2), encodedShot(encodableShot()));
+  assert(store.readHistoryEntry(2, entry));
+  assert(entry.summary.available);
+  assert(!entry.userMetadata.available);
+
+  std::vector<uint8_t> damagedFooter = storedShotWithMetadata(
+      pump_scale::ShotMetadataStoredState::Active, json, 32);
+  damagedFooter.back() ^= 1;
+  LittleFS.addFile(shotPath(3), damagedFooter);
+  assert(store.readHistoryEntry(3, entry));
+  assert(entry.summary.available);
+  assert(!entry.userMetadata.available);
+  assert(store.readUserMetadata(3, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Corrupt);
+
+  pump_scale::EncodedExtraction binary;
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::InvalidRecord);
+}
+
+void testMetadataUpdatesRetainExtractionAndCapacity() {
+  resetStorage();
+  const std::vector<uint8_t> raw = encodedShot(encodableShot());
+  LittleFS.addFile(shotPath(1), raw);
+
+  ShotStore store;
+  pump_scale::ShotUserMetadata metadata;
+  assert(store.readUserMetadata(1, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+
+  const std::string first = R"({"coffee":"Ethiopia","notes":"first version"})";
+  assert(store.writeUserMetadata(1,
+                                 reinterpret_cast<const uint8_t*>(first.data()),
+                                 first.size(), metadata, metadata) ==
+         pump_scale::ShotUserMetadataWriteResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Active);
+  assert(metadata.json == first);
+  assert(store.revision() == 1);
+
+  const std::vector<uint8_t> afterFirst = readFile(shotPath(1));
+  assert(std::equal(raw.begin(), raw.end(), afterFirst.begin()));
+  const size_t expectedSize = raw.size() + pump_scale::kShotExtractionCrcBytes +
+                              first.size() +
+                              pump_scale::kShotMetadataFooterBytes;
+  assert(afterFirst.size() == expectedSize);
+
+  pump_scale::EncodedExtraction binary;
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(binary.size == raw.size());
+  assert(std::memcmp(binary.data.get(), raw.data(), raw.size()) == 0);
+
+  const auto stale = pump_scale::ShotUserMetadata{};
+  pump_scale::ShotUserMetadata ignored;
+  assert(store.writeUserMetadata(1,
+                                 reinterpret_cast<const uint8_t*>(first.data()),
+                                 first.size(), stale, ignored) ==
+         pump_scale::ShotUserMetadataWriteResult::Conflict);
+  assert(store.revision() == 1);
+
+  const std::string shorter = R"({"coffee":"Kenya"})";
+  const auto firstMetadata = metadata;
+  assert(store.writeUserMetadata(
+             1, reinterpret_cast<const uint8_t*>(shorter.data()),
+             shorter.size(), firstMetadata,
+             metadata) == pump_scale::ShotUserMetadataWriteResult::Ok);
+  assert(metadata.json == shorter);
+  const std::vector<uint8_t> afterShorter = readFile(shotPath(1));
+  assert(afterShorter.size() == afterFirst.size());
+  const size_t payloadOffset = raw.size() + pump_scale::kShotExtractionCrcBytes;
+  assert(std::equal(afterFirst.begin() + payloadOffset + shorter.size(),
+                    afterFirst.end() - pump_scale::kShotMetadataFooterBytes,
+                    afterShorter.begin() + payloadOffset + shorter.size()));
+
+  const auto shorterMetadata = metadata;
+  assert(store.clearUserMetadata(1, shorterMetadata, metadata) ==
+         pump_scale::ShotUserMetadataWriteResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Cleared);
+  assert(metadata.json.empty());
+  assert(readFile(shotPath(1)).size() == expectedSize);
+  assert(store.revision() == 3);
+
+  const std::vector<uint8_t> afterClear = readFile(shotPath(1));
+  const auto clearedMetadata = metadata;
+  assert(store.clearUserMetadata(1, clearedMetadata, metadata) ==
+         pump_scale::ShotUserMetadataWriteResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Cleared);
+  assert(metadata.crc32 == clearedMetadata.crc32);
+  assert(readFile(shotPath(1)) == afterClear);
+  assert(store.revision() == 3);
+}
+
+void testMetadataRepairUsesTheParsedExtractionBoundary() {
+  resetStorage();
+  const std::vector<uint8_t> json = {'{', '}'};
+  std::vector<uint8_t> stored = storedShotWithMetadata(
+      pump_scale::ShotMetadataStoredState::Active, json, 32);
+  const size_t rawLength = encodedShot(encodableShot()).size();
+  const size_t footerOffset =
+      stored.size() - pump_scale::kShotMetadataFooterBytes;
+  pump_scale::writeU32LE(stored.data() + footerOffset + 6, 1);
+  const std::vector<uint8_t> raw(stored.begin(), stored.begin() + rawLength);
+  LittleFS.addFile(shotPath(1), stored);
+
+  ShotStore store;
+  pump_scale::ShotUserMetadata metadata;
+  assert(store.readUserMetadata(1, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Corrupt);
+
+  const std::string replacement = R"({"repaired":true})";
+  assert(store.writeUserMetadata(
+             1, reinterpret_cast<const uint8_t*>(replacement.data()),
+             replacement.size(), metadata,
+             metadata) == pump_scale::ShotUserMetadataWriteResult::Ok);
+  assert(metadata.json == replacement);
+  const std::vector<uint8_t> repaired = readFile(shotPath(1));
+  assert(std::equal(raw.begin(), raw.end(), repaired.begin()));
+}
+
+void testHealthyMetadataUpdateDoesNotDependOnExtractionIntegrity() {
+  resetStorage();
+  const std::vector<uint8_t> initial = {'{', '}'};
+  std::vector<uint8_t> stored = storedShotWithMetadata(
+      pump_scale::ShotMetadataStoredState::Active, initial, initial.size());
+  const size_t rawLength = encodedShot(encodableShot()).size();
+  stored[8] ^= 1;
+  const std::vector<uint8_t> damagedExtraction(stored.begin(),
+                                               stored.begin() + rawLength);
+  LittleFS.addFile(shotPath(1), stored);
+
+  ShotStore store;
+  pump_scale::ShotUserMetadata metadata;
+  assert(store.readUserMetadata(1, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Active);
+
+  const std::string replacement = R"({"updated":true})";
+  assert(store.writeUserMetadata(
+             1, reinterpret_cast<const uint8_t*>(replacement.data()),
+             replacement.size(), metadata,
+             metadata) == pump_scale::ShotUserMetadataWriteResult::Ok);
+  assert(metadata.json == replacement);
+
+  const std::vector<uint8_t> updated = readFile(shotPath(1));
+  assert(std::equal(damagedExtraction.begin(), damagedExtraction.end(),
+                    updated.begin()));
+  pump_scale::EncodedExtraction binary;
+  assert(store.readEncodedExtraction(1, binary) ==
+         pump_scale::ShotStoreReadResult::InvalidRecord);
+}
+
+void testMetadataGrowthLimitAndWriteFailure() {
+  resetStorage();
+  const std::vector<uint8_t> initial = {'{', '}'};
+  LittleFS.addFile(shotPath(1), storedShotWithMetadata(
+                                    pump_scale::ShotMetadataStoredState::Active,
+                                    initial, initial.size()));
+
+  ShotStore store;
+  pump_scale::ShotUserMetadata metadata;
+  assert(store.readUserMetadata(1, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+
+  std::string maximum = R"({"x":")";
+  maximum.append(pump_scale::kMaxShotMetadataJsonBytes - maximum.size() - 2,
+                 'x');
+  maximum += R"("})";
+  assert(maximum.size() == pump_scale::kMaxShotMetadataJsonBytes);
+  assert(store.writeUserMetadata(
+             1, reinterpret_cast<const uint8_t*>(maximum.data()),
+             maximum.size(), metadata,
+             metadata) == pump_scale::ShotUserMetadataWriteResult::Ok);
+  const size_t rawLength = encodedShot(encodableShot()).size();
+  assert(readFile(shotPath(1)).size() ==
+         rawLength + pump_scale::kShotExtractionCrcBytes + maximum.size() +
+             pump_scale::kShotMetadataFooterBytes);
+
+  const std::string replacement = R"({"x":"unchanged"})";
+  const auto expected = metadata;
+  const std::vector<uint8_t> beforeFailure = readFile(shotPath(1));
+  LittleFS.setFailWrites(true);
+  assert(store.writeUserMetadata(
+             1, reinterpret_cast<const uint8_t*>(replacement.data()),
+             replacement.size(), expected,
+             metadata) == pump_scale::ShotUserMetadataWriteResult::Error);
+  LittleFS.setFailWrites(false);
+  assert(readFile(shotPath(1)) == beforeFailure);
+  assert(store.revision() == 2);
+}
+
+void testMetadataRejectsUnsupportedAndOversizedTails() {
+  resetStorage();
+  const std::vector<uint8_t> json = {'{', '}'};
+  std::vector<uint8_t> unsupported = storedShotWithMetadata(
+      pump_scale::ShotMetadataStoredState::Active, json, 32);
+  unsupported[unsupported.size() - pump_scale::kShotMetadataFooterBytes + 4] =
+      2;
+  LittleFS.addFile(shotPath(1), unsupported);
+
+  std::vector<uint8_t> oversized = encodedShot(encodableShot());
+  appendRawCrc(oversized);
+  oversized.resize(oversized.size() + pump_scale::kMaxShotMetadataJsonBytes +
+                       pump_scale::kShotMetadataFooterBytes + 1,
+                   0xA5);
+  LittleFS.addFile(shotPath(2), oversized);
+
+  ShotStore store;
+  pump_scale::ShotUserMetadata metadata;
+  assert(store.readUserMetadata(1, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Unsupported);
+  pump_scale::ShotUserMetadata saved;
+  assert(
+      store.writeUserMetadata(1, json.data(), json.size(), metadata, saved) ==
+      pump_scale::ShotUserMetadataWriteResult::Unsupported);
+
+  assert(store.readUserMetadata(2, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(metadata.state == pump_scale::ShotUserMetadataState::Corrupt);
+  assert(
+      store.writeUserMetadata(2, json.data(), json.size(), metadata, saved) ==
+      pump_scale::ShotUserMetadataWriteResult::CannotRepair);
+
+  std::vector<uint8_t> tooLarge(pump_scale::kMaxShotMetadataJsonBytes + 1, 'x');
+  assert(store.writeUserMetadata(1, tooLarge.data(), tooLarge.size(), metadata,
+                                 saved) ==
+         pump_scale::ShotUserMetadataWriteResult::TooLarge);
+}
+
+void testMetadataWriteRejectsInvalidJsonWithoutChangingTheRecord() {
+  resetStorage();
+  const std::vector<uint8_t> raw = encodedShot(encodableShot());
+  LittleFS.addFile(shotPath(1), raw);
+
+  ShotStore store;
+  pump_scale::ShotUserMetadata metadata;
+  assert(store.readUserMetadata(1, metadata) ==
+         pump_scale::ShotStoreReadResult::Ok);
+
+  constexpr char empty[] = "";
+  assert(store.writeUserMetadata(1, reinterpret_cast<const uint8_t*>(empty), 0,
+                                 metadata, metadata) ==
+         pump_scale::ShotUserMetadataWriteResult::InvalidJson);
+
+  constexpr char invalid[] = "[]";
+  const std::vector<uint8_t> before = readFile(shotPath(1));
+  assert(store.writeUserMetadata(1, reinterpret_cast<const uint8_t*>(invalid),
+                                 sizeof(invalid) - 1, metadata, metadata) ==
+         pump_scale::ShotUserMetadataWriteResult::NotObject);
+
+  constexpr uint8_t bom[] = {0xEF, 0xBB, 0xBF, '{', '}'};
+  assert(store.writeUserMetadata(1, bom, sizeof(bom), metadata, metadata) ==
+         pump_scale::ShotUserMetadataWriteResult::InvalidJson);
+  assert(readFile(shotPath(1)) == before);
+  assert(store.revision() == 0);
 }
 
 void testSaveRotatesAFullWarmCache() {
@@ -521,6 +937,7 @@ int main() {
   testLazyBuildAndWarmPagination();
   testUnreadableRecordsRemainPageMembers();
   testBinaryReadDistinguishesMissingAndInvalidRecords();
+  testStoredFileRecoveryReturnsExactPhysicalBytes();
   testColdMutationsRemainDiscoverable();
   testDirectoryFailureIsNotCachedAsEmpty();
   testCacheShowsNewestRecordsWhenHistoryExceedsCap();
@@ -532,6 +949,14 @@ int main() {
   testSaveRejectsCorruptReadback();
   testRawCrcAndMetadataAreValidatedIndependently();
   testChecksumOnlyAndPartialChecksumRecords();
+  testMetadataReadStates();
+  testMetadataListingDoesNotScanExtractionPayload();
+  testMetadataUpdatesRetainExtractionAndCapacity();
+  testMetadataRepairUsesTheParsedExtractionBoundary();
+  testHealthyMetadataUpdateDoesNotDependOnExtractionIntegrity();
+  testMetadataGrowthLimitAndWriteFailure();
+  testMetadataRejectsUnsupportedAndOversizedTails();
+  testMetadataWriteRejectsInvalidJsonWithoutChangingTheRecord();
   testSaveRotatesAFullWarmCache();
   testRetentionRemovesNamedRecordFromWarmCache();
   testFailedWriteAdvancesColdRevision();

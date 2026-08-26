@@ -182,10 +182,12 @@ void HttpServer::_taskLoop() {
         M5_LOGE("HttpServer: no heap for server");
         return false;
       }
-      // "Host" is read by the IP→.local redirect path; "Cookie" by auth;
-      // "If-None-Match" by the diagnostics combined-log conditional GET.
-      const char* collected[] = {kCookieHeader, "Host", "If-None-Match"};
-      replacement->collectHeaders(collected, 3);
+      // WebServer exposes only headers registered before it starts. These are
+      // used for host routing, authentication, conditional reads, and write
+      // preconditions and request validation.
+      const char* collected[] = {kCookieHeader, "Host", "If-None-Match",
+                                 "If-Match", "Content-Type"};
+      replacement->collectHeaders(collected, 5);
       _bindRoutes(*replacement);
       WebServer* sp = replacement.get();
       sp->onNotFound([this, sp]() {

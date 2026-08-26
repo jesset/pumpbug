@@ -4,6 +4,7 @@
 #include "util/storage_file_access.h"
 
 #include <LittleFS.h>
+#include <esp_heap_caps.h>
 
 #include <map>
 #include <utility>
@@ -53,6 +54,28 @@ bool FileReader::seek(size_t offset) {
   return found != openFiles.end() && found->second.seek(offset);
 }
 
+void FileSnapshot::BufferDeleter::operator()(uint8_t* data) const {
+  heap_caps_free(data);
+}
+
+bool FileSnapshot::read(FileReader& file, size_t maximumSize) {
+  _data.reset();
+  _size = 0;
+
+  const size_t fileSize = file.size();
+  if (fileSize > maximumSize) return false;
+  if (fileSize == 0) return true;
+  if (!file.seek(0)) return false;
+
+  std::unique_ptr<uint8_t[], BufferDeleter> data(
+      static_cast<uint8_t*>(heap_caps_malloc(fileSize, MALLOC_CAP_8BIT)));
+  if (!data || !file.readExactly(data.get(), fileSize)) return false;
+
+  _data = std::move(data);
+  _size = fileSize;
+  return true;
+}
+
 FileWriter::~FileWriter() { openFiles.erase(_descriptor); }
 
 bool FileWriter::open(const char* volumePath) {
@@ -64,6 +87,22 @@ bool FileWriter::open(const char* volumePath) {
   _descriptor = nextFileDescriptor++;
   openFiles.emplace(_descriptor, std::move(file));
   return true;
+}
+
+bool FileWriter::openForUpdate(const char* volumePath) {
+  openFiles.erase(_descriptor);
+  _descriptor = -1;
+
+  File file = LittleFS.open(volumePath, "r+");
+  if (!file || file.isDirectory()) return false;
+  _descriptor = nextFileDescriptor++;
+  openFiles.emplace(_descriptor, std::move(file));
+  return true;
+}
+
+bool FileWriter::seek(size_t offset) {
+  const auto found = openFiles.find(_descriptor);
+  return found != openFiles.end() && found->second.seek(offset);
 }
 
 bool FileWriter::writeExactly(const uint8_t* source, size_t size) {
@@ -106,12 +145,6 @@ DirectoryReadResult DirectoryReader::next(const char*& name) {
   if (!handle->current) return DirectoryReadResult::End;
   name = handle->current.name();
   return DirectoryReadResult::Entry;
-}
-
-bool readFilePrefix(const char* volumePath, uint8_t* destination, size_t size) {
-  FileReader file;
-  return file.open(volumePath) == FileOpenResult::Opened &&
-         file.readExactly(destination, size);
 }
 
 FileStatus fileStatus(const char* volumePath) {

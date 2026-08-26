@@ -30,6 +30,7 @@ namespace pump_scale {
 inline constexpr size_t kShotExtractionCrcBytes = sizeof(uint32_t);
 inline constexpr size_t kShotMetadataFooterBytes = 16;
 inline constexpr size_t kMaxShotMetadataJsonBytes = 1536;
+inline constexpr size_t kMaxShotMetadataJsonNesting = 16;
 
 enum class ShotMetadataStoredState : uint8_t {
   Absent = 0,
@@ -38,9 +39,9 @@ enum class ShotMetadataStoredState : uint8_t {
 };
 
 enum class ShotMetadataFooterReadResult : uint8_t {
-  NoFooter,
+  MagicMismatch,
   Supported,
-  Unsupported,
+  UnsupportedVersion,
   Corrupt,
 };
 
@@ -61,7 +62,7 @@ bool encodeShotMetadataFooter(ShotMetadataStoredState state, uint32_t rawLength,
                               uint8_t out[kShotMetadataFooterBytes]);
 
 // Decodes footer fields and checks their relationship to the physical file
-// size. NoFooter means the final bytes do not contain the PBMD magic.
+// size. MagicMismatch means the supplied bytes do not start with PBMD.
 ShotMetadataFooterReadResult decodeShotMetadataFooter(
     const uint8_t encoded[kShotMetadataFooterBytes], size_t fileSize,
     ShotMetadataFooter& out);

@@ -5,8 +5,10 @@
 
 #include <WebServer.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 #include "net/HttpServer.h"
@@ -16,6 +18,82 @@
 namespace pump_scale {
 
 namespace {
+
+constexpr size_t kMaxListPageRows = 100;
+constexpr size_t kMaxMetadataListPageRows = 20;
+constexpr size_t kDefaultListPageRows = 20;
+
+const char* metadataStateName(ShotUserMetadataState state) {
+  switch (state) {
+    case ShotUserMetadataState::Absent:
+      return "absent";
+    case ShotUserMetadataState::Active:
+      return "active";
+    case ShotUserMetadataState::Cleared:
+      return "cleared";
+    case ShotUserMetadataState::Corrupt:
+      return "corrupt";
+    case ShotUserMetadataState::Unsupported:
+      return "unsupported";
+  }
+  return "corrupt";
+}
+
+bool metadataStateFromCode(char code, ShotUserMetadataState& state) {
+  switch (code) {
+    case 'a':
+      state = ShotUserMetadataState::Absent;
+      return true;
+    case 'v':
+      state = ShotUserMetadataState::Active;
+      return true;
+    case 'c':
+      state = ShotUserMetadataState::Cleared;
+      return true;
+    case 'x':
+      state = ShotUserMetadataState::Corrupt;
+      return true;
+    case 'u':
+      state = ShotUserMetadataState::Unsupported;
+      return true;
+  }
+  return false;
+}
+
+char metadataStateCode(ShotUserMetadataState state) {
+  switch (state) {
+    case ShotUserMetadataState::Absent:
+      return 'a';
+    case ShotUserMetadataState::Active:
+      return 'v';
+    case ShotUserMetadataState::Cleared:
+      return 'c';
+    case ShotUserMetadataState::Corrupt:
+      return 'x';
+    case ShotUserMetadataState::Unsupported:
+      return 'u';
+  }
+  return 'x';
+}
+
+void makeMetadataEtag(char* out, size_t capacity, uint32_t nonce, uint32_t id,
+                      const ShotUserMetadata& metadata) {
+  std::snprintf(out, capacity, "\"shot-meta-%08lx-%08lx-%c-%08lx\"",
+                static_cast<unsigned long>(nonce),
+                static_cast<unsigned long>(id),
+                metadataStateCode(metadata.state),
+                static_cast<unsigned long>(metadata.crc32));
+}
+
+void makeShotListEtag(char* out, size_t capacity, uint32_t nonce,
+                      uint32_t revision, uint32_t before, size_t limit,
+                      bool includeMetadata) {
+  std::snprintf(out, capacity, "W/\"shots-%08lx-%lu-%c-%lu-%lu\"",
+                static_cast<unsigned long>(nonce),
+                static_cast<unsigned long>(revision),
+                includeMetadata ? 'm' : 'p', static_cast<unsigned long>(before),
+                static_cast<unsigned long>(limit));
+}
 
 bool parseShotId(const String& s, uint32_t& out) {
   char* endp = nullptr;
@@ -34,6 +112,37 @@ bool requireShotStorage(WebServer& server) {
   return false;
 }
 
+void handleShotRecovery(WebServer& server, ShotStore& store, uint32_t id) {
+  storage::FileSnapshot file;
+  switch (store.readStoredFile(id, file)) {
+    case ShotStoreReadResult::Missing:
+      server.send(404, "application/json", "{\"error\":\"not found\"}");
+      return;
+    case ShotStoreReadResult::InvalidRecord:
+    case ShotStoreReadResult::Error:
+      server.send(500, "application/json",
+                  "{\"error\":\"record recovery read failed\"}");
+      return;
+    case ShotStoreReadResult::Ok:
+      break;
+  }
+
+  server.sendHeader("Cache-Control", "no-store");
+  server.setContentLength(file.size());
+  server.send(200, "application/octet-stream", "");
+
+  WiFiClient client = server.client();
+  size_t offset = 0;
+  while (offset != file.size()) {
+    const size_t count = std::min(file.size() - offset, size_t{512});
+    if (client.write(file.data() + offset, count) != count) {
+      client.stop();
+      return;
+    }
+    offset += count;
+  }
+}
+
 void handleShotDetail(WebServer& server, ShotStore& store) {
   uint32_t id = 0;
   if (!parseShotId(server.arg("id"), id)) {
@@ -41,6 +150,11 @@ void handleShotDetail(WebServer& server, ShotStore& store) {
     return;
   }
   if (!requireShotStorage(server)) return;
+
+  if (server.hasArg("recovery") && server.arg("recovery") == "1") {
+    handleShotRecovery(server, store, id);
+    return;
+  }
 
   // IDs are stable within one storage lifetime. The boot nonce prevents a
   // browser from reusing shot #N after the on-device erase resets the NVS id
@@ -51,19 +165,19 @@ void handleShotDetail(WebServer& server, ShotStore& store) {
                 static_cast<unsigned long>(id));
   if (httpEtagOr304(server, detailEtag)) return;
 
-  ShotBinary record;
-  switch (store.readBinary(id, record)) {
-    case ShotBinaryReadResult::Missing:
+  EncodedExtraction record;
+  switch (store.readEncodedExtraction(id, record)) {
+    case ShotStoreReadResult::Missing:
       server.send(404, "application/json", "{\"error\":\"not found\"}");
       return;
-    case ShotBinaryReadResult::Invalid:
+    case ShotStoreReadResult::InvalidRecord:
       server.send(422, "application/json", "{\"error\":\"record unreadable\"}");
       return;
-    case ShotBinaryReadResult::Error:
+    case ShotStoreReadResult::Error:
       server.send(500, "application/json",
                   "{\"error\":\"record read failed\"}");
       return;
-    case ShotBinaryReadResult::Ok:
+    case ShotStoreReadResult::Ok:
       break;
   }
 
@@ -75,53 +189,66 @@ void handleShotDetail(WebServer& server, ShotStore& store) {
                      record.size);
 }
 
-void writeShotRow(JsonStream& j, uint32_t id, const ShotMeta* meta) {
+void writeShotRow(JsonStream& j, uint32_t id, const ShotSummary& summary,
+                  bool includeMetadata, const ShotUserMetadata& userMetadata,
+                  uint32_t nonce) {
   j.open().key("id").u(id);
-  if (!meta) {
-    j.close();
-    return;
+  if (summary.available) {
+    j.key("startUtcSec")
+        .u(summary.startUtcSec)
+        .key("beginMs")
+        .u(summary.beginMs)
+        .key("durationMs")
+        .u(summary.durationMs)
+        .key("yieldCg")
+        .i(summary.yieldCg)
+        .key("totalPumpOnMs")
+        .u(summary.totalPumpOnMs);
   }
-
-  const ShotMeta& m = *meta;
-  j.key("startUtcSec")
-      .u(m.startUtcSec)
-      .key("beginMs")
-      .u(m.beginMs)
-      .key("durationMs")
-      .u(m.durationMs)
-      .key("yieldCg")
-      .i(m.yieldCg)
-      .key("totalPumpOnMs")
-      .u(m.totalPumpOnMs)
-      .close();
+  if (includeMetadata) {
+    j.key("userMetadataState")
+        .str(userMetadata.available ? metadataStateName(userMetadata.state)
+                                    : "unavailable");
+    j.key("userMetadata");
+    if (userMetadata.available &&
+        userMetadata.state == ShotUserMetadataState::Active) {
+      j.raw(userMetadata.json.data(), userMetadata.json.size());
+    } else {
+      j.null_();
+    }
+    if (userMetadata.available) {
+      j.key("userMetadataCrc").u(userMetadata.crc32);
+      char metadataEtag[64];
+      makeMetadataEtag(metadataEtag, sizeof(metadataEtag), nonce, id,
+                       userMetadata);
+      j.key("userMetadataEtag").str(metadataEtag);
+    }
+  }
+  j.close();
 }
 
 void handleShotList(WebServer& server, ShotStore& store) {
   if (!requireShotStorage(server)) return;
 
-  // If the client's ETag matches the current per-boot nonce and list revision,
-  // return 304 (Not Modified).
-  const uint32_t nonce = store.bootNonce();
-  char etag[48];
-  std::snprintf(etag, sizeof(etag), "W/\"shots-%08lx-%lu\"",
-                static_cast<unsigned long>(nonce),
-                static_cast<unsigned long>(store.revision()));
-  if (httpEtagOr304(server, etag)) return;
-
-  // Cursor + page size. before=0 -> newest page; pass the lowest id returned to
-  // fetch the next (older) page. Absent `limit` -> all, so a pre-pagination
-  // client on a stale cached bundle still gets its whole history.
+  // `before=N` returns records with IDs below N; zero starts at the newest
+  // record. `limit` defaults to 20 and is capped at 100 for summaries and 20
+  // when metadata is included.
   uint32_t before = 0;
   if (server.hasArg("before")) {
     before = static_cast<uint32_t>(
         std::strtoul(server.arg("before").c_str(), nullptr, 10));
   }
-  size_t limit = static_cast<size_t>(-1);
+  const bool includeMetadata =
+      server.hasArg("meta") && server.arg("meta") == "1";
+  const size_t maximum =
+      includeMetadata ? kMaxMetadataListPageRows : kMaxListPageRows;
+  size_t limit = kDefaultListPageRows;
   if (server.hasArg("limit")) {
     const unsigned long l =
         std::strtoul(server.arg("limit").c_str(), nullptr, 10);
-    limit = l < 1 ? 1 : (l > 100 ? 100 : static_cast<size_t>(l));
+    limit = l < 1 ? 1 : static_cast<size_t>(l);
   }
+  limit = std::min(limit, maximum);
 
   bool hasMore = false;
   size_t total = 0;
@@ -133,20 +260,18 @@ void handleShotList(WebServer& server, ShotStore& store) {
     return;
   }
 
-  // Stamp the 200's ETag from the page snapshot's revision, so validator and
-  // body describe the same moment.
-  std::snprintf(etag, sizeof(etag), "W/\"shots-%08lx-%lu\"",
-                static_cast<unsigned long>(nonce),
-                static_cast<unsigned long>(rev));
+  const uint32_t nonce = store.bootNonce();
+  char etag[80];
+  makeShotListEtag(etag, sizeof(etag), nonce, rev, before, limit,
+                   includeMetadata);
+  if (httpEtagOr304(server, etag)) return;
   server.sendHeader("ETag", etag);
 
-  // Stream the page with JsonStream (chunked, auto-flushing), reading each
-  // header on demand so the body never buffers all rows at once. The ETag
-  // header above is set before constructing JsonStream (its ctor emits 200).
+  // Send each row as it is read so memory use does not grow with the page. The
+  // ETag must be set before JsonStream starts the response in its constructor.
   JsonStream j(server);
   j.open().key("shots").arrayOpen();
   bool first = true;
-  ShotMeta meta;
   for (const uint32_t id : ids) {
     if (!first) j.comma();
     first = false;
@@ -154,7 +279,16 @@ void handleShotList(WebServer& server, ShotStore& store) {
     // This keeps the cursor for the next page and the totals consistent, and
     // lets the user see when entries have been corrupted and delete them if
     // desired.
-    writeShotRow(j, id, store.readMeta(id, meta) ? &meta : nullptr);
+    ShotHistoryEntry entry;
+    bool read = false;
+    if (includeMetadata) {
+      read = store.readHistoryEntry(id, entry);
+    } else {
+      read = store.readSummary(id, entry.summary);
+    }
+    if (!read) entry = ShotHistoryEntry{};
+    writeShotRow(j, id, entry.summary, includeMetadata, entry.userMetadata,
+                 nonce);
   }
   j.arrayClose()
       .key("hasMore")
@@ -165,6 +299,159 @@ void handleShotList(WebServer& server, ShotStore& store) {
   j.finish();
 }
 
+bool requireShotId(WebServer& server, uint32_t& id) {
+  if (!server.hasArg("id") || !parseShotId(server.arg("id"), id)) {
+    server.send(400, "application/json", "{\"error\":\"bad id\"}");
+    return false;
+  }
+  return requireShotStorage(server);
+}
+
+bool requireJsonRequestBody(WebServer& server, String& body) {
+  String contentType = server.header("Content-Type");
+  const int parameter = contentType.indexOf(';');
+  if (parameter >= 0) contentType.remove(parameter);
+  contentType.trim();
+  if (!contentType.equalsIgnoreCase("application/json")) {
+    server.send(415, "application/json",
+                "{\"error\":\"Content-Type must be application/json\"}");
+    return false;
+  }
+
+  body = server.arg("plain");
+  const int contentLength = server.clientContentLength();
+  if (contentLength < 0 ||
+      body.length() != static_cast<unsigned int>(contentLength)) {
+    server.send(400, "application/json",
+                "{\"error\":\"invalid request body\"}");
+    return false;
+  }
+  return true;
+}
+
+bool requireMetadataPrecondition(WebServer& server, const ShotStore& store,
+                                 uint32_t id, ShotUserMetadata& expected) {
+  if (!server.hasHeader("If-Match")) {
+    server.send(428, "application/json",
+                "{\"error\":\"If-Match is required\"}");
+    return false;
+  }
+
+  const std::string value = server.header("If-Match").c_str();
+  unsigned long nonce = 0;
+  unsigned long etagId = 0;
+  unsigned long crc = 0;
+  char stateCode = '\0';
+  int consumed = 0;
+  if (std::sscanf(value.c_str(), "\"shot-meta-%8lx-%8lx-%c-%8lx\"%n", &nonce,
+                  &etagId, &stateCode, &crc, &consumed) != 4 ||
+      consumed != static_cast<int>(value.size()) ||
+      !metadataStateFromCode(stateCode, expected.state)) {
+    server.send(400, "application/json", "{\"error\":\"invalid If-Match\"}");
+    return false;
+  }
+  expected.available = true;
+  expected.crc32 = static_cast<uint32_t>(crc);
+
+  char canonical[64];
+  makeMetadataEtag(canonical, sizeof(canonical), static_cast<uint32_t>(nonce),
+                   static_cast<uint32_t>(etagId), expected);
+  if (value != canonical) {
+    server.send(400, "application/json", "{\"error\":\"invalid If-Match\"}");
+    return false;
+  }
+  if (nonce != store.bootNonce() || etagId != id) {
+    server.send(412, "application/json",
+                "{\"error\":\"shot metadata changed; reload before saving\"}");
+    return false;
+  }
+  return true;
+}
+
+void setMetadataResponseHeaders(WebServer& server,
+                                const ShotUserMetadata& metadata,
+                                const char* etag) {
+  server.sendHeader("ETag", etag);
+  server.sendHeader("Cache-Control", "private, no-cache");
+  server.sendHeader("X-Shot-Metadata-State", metadataStateName(metadata.state));
+  char crc[16];
+  std::snprintf(crc, sizeof(crc), "%lu",
+                static_cast<unsigned long>(metadata.crc32));
+  server.sendHeader("X-Shot-Metadata-Crc", crc);
+}
+
+bool sendReadableMetadata(WebServer& server, uint32_t id,
+                          const ShotStore& store,
+                          const ShotUserMetadata& metadata, bool allow304) {
+  char etag[64];
+  makeMetadataEtag(etag, sizeof(etag), store.bootNonce(), id, metadata);
+
+  if (metadata.state == ShotUserMetadataState::Corrupt) {
+    setMetadataResponseHeaders(server, metadata, etag);
+    server.send(409, "application/json",
+                "{\"error\":\"shot metadata is corrupt\"}");
+    return false;
+  }
+  if (metadata.state == ShotUserMetadataState::Unsupported) {
+    setMetadataResponseHeaders(server, metadata, etag);
+    server.send(409, "application/json",
+                "{\"error\":\"shot metadata version is unsupported\"}");
+    return false;
+  }
+
+  if (allow304 && httpEtagOr304(server, etag)) return true;
+  setMetadataResponseHeaders(server, metadata, etag);
+  if (metadata.state == ShotUserMetadataState::Active) {
+    server.send(200, "application/json", metadata.json.c_str());
+  } else {
+    server.send(200, "application/json", "{}");
+  }
+  return true;
+}
+
+void sendMetadataWriteError(WebServer& server,
+                            ShotUserMetadataWriteResult result) {
+  switch (result) {
+    case ShotUserMetadataWriteResult::Missing:
+      server.send(404, "application/json", "{\"error\":\"not found\"}");
+      return;
+    case ShotUserMetadataWriteResult::InvalidRecord:
+      server.send(422, "application/json", "{\"error\":\"record unreadable\"}");
+      return;
+    case ShotUserMetadataWriteResult::InvalidJson:
+      server.send(400, "application/json",
+                  "{\"error\":\"invalid shot metadata JSON\"}");
+      return;
+    case ShotUserMetadataWriteResult::NotObject:
+      server.send(400, "application/json",
+                  "{\"error\":\"shot metadata must be a JSON object\"}");
+      return;
+    case ShotUserMetadataWriteResult::Unsupported:
+      server.send(409, "application/json",
+                  "{\"error\":\"shot metadata version is unsupported\"}");
+      return;
+    case ShotUserMetadataWriteResult::Conflict:
+      server.send(
+          412, "application/json",
+          "{\"error\":\"shot metadata changed; reload before saving\"}");
+      return;
+    case ShotUserMetadataWriteResult::CannotRepair:
+      server.send(409, "application/json",
+                  "{\"error\":\"damaged shot metadata cannot be replaced\"}");
+      return;
+    case ShotUserMetadataWriteResult::TooLarge:
+      server.send(413, "application/json",
+                  "{\"error\":\"shot metadata is too large\"}");
+      return;
+    case ShotUserMetadataWriteResult::Error:
+      server.send(500, "application/json",
+                  "{\"error\":\"could not update shot metadata\"}");
+      return;
+    case ShotUserMetadataWriteResult::Ok:
+      return;
+  }
+}
+
 }  // namespace
 
 void handleShotHistory(WebServer& server, ShotStore& store) {
@@ -173,6 +460,62 @@ void handleShotHistory(WebServer& server, ShotStore& store) {
   } else {
     handleShotList(server, store);
   }
+}
+
+void handleShotMetadataGet(WebServer& server, ShotStore& store) {
+  uint32_t id = 0;
+  if (!requireShotId(server, id)) return;
+
+  ShotUserMetadata metadata;
+  switch (store.readUserMetadata(id, metadata)) {
+    case ShotStoreReadResult::Missing:
+      server.send(404, "application/json", "{\"error\":\"not found\"}");
+      return;
+    case ShotStoreReadResult::InvalidRecord:
+      server.send(422, "application/json", "{\"error\":\"record unreadable\"}");
+      return;
+    case ShotStoreReadResult::Error:
+      server.send(500, "application/json",
+                  "{\"error\":\"shot metadata read failed\"}");
+      return;
+    case ShotStoreReadResult::Ok:
+      break;
+  }
+  sendReadableMetadata(server, id, store, metadata, true);
+}
+
+void handleShotMetadataPut(WebServer& server, ShotStore& store) {
+  uint32_t id = 0;
+  if (!requireShotId(server, id)) return;
+  String body;
+  if (!requireJsonRequestBody(server, body)) return;
+  ShotUserMetadata expected;
+  if (!requireMetadataPrecondition(server, store, id, expected)) return;
+
+  ShotUserMetadata saved;
+  const auto result = store.writeUserMetadata(
+      id, reinterpret_cast<const uint8_t*>(body.c_str()), body.length(),
+      expected, saved);
+  if (result != ShotUserMetadataWriteResult::Ok) {
+    sendMetadataWriteError(server, result);
+    return;
+  }
+  sendReadableMetadata(server, id, store, saved, false);
+}
+
+void handleShotMetadataDelete(WebServer& server, ShotStore& store) {
+  uint32_t id = 0;
+  if (!requireShotId(server, id)) return;
+  ShotUserMetadata expected;
+  if (!requireMetadataPrecondition(server, store, id, expected)) return;
+
+  ShotUserMetadata saved;
+  const auto result = store.clearUserMetadata(id, expected, saved);
+  if (result != ShotUserMetadataWriteResult::Ok) {
+    sendMetadataWriteError(server, result);
+    return;
+  }
+  sendReadableMetadata(server, id, store, saved, false);
 }
 
 }  // namespace pump_scale

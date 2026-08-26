@@ -5,12 +5,14 @@
 
 #include <M5Unified.h>
 #include <dirent.h>
+#include <esp_heap_caps.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <cstdio>
+#include <utility>
 
 #include "storage.h"
 
@@ -54,6 +56,14 @@ bool writeExactly(int descriptor, const uint8_t* source, size_t size) {
     }
   }
   return true;
+}
+
+uint8_t* allocateSnapshotBuffer(size_t size) {
+  void* data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!data) {
+    data = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  }
+  return static_cast<uint8_t*>(data);
 }
 
 }  // namespace
@@ -103,6 +113,28 @@ bool FileReader::seek(size_t offset) {
   return ::lseek(_descriptor, static_cast<off_t>(offset), SEEK_SET) >= 0;
 }
 
+void FileSnapshot::BufferDeleter::operator()(uint8_t* data) const {
+  heap_caps_free(data);
+}
+
+bool FileSnapshot::read(FileReader& file, size_t maximumSize) {
+  _data.reset();
+  _size = 0;
+
+  const size_t fileSize = file.size();
+  if (fileSize > maximumSize) return false;
+  if (fileSize == 0) return true;
+  if (!file.seek(0)) return false;
+
+  std::unique_ptr<uint8_t[], BufferDeleter> data(
+      allocateSnapshotBuffer(fileSize));
+  if (!data || !file.readExactly(data.get(), fileSize)) return false;
+
+  _data = std::move(data);
+  _size = fileSize;
+  return true;
+}
+
 FileWriter::~FileWriter() {
   if (_descriptor >= 0) ::close(_descriptor);
 }
@@ -115,6 +147,21 @@ bool FileWriter::open(const char* volumePath) {
 
   _descriptor = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
   return _descriptor >= 0;
+}
+
+bool FileWriter::openForUpdate(const char* volumePath) {
+  if (_descriptor >= 0 && !close()) return false;
+
+  char path[64];
+  if (!absolutePath(volumePath, path, sizeof(path))) return false;
+
+  _descriptor = ::open(path, O_WRONLY);
+  return _descriptor >= 0;
+}
+
+bool FileWriter::seek(size_t offset) {
+  return _descriptor >= 0 &&
+         ::lseek(_descriptor, static_cast<off_t>(offset), SEEK_SET) >= 0;
 }
 
 bool FileWriter::writeExactly(const uint8_t* source, size_t size) {
@@ -170,17 +217,6 @@ DirectoryReadResult DirectoryReader::next(const char*& name) {
     return DirectoryReadResult::Error;
   }
   return DirectoryReadResult::End;
-}
-
-bool readFilePrefix(const char* volumePath, uint8_t* destination, size_t size) {
-  char path[64];
-  if (!absolutePath(volumePath, path, sizeof(path))) return false;
-
-  const int descriptor = ::open(path, O_RDONLY);
-  if (descriptor < 0) return false;
-  const bool read = readExactly(descriptor, destination, size);
-  ::close(descriptor);
-  return read;
 }
 
 FileStatus fileStatus(const char* volumePath) {

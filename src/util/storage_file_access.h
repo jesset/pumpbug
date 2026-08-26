@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace storage {
 
@@ -33,6 +34,22 @@ class FileReader {
   size_t _size = 0;
 };
 
+class FileSnapshot {
+ public:
+  bool read(FileReader& file, size_t maximumSize);
+
+  const uint8_t* data() const { return _data.get(); }
+  size_t size() const { return _size; }
+
+ private:
+  struct BufferDeleter {
+    void operator()(uint8_t* data) const;
+  };
+
+  std::unique_ptr<uint8_t[], BufferDeleter> _data;
+  size_t _size = 0;
+};
+
 class FileWriter {
  public:
   FileWriter() = default;
@@ -43,6 +60,9 @@ class FileWriter {
 
   // Opens the file for writing, replacing any existing contents.
   bool open(const char* volumePath);
+  // Opens an existing file without truncating it.
+  bool openForUpdate(const char* volumePath);
+  bool seek(size_t offset);
   bool writeExactly(const uint8_t* source, size_t size);
   // Reports close errors. Destruction also closes an open file but cannot
   // report whether that close succeeded.
@@ -70,8 +90,6 @@ class DirectoryReader {
  private:
   void* _handle = nullptr;
 };
-
-bool readFilePrefix(const char* volumePath, uint8_t* destination, size_t size);
 
 FileStatus fileStatus(const char* volumePath);
 
