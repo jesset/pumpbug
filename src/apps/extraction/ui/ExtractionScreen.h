@@ -209,6 +209,7 @@ class ExtractionScreen : public Screen {
     // controller-selected display shot when one exists.
     const pump_scale::Extraction* summaryShot = nullptr;
     pump_scale::FlowSeriesStats summaryFlow;
+    uint32_t summaryShotId = 0;
   };
   ScreenModel modelFor() const;
   // Fill the gauge/chart fields of an evolving extraction (Live or Replay).

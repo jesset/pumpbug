@@ -41,18 +41,19 @@ function parseStatePayload(dv, off) {
   const pouring = (flags & 0x08) !== 0;
   const hasDisplayShot = (flags & 0x10) !== 0;
   const pumpDecayCandidate = (flags & 0x20) !== 0;
+  const latestShotSaved = (flags & 0x40) !== 0;
   return {
     active,
     pouring,
     pumpDecayCandidate,
     hasDisplayShot,
+    latestShotSaved,
     phase: PHASE[dv.getUint8(off + 1)] || 'IDLE',
     scale: SCALE_STATE[dv.getUint8(off + 2)] || 'idle',
     storage: SHOT_STORAGE_STATUS[dv.getUint8(off + 3)] || 'unavailable',
     elapsedMs: dv.getUint32(off + 4, true),
-    savedSeq: dv.getUint32(off + 8, true),
-    currentWeightCg: hasWeight ? dv.getInt16(off + 12, true) : null,
-    currentYieldCg: hasYield ? dv.getInt16(off + 14, true) : null,
+    currentWeightCg: hasWeight ? dv.getInt16(off + 8, true) : null,
+    currentYieldCg: hasYield ? dv.getInt16(off + 10, true) : null,
   };
 }
 
@@ -78,9 +79,16 @@ function parseSampleBatchPayload(dv, off, beginMs) {
   return { firstIdx, count, samples };
 }
 
+function parseFinalRecordPayload(dv, off) {
+  return {
+    shotId: dv.getUint32(off, true),
+    shot: parseExtractionFromDv(dv, off + 4),
+  };
+}
+
 function handleStatePacket(dv, payloadOff, shotSeq) {
   const s = parseStatePayload(dv, payloadOff);
-  s.acceptedSeq = shotSeq;
+  s.shotSeq = shotSeq;
   // Receipt time anchors the pouring timer between rate-limited STATEs.
   s.rxAtMs = performance.now();
 
@@ -92,7 +100,7 @@ function handleStatePacket(dv, payloadOff, shotSeq) {
   // our stale in-flight model on that transition; otherwise renderLive
   // would keep the abandoned samples around.
   if (inflight && wasPumping && s.phase === 'IDLE' &&
-      s.acceptedSeq === state.acceptedSeq) {
+      s.shotSeq === state.shotSeq) {
     inflight = null;
   }
 
@@ -105,8 +113,10 @@ function handleStatePacket(dv, payloadOff, shotSeq) {
   // drop ours, or the card would show a shot the device no longer has.
   if (!s.hasDisplayShot) lastRecord = null;
 
+  const historyChanged = state && s.latestShotSaved &&
+    (s.shotSeq !== state.shotSeq || !state.latestShotSaved);
   state = s;
-  maybeRefreshShots();
+  if (historyChanged) maybeRefreshShots();
 }
 
 function handleCurrentRecordPacket(dv, payloadOff, shotSeq) {
@@ -121,7 +131,7 @@ function handleCurrentRecordPacket(dv, payloadOff, shotSeq) {
 
 function handleFinalRecordPacket(dv, payloadOff, shotSeq) {
   try {
-    const ext = parseExtractionFromDv(dv, payloadOff);
+    const { shotId, shot: ext } = parseFinalRecordPayload(dv, payloadOff);
     // Our watched in-flight graduating: the header's shotSeq advances past
     // the seq the in-flight was bound to, so retire it into the record slot
     // and badge it "new" for a while. An unchanged shotSeq means a stored
@@ -136,6 +146,7 @@ function handleFinalRecordPacket(dv, payloadOff, shotSeq) {
       setTimeout(() => scheduleRender(), FRESH_SHOT_BADGE_MS + 250);
     }
     ext.shotSeq = shotSeq;
+    ext.shotId = shotId || null;
     lastRecord = ext;
   } catch (err) {
     console.warn('parseExtraction failed', err);

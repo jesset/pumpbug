@@ -18,8 +18,8 @@ namespace pump_scale {
 struct ExtractionStatusSnapshot {
   bool active = false;
   Phase currentPhase = Phase::IDLE;
-  uint32_t acceptedSeq = 0;
-  uint32_t savedSeq = 0;  // last shot persisted to LittleFS
+  uint32_t shotSeq = 0;
+  bool latestAcceptedShotSaved = true;
   storage::MountState storageState = storage::MountState::Unavailable;
   uint32_t currentBeginMs = 0;  // 0 when phase is IDLE
   uint32_t currentElapsedMs = 0;

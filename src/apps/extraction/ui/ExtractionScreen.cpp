@@ -611,6 +611,7 @@ ExtractionScreen::ScreenModel ExtractionScreen::modelFor() const {
         _controller.effectiveLastShotSelection();
     m.summaryShot = selection.shot;
     if (selection.flowStats) m.summaryFlow = *selection.flowStats;
+    m.summaryShotId = selection.shotId;
   }
   return m;
 }
@@ -686,6 +687,7 @@ void ExtractionScreen::fillLastShotModel(ScreenModel& m) const {
   m.pumpDecayCandidate = false;
   m.summaryShot = last;
   if (selection.flowStats) m.summaryFlow = *selection.flowStats;
+  m.summaryShotId = selection.shotId;
   // liveState is only consulted by Live/Replay; keep it well-defined anyway.
   m.liveState = ScreenModel::LiveState::Ready;
 }
@@ -952,7 +954,13 @@ void ExtractionScreen::drawLiveView(LGFX_Sprite* c, const ScreenModel& m) {
 void ExtractionScreen::drawLastShotView(LGFX_Sprite* c,
                                         const ScreenModel& m) const {
   constexpr int pad = 2;
-  const int headerH = drawHeader(c, "LAST SHOT", theme::accent(), theme::bg());
+  const bool landscape = c->width() > c->height();
+  char title[32] = "LAST SHOT";
+  if (landscape && m.summaryShotId != 0) {
+    std::snprintf(title, sizeof(title), "LAST SHOT #%lu",
+                  static_cast<unsigned long>(m.summaryShotId));
+  }
+  const int headerH = drawHeader(c, title, theme::accent(), theme::bg());
   const layout::rect body =
       layout::inset({0, headerH, c->width(), c->height() - headerH}, pad);
   drawLastShot(c, m, body);
@@ -1242,6 +1250,7 @@ void ExtractionScreen::drawSummaryPanel(LGFX_Sprite* c, const ScreenModel& m,
                                         layout::rect box) const {
   constexpr int pad = 3;
   const bool horizontalMetrics = box.w > box.h;
+  const bool portraitScreen = c->width() <= c->height();
   c->fillSmoothRoundRect(box.x, box.y, box.w, box.h, pad, theme::surface());
   const layout::rect contentBox = layout::inset(box, pad);
 
@@ -1257,14 +1266,7 @@ void ExtractionScreen::drawSummaryPanel(LGFX_Sprite* c, const ScreenModel& m,
   const float grams = haveWeight ? e.yieldCg / 100.0f : 0.0f;
   const uint32_t durMs = pump_scale::extractionElapsedMs(e, millis());
 
-  const char* cause = nullptr;
-  switch (e.endCause) {
-    case pump_scale::EndCause::TIMEOUT:
-      cause = "TIMEOUT";
-      break;
-    default:
-      break;
-  }
+  const bool timedOut = e.endCause == pump_scale::EndCause::TIMEOUT;
 
   char weightVal[16];
   char durationVal[16];
@@ -1311,13 +1313,20 @@ void ExtractionScreen::drawSummaryPanel(LGFX_Sprite* c, const ScreenModel& m,
     details[detailCount++] = {label, value, color, labelColor, icon};
   };
 
-  addDetail("TIME", durText, theme::fg());
+  addDetail(timedOut ? "TIMEOUT" : "TIME", durText,
+            timedOut ? theme::warn() : theme::fg(),
+            timedOut ? theme::warn() : theme::dim());
   addDetail("FLOW", flowText, theme::fg());
   if (hasTarget) {
     addDetail("TARGET", targetVal, theme::fg(), theme::accent(),
               ui::drawTargetIcon);
   }
-  if (cause) addDetail("END", cause, theme::warn());
+  char shotIdText[16];
+  if (portraitScreen && m.summaryShotId != 0) {
+    std::snprintf(shotIdText, sizeof(shotIdText), "#%lu",
+                  static_cast<unsigned long>(m.summaryShotId));
+    addDetail("SHOT", shotIdText, theme::fg());
+  }
 
   auto drawWhenYield = [&](layout::rect yieldBox) {
     const int whenH = layout::clampedSpan(yieldBox.h, 5, 12, 24);

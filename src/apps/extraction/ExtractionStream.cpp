@@ -80,7 +80,7 @@ void ExtractionStream::_writePacketHeader(uint8_t* hdr, uint8_t type,
   hdr[1] = 'T';
   hdr[2] = 'K';
   hdr[3] = 'P';
-  hdr[4] = 4;  // version
+  hdr[4] = kPacketVersion;
   hdr[5] = type;
   writeU32LE(hdr + 6, streamSeq);
   writeU32LE(hdr + 10, shotSeq);
@@ -130,8 +130,8 @@ bool ExtractionStream::_writeSseFrame(WiFiClient& client, uint32_t streamSeq,
 
 bool ExtractionStream::_sendState(WiFiClient& client, Session& s,
                                   const ExtractionStatusSnapshot& snap) {
-  uint8_t buf[kPacketHeaderBytes + 16];
-  _writePacketHeader(buf, kPacketState, s.streamSeq, snap.acceptedSeq);
+  uint8_t buf[kPacketHeaderBytes + 12];
+  _writePacketHeader(buf, kPacketState, s.streamSeq, snap.shotSeq);
   uint8_t flags = 0;
   if (snap.active) flags |= 0x01;
   if (snap.hasCurrentWeight) flags |= 0x02;
@@ -139,18 +139,15 @@ bool ExtractionStream::_sendState(WiFiClient& client, Session& s,
   if (snap.currentPouring) flags |= 0x08;
   if (snap.hasDisplayShot) flags |= 0x10;
   if (snap.pumpSignalState == PumpSignalState::DecayCandidate) flags |= 0x20;
+  if (snap.latestAcceptedShotSaved) flags |= 0x40;
   buf[kPacketHeaderBytes + 0] = flags;
   buf[kPacketHeaderBytes + 1] = static_cast<uint8_t>(snap.currentPhase);
   buf[kPacketHeaderBytes + 2] = static_cast<uint8_t>(snap.scaleState);
   buf[kPacketHeaderBytes + 3] = static_cast<uint8_t>(snap.storageState);
   writeU32LE(buf + kPacketHeaderBytes + 4, snap.currentElapsedMs);
-  // acceptedSeq identifies the latest real shot. savedSeq advances after its
-  // file is verified, so the client can both refresh history and report an
-  // unsuccessful latest save.
-  writeU32LE(buf + kPacketHeaderBytes + 8, snap.savedSeq);
-  writeI16LE(buf + kPacketHeaderBytes + 12,
+  writeI16LE(buf + kPacketHeaderBytes + 8,
              snap.hasCurrentWeight ? snap.currentWeightCg : INT16_MIN);
-  writeI16LE(buf + kPacketHeaderBytes + 14,
+  writeI16LE(buf + kPacketHeaderBytes + 10,
              snap.hasCurrentYield ? snap.currentYieldCg : INT16_MIN);
 
   if (!_writeSseFrame(client, s.streamSeq, buf, sizeof(buf))) return false;
@@ -177,13 +174,14 @@ bool ExtractionStream::_sendHeartbeat(WiFiClient& client, Session& s,
 
 bool ExtractionStream::_sendFullRecord(WiFiClient& client, Session& s,
                                        uint8_t type, const Extraction& ext,
-                                       uint32_t shotSeq) {
+                                       uint32_t shotSeq, uint32_t shotId) {
   size_t bodyLen = 0;
   if (!encodeCompactSize(ext, bodyLen)) {
     M5_LOGE("ExtractionStream: record version cannot be encoded");
     return false;
   }
-  const size_t totalLen = kPacketHeaderBytes + bodyLen;
+  const size_t recordPrefixBytes = type == kPacketFinalRecord ? 4 : 0;
+  const size_t totalLen = kPacketHeaderBytes + recordPrefixBytes + bodyLen;
   std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[totalLen]);
   if (!buf) {
     M5_LOGE("ExtractionStream: no heap for %u-byte record packet",
@@ -191,9 +189,12 @@ bool ExtractionStream::_sendFullRecord(WiFiClient& client, Session& s,
     return false;
   }
   _writePacketHeader(buf.get(), type, s.streamSeq, shotSeq);
+  if (recordPrefixBytes != 0) {
+    writeU32LE(buf.get() + kPacketHeaderBytes, shotId);
+  }
 
   // append the encoded EXTR body after the packet header.
-  size_t pos = kPacketHeaderBytes;
+  size_t pos = kPacketHeaderBytes + recordPrefixBytes;
   const WireSink sink = [&](const uint8_t* data, size_t len) {
     if (pos + len > totalLen) return false;
     std::memcpy(buf.get() + pos, data, len);
@@ -317,14 +318,12 @@ bool ExtractionStream::_stateShouldSend(const ExtractionStatusSnapshot& cur,
                                         uint32_t nowMs) const {
   if (!s.lastSentStateInit) return true;
   const ExtractionStatusSnapshot& last = s.lastSentState;
-  // Significant transitions always go out promptly. savedSeq counts as
-  // significant because the client's History tab keys its cache invalidation
-  // off it, and the verified save happens after the accepted-shot transition.
+  // Significant transitions always go out promptly.
   if (cur.active != last.active) return true;
   if (cur.currentPhase != last.currentPhase) return true;
   if (cur.scaleState != last.scaleState) return true;
-  if (cur.acceptedSeq != last.acceptedSeq) return true;
-  if (cur.savedSeq != last.savedSeq) return true;
+  if (cur.shotSeq != last.shotSeq) return true;
+  if (cur.latestAcceptedShotSaved != last.latestAcceptedShotSaved) return true;
   if (cur.storageState != last.storageState) return true;
   if (cur.hasCurrentWeight != last.hasCurrentWeight) return true;
   if (cur.hasCurrentYield != last.hasCurrentYield) return true;
@@ -367,9 +366,11 @@ void ExtractionStream::_runSession(WiFiClient& client) {
 
   auto sendDisplayRecord = [&](const ExtractionStatusSnapshot& status) {
     if (status.hasDisplayShot) {
-      const uint32_t recordSeq =
-          _controller->snapshotExtraction(*ext, /*wantDisplayShot=*/true);
-      if (!_sendFullRecord(client, s, kPacketFinalRecord, *ext, recordSeq)) {
+      uint32_t recordSeq = 0;
+      uint32_t shotId = 0;
+      if (_controller->snapshotDisplayShot(*ext, recordSeq, shotId) &&
+          !_sendFullRecord(client, s, kPacketFinalRecord, *ext, recordSeq,
+                           shotId)) {
         return false;
       }
     }
@@ -406,14 +407,13 @@ void ExtractionStream::_runSession(WiFiClient& client) {
   if (!_sendState(client, s, snap)) return;
   if (!sendDisplayRecord(snap)) return;
   if (snap.active && snap.currentPhase != Phase::IDLE) {
-    const uint32_t recordSeq =
-        _controller->snapshotExtraction(*ext, /*wantDisplayShot=*/false);
+    const uint32_t recordSeq = _controller->snapshotCurrentExtraction(*ext);
     // Graduation may land between the independent status and record
     // snapshots. Defer the new in-flight record so the next liveSeq tickle
     // sends its predecessor's FINAL_RECORD first.
     const bool recordActive =
         ext->phase == Phase::RUNNING || ext->phase == Phase::POST_PUMP;
-    if (recordActive && recordSeq == snap.acceptedSeq &&
+    if (recordActive && recordSeq == snap.shotSeq &&
         !_sendCurrentRecord(client, s, *ext, recordSeq)) {
       return;
     }
@@ -461,8 +461,7 @@ void ExtractionStream::_runSession(WiFiClient& client) {
             snap.currentSampleCount > s.lastSentSampleIdx;
         if (maybeNewInFlight || maybePhaseChanged || maybeNewSamples) {
           const uint32_t recordSeq =
-              _controller->snapshotExtraction(*ext,
-                                              /*wantDisplayShot=*/false);
+              _controller->snapshotCurrentExtraction(*ext);
           // The status copy is only a prefilter. A controller update can land
           // before this full-record copy, so packet selection must use the
           // record that will actually be sent.
@@ -476,7 +475,7 @@ void ExtractionStream::_runSession(WiFiClient& client) {
 
           // If a shot graduated between snapshots, wait for the next liveSeq
           // tickle so FINAL_RECORD remains ahead of the next CURRENT_RECORD.
-          if (recordActive && recordSeq == snap.acceptedSeq) {
+          if (recordActive && recordSeq == snap.shotSeq) {
             if (needFullRecord) {
               if (!_sendCurrentRecord(client, s, *ext, recordSeq)) {
                 break;
@@ -497,7 +496,7 @@ void ExtractionStream::_runSession(WiFiClient& client) {
     }
 
     if (millis() - s.lastPacketMs > kHeartbeatIntervalMs) {
-      if (!_sendHeartbeat(client, s, snap.acceptedSeq)) break;
+      if (!_sendHeartbeat(client, s, snap.shotSeq)) break;
     }
 
     vTaskDelay(pdMS_TO_TICKS(kPollDelayMs));

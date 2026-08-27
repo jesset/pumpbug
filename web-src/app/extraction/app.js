@@ -27,7 +27,6 @@ let view = 'live';
 let shots = null;
 let shotsHasMore = false;
 let shotsTotal = 0;
-let lastShotsSavedSeq = -1;
 let selectedShotId = null;
 let selectedShot = null;
 let selectedShotError = null;
@@ -122,7 +121,7 @@ function appendStorageWarning(app, currentState) {
   if (currentState.storage === 'unavailable') {
     app.append(el('p', { class: 'storage-warning' },
       'Shot history unavailable. Check the device screen.'));
-  } else if (currentState.acceptedSeq !== currentState.savedSeq) {
+  } else if (!currentState.latestShotSaved) {
     app.append(el('p', { class: 'storage-warning' },
       'Couldn’t save the latest shot.'));
   }

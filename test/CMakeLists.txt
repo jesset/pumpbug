@@ -165,6 +165,7 @@ add_test(
     "${NODE_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_extraction_constants_js.js"
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/stream.js"
 )
 
 add_test(

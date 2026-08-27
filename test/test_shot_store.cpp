@@ -229,7 +229,7 @@ void testColdMutationsRemainDiscoverable() {
   addValidShot(1);
 
   ShotStore store;
-  assert(store.save(encodableShot()));
+  assert(store.save(encodableShot()) == 2);
   assert(store.erase(1));
 
   bool hasMore = false;

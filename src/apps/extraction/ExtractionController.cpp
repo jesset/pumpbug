@@ -137,12 +137,9 @@ ExtractionController::TickOutcome ExtractionController::tick(
         _recorder.current().phase == Phase::DONE) {
       _recorder.clear();
     } else if (finalizeOutcome == FinalizeOutcome::Accepted) {
-      // A stored shot loaded for replay remains the user's chosen display shot
-      // while spurious pump windows are rejected. Once a real shot graduates,
-      // it becomes the genuine last shot and supersedes the loaded replay slot.
-      // This call is also what advances _displayShotSeq for the graduated shot
-      // (pushing the FINAL_RECORD to web clients) — keep it unconditional.
-      clearLoadedShot();
+      // A real shot supersedes any record loaded for replay. Its display
+      // revision advances after persistence supplies the stored ID.
+      dropLoadedShot();
     }
     const Extraction& curAfter = _recorder.current();
     out.phase = curAfter.phase;
@@ -176,8 +173,6 @@ ExtractionController::TickOutcome ExtractionController::tick(
                     scaleStateChanged || out.alertState.stopNowEdge ||
                     loadedShotChanged;
   out.loadedShotChanged = loadedShotChanged;
-  if (out.frameNeeded) _liveSeq.fetch_add(1, std::memory_order_release);
-
   // The counter follows shot graduation, not filesystem retention. Keep its
   // NVS write outside _mutex for the same reason as shot persistence below.
   if (finalizeOutcome == FinalizeOutcome::Accepted &&
@@ -185,8 +180,9 @@ ExtractionController::TickOutcome ExtractionController::tick(
     ESP_LOGE("ExtractionController", "shot counter write failed");
   }
   persistAcceptedShot();
+  if (out.frameNeeded) _liveSeq.fetch_add(1, std::memory_order_release);
   out.latestAcceptedShotSaved =
-      _lastAcceptedSeq == _lastSavedSeq.load(std::memory_order_acquire);
+      _lastAcceptedSeq == 0 || _lastAcceptedShotId != 0;
   return out;
 }
 
@@ -270,6 +266,7 @@ ExtractionController::observeFinishedExtraction() {
   _lastAcceptedFlowStats = computeFlowSeriesStats(
       _lastAcceptedShot.samples, _lastAcceptedShot.sampleCount);
   _lastAcceptedSeq = seq;
+  _lastAcceptedShotId = 0;
   return FinalizeOutcome::Accepted;
 }
 
@@ -284,14 +281,12 @@ void ExtractionController::persistAcceptedShot() {
   // attempt.
   if (_lastAcceptedSeq == _lastAttemptedSeq) return;
   _lastAttemptedSeq = _lastAcceptedSeq;
-  if (_shotStore.save(_lastAcceptedShot)) {
-    // Release: pair with snapshotStatus()'s acquire so a client that observes
-    // the new savedSeq is guaranteed to find the file via /shots.
-    _lastSavedSeq.store(_lastAcceptedSeq, std::memory_order_release);
+  const uint32_t shotId = _shotStore.save(_lastAcceptedShot);
+  {
+    Lock lock(_mutex);
+    _lastAcceptedShotId = shotId;
+    ++_displayShotSeq;
   }
-  // Wake the SSE stream with either the new savedSeq or the accepted/saved
-  // mismatch that reports a failed save.
-  _liveSeq.fetch_add(1, std::memory_order_release);
 }
 
 void ExtractionController::registerWith(HttpServer& server) {
@@ -353,6 +348,7 @@ bool ExtractionController::processPendingLoad() {
     {
       Lock l(_mutex);
       _hasLoadedShot = true;
+      _loadedShotId = id;
       ++_displayShotSeq;
     }
     ESP_LOGI("ExtractionController", "replay: loaded shot %lu",
@@ -371,9 +367,10 @@ bool ExtractionController::processPendingLoad() {
 
 ExtractionController::LastShotSelection
 ExtractionController::effectiveLastShotSelection() const {
-  if (_hasLoadedShot) return {_loadedShot.get(), &_loadedFlowStats};
+  if (_hasLoadedShot)
+    return {_loadedShot.get(), &_loadedFlowStats, _loadedShotId};
   if (_lastAcceptedSeq != 0)
-    return {&_lastAcceptedShot, &_lastAcceptedFlowStats};
+    return {&_lastAcceptedShot, &_lastAcceptedFlowStats, _lastAcceptedShotId};
   return {};
 }
 
@@ -521,10 +518,10 @@ void ExtractionController::_handleState(WebServer& server) {
       .boolean(snap.active)
       .key("phase")
       .str(phaseName(snap.currentPhase))
-      .key("acceptedSeq")
-      .u(snap.acceptedSeq)
-      .key("savedSeq")
-      .u(snap.savedSeq)
+      .key("shotSeq")
+      .u(snap.shotSeq)
+      .key("latestShotSaved")
+      .boolean(snap.latestAcceptedShotSaved)
       .key("storage")
       .str(storage::mountStateName(snap.storageState))
       .key("scale")
@@ -546,8 +543,8 @@ void ExtractionController::_handleState(WebServer& server) {
 }
 
 void ExtractionController::snapshotStatus(ExtractionStatusSnapshot& out) const {
-  // bleScale.snapshot() is mutex-protected on its own; _active is atomic; only
-  // the recorder access needs our mutex.
+  // bleScale.snapshot() is mutex-protected on its own and _active is atomic.
+  // Recorder state uses the controller mutex.
   out.active = _active.load(std::memory_order_acquire);
   out.scaleState = bleScale.snapshot().state;
 
@@ -557,11 +554,11 @@ void ExtractionController::snapshotStatus(ExtractionStatusSnapshot& out) const {
   out.hasCurrentYield = false;
   out.currentYieldCg = 0;
 
-  // savedSeq is atomic; read without the recorder lock.
-  out.savedSeq = _lastSavedSeq.load(std::memory_order_acquire);
   out.storageState = storage::mountState();
 
   Lock l(_mutex);
+  out.latestAcceptedShotSaved =
+      _lastAcceptedSeq == 0 || _lastAcceptedShotId != 0;
   const Extraction& cur = _recorder.current();
   out.currentPhase = cur.phase;
   out.currentBeginMs = cur.beginMs;
@@ -585,25 +582,30 @@ void ExtractionController::snapshotStatus(ExtractionStatusSnapshot& out) const {
       extractionElapsedMs(cur, _replaying ? _statusNowMs : millis());
   // Accepted-shot seq drives /state and history signalling. It must advance
   // only for real shots, not flushes/refills.
-  out.acceptedSeq = _lastAcceptedSeq;
+  out.shotSeq = _lastAcceptedSeq;
   // The display shot drives the stream's FINAL_RECORD: what the device's Last
   // Shot screen shows, including a boot-restored or web-loaded shot.
   out.hasDisplayShot = hasEffectiveLastShot();
   out.displayShotSeq = _displayShotSeq;
 }
 
-uint32_t ExtractionController::snapshotExtraction(Extraction& out,
-                                                  bool wantDisplayShot) const {
+uint32_t ExtractionController::snapshotCurrentExtraction(
+    Extraction& out) const {
   Lock l(_mutex);
-  if (wantDisplayShot) {
-    // With no display shot the accepted slot's empty default is copied;
-    // callers gate on hasDisplayShot.
-    const Extraction* d = effectiveLastShot();
-    out = d ? *d : _lastAcceptedShot;
-  } else {
-    out = _recorder.current();
-  }
+  out = _recorder.current();
   return _lastAcceptedSeq;
+}
+
+bool ExtractionController::snapshotDisplayShot(Extraction& out,
+                                               uint32_t& shotSeq,
+                                               uint32_t& shotId) const {
+  Lock l(_mutex);
+  const Extraction* display = effectiveLastShot();
+  if (!display) return false;
+  out = *display;
+  shotSeq = _lastAcceptedSeq;
+  shotId = _hasLoadedShot ? _loadedShotId : _lastAcceptedShotId;
+  return true;
 }
 
 void ExtractionController::setTargetCoeffs(const pump_scale::TargetCoeffs& c) {

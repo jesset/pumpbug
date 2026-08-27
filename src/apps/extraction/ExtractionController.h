@@ -48,8 +48,7 @@ namespace pump_scale {
 // =============================================================================
 //
 //   /state            snapshotStatus(): _active + the bleScale snapshot first,
-//                     _lastSavedSeq and storage state lock-free, then recorder
-//                     fields under the mutex.
+//                     then recorder fields under the mutex.
 //   /current, /last   _writeCompact(): copy the chosen Extraction under the
 //                     mutex, then encode + stream after releasing it. /last
 //                     normalizes supported historical records to the current
@@ -59,8 +58,8 @@ namespace pump_scale {
 //                     decodes it (decodeCompact) into a device-local slot for
 //                     display and replay without changing shot history.
 //   SSE STATE         snapshotStatus() — small locked copy.
-//   SSE records       snapshotExtraction() — one full Extraction copy under the
-//                     mutex.
+//   SSE records       snapshotCurrentExtraction() or snapshotDisplayShot() —
+//                     one full Extraction copy under the mutex.
 //   liveSeq()         wake-up counter the SSE task polls to decide when to
 //                     re-copy snapshots.
 //
@@ -81,9 +80,8 @@ namespace pump_scale {
 //   * An accepted-shot sequence change occurs under _mutex and is followed by
 //     a _liveSeq release after the lock is released. SSE can therefore defer a
 //     record copied across that change and rely on a later wake-up.
-//   * _lastSavedSeq advances only after ShotStore::save() succeeds; the
-//     release/acquire pair lets clients treat savedSeq as "history is safe to
-//     refresh now."
+//   * _lastAcceptedShotId is published under _mutex after ShotStore::save()
+//     finishes. Zero means that the accepted shot was not saved.
 //   * _lastAttemptedSeq advances before each save attempt so one accepted shot
 //     cannot cause repeated filesystem or NVS writes.
 //   * No disk write, HTTP streaming, or BLE command runs while _mutex is held.
@@ -191,6 +189,7 @@ class ExtractionController {
   struct LastShotSelection {
     const Extraction* shot = nullptr;
     const FlowSeriesStats* flowStats = nullptr;
+    uint32_t shotId = 0;
   };
   LastShotSelection effectiveLastShotSelection() const;
   const Extraction* effectiveLastShot() const;
@@ -200,10 +199,13 @@ class ExtractionController {
   // ---- Cross-task reads (SSE/HTTP) ----------------------------------------
   uint32_t liveSeq() const { return _liveSeq.load(std::memory_order_acquire); }
   void snapshotStatus(ExtractionStatusSnapshot& out) const;
-  // wantDisplayShot copies the display shot (loaded replay shot if present,
-  // else the last accepted pull); false copies the in-flight record. Returns
-  // the accepted-shot sequence captured under the same lock.
-  uint32_t snapshotExtraction(Extraction& out, bool wantDisplayShot) const;
+  // Copies the in-flight extraction and returns the accepted-shot sequence
+  // captured under the same lock.
+  uint32_t snapshotCurrentExtraction(Extraction& out) const;
+  // Copies the display shot together with its accepted-shot sequence and
+  // stored ID. Returns false when no display shot exists.
+  bool snapshotDisplayShot(Extraction& out, uint32_t& shotSeq,
+                           uint32_t& shotId) const;
 
   // Register the /state, /current, /last, /shots routes. Called once at setup;
   // the registration outlives session enter/exit.
@@ -228,15 +230,18 @@ class ExtractionController {
     _pendingLoadId.store(id, std::memory_order_release);
   }
   bool processPendingLoad();
-  // Drop the loaded shot when a real pull supersedes it, freeing its heap
-  // buffer. Main task only, and the caller must hold _mutex: the SSE and HTTP
-  // tasks copy `*_loadedShot` while holding that mutex (it is the display
-  // shot they serve), so freeing the buffer outside the lock could destroy it
-  // mid-copy.
-  void clearLoadedShot() {
+  // Free the loaded-shot slot. Main task only, and the caller must hold
+  // _mutex because SSE and HTTP tasks copy the slot while holding that mutex.
+  // This does not announce a display change; the caller may still be waiting
+  // for the replacement record's stored ID.
+  void dropLoadedShot() {
     _hasLoadedShot = false;
+    _loadedShotId = 0;
     _loadedShot.reset();
     _loadedFlowStats = FlowSeriesStats{};
+  }
+  void clearLoadedShot() {
+    dropLoadedShot();
     ++_displayShotSeq;
   }
 
@@ -280,10 +285,9 @@ class ExtractionController {
   FlowSeriesStats _lastAcceptedFlowStats;
   uint32_t _lastAcceptedSeq = 0;
   // `_lastAttemptedSeq` prevents repeated writes for one accepted shot.
-  // `_lastSavedSeq` advances only after a verified save and is atomic because
-  // `/state` reads it from the HTTP task.
+  // `_lastAcceptedShotId` is zero when that shot was not saved.
   uint32_t _lastAttemptedSeq = 0;
-  std::atomic<uint32_t> _lastSavedSeq{0};
+  uint32_t _lastAcceptedShotId = 0;
 
   // Target-weight alert predictor. Owned by the engine because it consumes
   // the recorder's trusted yield and produces a timeline event
@@ -304,14 +308,14 @@ class ExtractionController {
   // (effectiveLastShotSelection) stay lock-free.
   std::atomic<uint32_t> _pendingLoadId{0};
   std::unique_ptr<Extraction> _loadedShot;
+  uint32_t _loadedShotId = 0;
   // Derived from _loadedShot on the main task and cleared with it; main-task
   // only (HTTP/SSE readers don't serve device-generated flow stats).
   FlowSeriesStats _loadedFlowStats;
   bool _hasLoadedShot = false;
-  // Display-shot change counter: advances under _mutex on every selection
-  // change (graduation, load, clear), so the SSE stream knows when to re-send
-  // FINAL_RECORD. It signals change only: clearing it does not mean a display
-  // shot doesn't exist, that's the role of the separate hasDisplayShot field.
+  // Display-shot revision: advances under _mutex whenever the record or its
+  // stored ID changes, so the SSE stream knows when to re-send FINAL_RECORD.
+  // It signals change only; hasDisplayShot reports whether a record exists.
   uint32_t _displayShotSeq = 0;
 
   // Basis for the live weight/yield/elapsed reported by /state and SSE: the

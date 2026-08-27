@@ -594,37 +594,37 @@ void ShotStore::_enforceRetentionUnlocked(const std::vector<uint32_t>& ids) {
   }
 }
 
-bool ShotStore::save(const Extraction& ext) {
+uint32_t ShotStore::save(const Extraction& ext) {
   Lock lock(_mutex);
   if (storage::mountState() != storage::MountState::Ready) {
     M5_LOGE("ShotStore: storage unavailable");
-    return false;
+    return 0;
   }
   if (ext.version != kCurrentExtractionVersion) {
     M5_LOGE("ShotStore: refusing to persist non-current record");
-    return false;
+    return 0;
   }
   size_t encodedSize = 0;
   if (!encodeCompactSize(ext, encodedSize)) {
     M5_LOGE("ShotStore: record version cannot be encoded");
-    return false;
+    return 0;
   }
   if (!LittleFS.exists(kShotsDir) && !LittleFS.mkdir(kShotsDir)) {
     M5_LOGE("ShotStore: cannot create %s", kShotsDir);
-    return false;
+    return 0;
   }
 
   std::vector<uint32_t> ids;
-  if (!_scanIdsUnlocked(ids)) return false;
+  if (!_scanIdsUnlocked(ids)) return 0;
 
   const uint32_t greatestExistingShotId = ids.empty() ? 0 : ids.back();
   const uint32_t id =
       shot_store_detail::reserveNextShotId(greatestExistingShotId);
-  if (id == 0) return false;
+  if (id == 0) return 0;
 
   if (!_writeRecordUnlocked(ext, id, encodedSize)) {
     _invalidateShotIdCacheUnlocked();
-    return false;
+    return 0;
   }
 
   ++_revision;
@@ -633,7 +633,7 @@ bool ShotStore::save(const Extraction& ext) {
   _cacheAddedShotUnlocked(id);
 
   M5_LOGI("ShotStore: saved shot id=%u", static_cast<unsigned>(id));
-  return true;
+  return id;
 }
 
 bool ShotStore::page(uint32_t before, size_t limit, std::vector<uint32_t>& ids,

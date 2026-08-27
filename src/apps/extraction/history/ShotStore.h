@@ -121,9 +121,10 @@ class ShotStore {
   ShotStore();
   ~ShotStore();
 
-  // Writes and verifies `ext`, then enforces FIFO retention. Returns false
-  // without removing existing history when the new record cannot be saved.
-  bool save(const Extraction& ext);
+  // Writes and verifies `ext`, then enforces FIFO retention. Returns the
+  // allocated shot ID. If the record cannot be saved, it returns zero and
+  // doesn't rotate existing history.
+  uint32_t save(const Extraction& ext);
 
   // Produces a newest-first page from files named /shots/NNNNNNNN.bin with id
   // < `before`; before == 0 starts at the newest file. At most the newest

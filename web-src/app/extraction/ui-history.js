@@ -17,7 +17,6 @@ const SHOTS_FETCH_TIMEOUT_MS = 10000;
 let shotsRefreshSeq = 0;
 let shotsRefreshInFlight = false;
 let shotsRefreshPending = false;
-let shotsRefreshPendingForce = false;
 let shotsLoadMoreInFlight = false;
 
 // In-memory ETag per page URL (lost on reload, by design).
@@ -85,21 +84,15 @@ function commitShotsEtag(res) {
   if (res.etag) shotsEtags[res.url] = res.etag;
 }
 
-// Refresh page 1. `force` (on entering the list) always revalidates — a 304
-// keeps the cached list, a 200 replaces it. Without force (SSE STATE), the
-// savedSeq check skips the request unless a new shot was saved, so a busy STATE
-// stream doesn't poll every tick. Either way this resets to page 1, dropping any
-// loaded older pages.
-async function maybeRefreshShots(force) {
+// Refresh page 1 when History opens or STATE reports a saved shot. This resets
+// to page 1, dropping any loaded older pages.
+async function maybeRefreshShots() {
   if (view !== 'list') return;
   // /state already supplies the user-facing storage warning. Do not issue a
   // list request that can only repeat the same condition as an HTTP error.
   if (state && state.storage === 'unavailable') return;
-  const seq = state ? state.savedSeq : -1;
-  if (!force && shots !== null && seq === lastShotsSavedSeq) return;
   if (shotsRefreshInFlight) {
     shotsRefreshPending = true;
-    shotsRefreshPendingForce = shotsRefreshPendingForce || !!force;
     return;
   }
   shotsRefreshInFlight = true;
@@ -107,7 +100,6 @@ async function maybeRefreshShots(force) {
   try {
     const res = await fetchShotsPage(0);
     if (myToken !== shotsRefreshSeq) return;  // superseded — don't apply or cache
-    lastShotsSavedSeq = seq;
     if (res.status === 200) {
       shots = res.shots;
       shotsHasMore = res.hasMore;
@@ -120,10 +112,8 @@ async function maybeRefreshShots(force) {
   } finally {
     shotsRefreshInFlight = false;
     if (shotsRefreshPending) {
-      const pendingForce = shotsRefreshPendingForce;
       shotsRefreshPending = false;
-      shotsRefreshPendingForce = false;
-      maybeRefreshShots(pendingForce);
+      maybeRefreshShots();
     }
   }
 }
@@ -163,7 +153,7 @@ function switchView(next) {
   scheduleRender();
   // On entry: render the cached list immediately, then revalidate page 1 (304
   // keeps it, 200 if a shot was recorded while we were away).
-  if (next === 'list') maybeRefreshShots(true);
+  if (next === 'list') maybeRefreshShots();
 }
 
 async function selectShot(id) {

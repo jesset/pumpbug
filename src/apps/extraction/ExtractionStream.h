@@ -25,23 +25,23 @@ class ExtractionController;
 //
 //   offset  size  field
 //      0      4   magic "STKP"
-//      4      1   version (= 4)
+//      4      1   version (= 5)
 //      5      1   type (see kPacket* below)
 //      6      4   streamSeq (u32 — monotonic per SSE connection)
 //     10      4   shotSeq (u32 — latest accepted-shot sequence)
 //     14      …   per-type payload
 //
 // Types:
-//   STATE          (1)  — every-tick status. 16-byte payload:
+//   STATE          (1)  — every-tick status. 12-byte payload:
 //                          u8 flags (bit0 active, bit1 hasCurrentWeight,
 //                                    bit2 hasCurrentYield, bit3 pouring,
 //                                    bit4 hasDisplayShot,
-//                                    bit5 pumpDecayCandidate)
+//                                    bit5 pumpDecayCandidate,
+//                                    bit6 latestAcceptedShotSaved)
 //                          u8 phase
 //                          u8 scaleState
 //                          u8 storageState (see util/storage.h)
 //                          u32 elapsedMs
-//                          u32 savedSeq
 //                          i16 currentWeightCg (INT16_MIN when !hasWeight)
 //                          i16 currentYieldCg (INT16_MIN when !hasYield)
 //   CURRENT_RECORD (2)  — full in-flight Extraction encoded with the current
@@ -58,7 +58,9 @@ class ExtractionController;
 //                                          optional uvarint scaleTimerMs
 //                                          (raw value or
 //                                          scale_time::UNKNOWN_MS)
-//   FINAL_RECORD   (4)  — display shot encoded with the current EXTR schema.
+//   FINAL_RECORD   (4)  — u32 shotId followed by the display shot encoded with
+//                          the current EXTR schema. shotId is zero when the
+//                          record was not saved.
 //   HEARTBEAT      (5)  — empty payload, keeps proxies/clients from idling.
 //
 // ExtractionStream keeps one browser's SSE session synchronized with the
@@ -112,11 +114,12 @@ class ExtractionController;
 //                                              state may have changed.
 //   ExtractionController::snapshotStatus()     Provides the small status copy
 //                                              used for decisions and STATE.
-//   ExtractionController::snapshotExtraction() Provides the full record used
-//                                              by CURRENT_RECORD, FINAL_RECORD,
-//                                              and SAMPLE_BATCH, plus the
-//                                              controller's accepted-shot
-//                                              sequence at copy time.
+//   ExtractionController::snapshotCurrentExtraction()
+//                                              Provides the in-flight record
+//                                              and accepted-shot sequence.
+//   ExtractionController::snapshotDisplayShot()
+//                                              Provides the display record,
+//                                              sequence, and stored shot ID.
 //
 // ## Invariants
 //
@@ -145,6 +148,7 @@ class ExtractionStream {
   static constexpr uint8_t kPacketSampleBatch = 3;
   static constexpr uint8_t kPacketFinalRecord = 4;
   static constexpr uint8_t kPacketHeartbeat = 5;
+  static constexpr uint8_t kPacketVersion = 5;
   static constexpr size_t kPacketHeaderBytes = 14;
 
   // Registers the SSE session route and the authenticated ticket route.
@@ -203,7 +207,8 @@ class ExtractionStream {
   bool _sendCurrentRecord(WiFiClient& client, Session& s, const Extraction& ext,
                           uint32_t shotSeq);
   bool _sendFullRecord(WiFiClient& client, Session& s, uint8_t type,
-                       const Extraction& ext, uint32_t shotSeq);
+                       const Extraction& ext, uint32_t shotSeq,
+                       uint32_t shotId = 0);
   bool _sendHeartbeat(WiFiClient& client, Session& s, uint32_t shotSeq);
 
   // Frames `bin` as `id: N\nevent: packet\ndata: <base64>\n\n` and writes
