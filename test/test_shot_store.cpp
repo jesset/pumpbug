@@ -669,6 +669,37 @@ void testMetadataUpdatesRetainExtractionAndCapacity() {
   assert(store.revision() == 3);
 }
 
+void testMetadataInitializationIsFirstWriterWins() {
+  resetStorage();
+  ShotStore store;
+  const uint32_t id = store.save(encodableShot());
+  assert(id != 0);
+
+  pump_scale::ShotUserMetadata saved;
+  assert(store.readUserMetadata(id, saved) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(saved.state == pump_scale::ShotUserMetadataState::Absent);
+  assert(saved.crc32 != 0);
+
+  const std::string first = R"({"coffee":{"name":"First"}})";
+  assert(store.initializeUserMetadata(
+             id, reinterpret_cast<const uint8_t*>(first.data()), first.size(),
+             saved) == pump_scale::ShotUserMetadataWriteResult::Ok);
+  assert(saved.state == pump_scale::ShotUserMetadataState::Active);
+  assert(saved.json == first);
+
+  const std::string second = R"({"coffee":{"name":"Second"}})";
+  assert(store.initializeUserMetadata(
+             id, reinterpret_cast<const uint8_t*>(second.data()), second.size(),
+             saved) == pump_scale::ShotUserMetadataWriteResult::Conflict);
+
+  assert(store.readUserMetadata(id, saved) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(saved.state == pump_scale::ShotUserMetadataState::Active);
+  assert(saved.json == first);
+  assert(store.revision() == 2);
+}
+
 void testMetadataRepairUsesTheParsedExtractionBoundary() {
   resetStorage();
   const std::vector<uint8_t> json = {'{', '}'};
@@ -952,6 +983,7 @@ int main() {
   testMetadataReadStates();
   testMetadataListingDoesNotScanExtractionPayload();
   testMetadataUpdatesRetainExtractionAndCapacity();
+  testMetadataInitializationIsFirstWriterWins();
   testMetadataRepairUsesTheParsedExtractionBoundary();
   testHealthyMetadataUpdateDoesNotDependOnExtractionIntegrity();
   testMetadataGrowthLimitAndWriteFailure();

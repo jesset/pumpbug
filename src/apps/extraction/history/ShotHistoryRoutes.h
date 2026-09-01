@@ -14,6 +14,8 @@ namespace pump_scale {
 // enforce HTTP preconditions, and build responses.
 void handleShotHistory(WebServer& server, ShotStore& store);
 void handleShotMetadataGet(WebServer& server, ShotStore& store);
+void handleShotMetadataInitialize(WebServer& server, ShotStore& store,
+                                  uint32_t eligibleShotId);
 void handleShotMetadataPut(WebServer& server, ShotStore& store);
 void handleShotMetadataDelete(WebServer& server, ShotStore& store);
 

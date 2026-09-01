@@ -10,9 +10,6 @@ device and browser must be awake and connected to the same Wi-Fi network.
 
 This guide applies to Pump Bug firmware 0.2.x.
 
-The screenshots below use representative shot data. Their layout, labels,
-charts, and controls are the actual firmware interface.
-
 > **Shot time requires Wi-Fi:** Pump Bug obtains its clock over the network.
 > Turn Wi-Fi on and wait for it to connect before starting a shot if you want a
 > date and time in `LAST SHOT` and `History`. The timestamp is captured at the
@@ -94,7 +91,8 @@ samples.
 
 ### Last shot
 
-The latest completed shot appears below `Now` with:
+The device's current Last Shot appears below `Now`. This is normally the latest
+completed shot, but loading a saved shot for replay replaces it. The card shows:
 
 - Its date and time, or `time unknown` if the clock was not available when the
   shot began.
@@ -103,14 +101,12 @@ The latest completed shot appears below `Now` with:
   the scale itself was not tared.
 - A chart with weight in blue, flow in yellow, and dashed pump-on and pump-off
   markers.
-- The target, cut-alert outcome, and total pump-on time.
-- A collapsed `Technical` section with raw fields useful for diagnosis.
+- The target yield.
+- Saved shot details, when present.
+- Controls to add or edit shot details and open the shot in History.
 
-If the cut alert fired, `fired at` shows the trigger time and yield; `projected`
-shows the final yield Pump Bug predicted at that moment.
-Otherwise the row reads `armed · didn’t fire` when the alert was on for that
-shot but never reached its cue, or `off` when the target alert was not enabled
-when the shot was recorded.
+History detail contains the cut-alert outcome, total pump-on time, and the
+`Technical` section (used for diagnosis).
 
 During an active pump window, the last-shot card collapses so the current pour
 has priority. Select the collapsed card to expand it temporarily.
@@ -120,12 +116,53 @@ in another browser replaces the first live stream; the displaced page will try
 to reconnect. Use one Live dashboard when monitoring a pour. Ordinary pages
 and history requests are unaffected.
 
+## Prepare the next shot
+
+The Live view can keep a coffee and recipe visible while you prepare and brew.
+Choose `Choose coffee` to select a coffee found in the loaded history or enter
+a new one. Selecting a coffee from history copies its preparation fields from
+the newest shot where it was used. `Adjust recipe` sets the parameters for the
+next shot. The picker lists coffees from loaded shot history; choose `Search
+older history` there to look through additional history pages.
+
+During an extraction, a compact Coffee card appears above the live
+measurements. It shows the selected coffee, or `No coffee selected`. `Clear`
+removes the browser's next-shot recipe; it does not remove details already saved
+with a completed shot.
+
+![Choose a coffee from shot history or enter a new one](images/web-guide/choose-coffee.png)
+
+![Edit the coffee and preparation for the next shot](images/web-guide/next-shot-recipe.png)
+
+After a coffee has been selected, the Live view keeps the next recipe and the
+most recent loaded shot with that coffee visible while you prepare the next
+shot.
+
+![Review previous shots made with the active coffee](images/web-guide/coffee-history.png)
+
+`More shots` shows other loaded shots with the same coffee name and roaster.
+You can compare their ratings, results and recipes, then choose `Use for next
+shot` to copy a shot's recipe. `Search older history` loads additional history
+pages when the shots you want are not already in the browser.
+
+The next-shot recipe is stored in the browser rather than the device. When the
+connected browser follows a shot from its live start through completion, it asks
+the device to save the current recipe with that new shot. Recipe changes saved
+before completion are included. Select `Rate and save details` to enter the
+result fields afterward. If the browser misses the live shot or the automatic
+save does not happen, open the shot's details and choose `Copy next recipe` to
+review and save it with the shot.
+
 ## Shot history
 
 Choose `History` on the dashboard to list saved shots, newest first. Each row
 normally shows its date and time, shot ID, duration, final yield, and pump-on
-time. A record whose summary cannot be read remains in its history position and
-appears as `Record unavailable`; opening it reports the record problem.
+time. Recipe coffee, preparation, rating, tags, and notes appear beneath that
+summary. If for some reason the record's data cannot be read, it's listed as
+`Record unavailable`, and opening it shows a message about the issue.
+
+Use `Edit details` on a row to change its saved details without opening the
+full shot view.
 
 ![Pump Bug browser History list](images/web-guide/history.png)
 
@@ -142,9 +179,27 @@ data or before they age out of storage.
 
 ## Inspect a shot
 
-Select a History row to open its detail page. It uses the same result card as
-the Live view, including the weight-and-flow chart, target and alert outcome,
-pump time, and technical fields.
+Select a History row to open its detail page, where you can see the shot's
+weight-and-flow chart, target and alert outcome, pump time, etc. `Add shot
+details` or `Edit shot details` opens the shot editor, where you can enter
+coffee and preparation details, and also results after the coffee has been
+brewed. If the TDS and dose are entered, extraction yield is calculated and
+displayed automatically.
+
+In the shot details editor, `Choose` lets you select a coffee from history. It
+copies that coffee's saved details and fills preparation fields that are still
+blank. Existing preparation and result values for the shot are preserved.
+
+If the cut alert fired, `fired at` shows the trigger time and yield; `projected`
+shows the final yield Pump Bug predicted at that moment. Otherwise the row
+reads `armed · didn’t fire` when the alert was on but never reached its cue, or
+`off` when the target alert was not enabled for the shot.
+
+`Clear saved details` clears the editable details without deleting the shot
+record.
+
+If another browser changes the same details while the editor is open, Pump Bug
+shows the saved version and the local edits before asking which one to keep.
 
 ![Pump Bug browser shot detail with replay and download actions](images/web-guide/shot-detail.png)
 
@@ -163,8 +218,8 @@ measurements.
 ### Download shot data
 
 Choose `Download shot data (JSON)` to save the decoded record to the browser's
-download folder. The file is named `shot-<id>.json` and contains shot metadata,
-target and alert state, pump events, and the recorded scale samples.
+download folder. The file is named `shot-<id>.json` and contains the shot
+measurements, chart data, and saved details.
 
 Measurement field names ending in `Cg` use centigrams; divide by 100 for grams.
 Time field names ending in `Ms` use milliseconds.

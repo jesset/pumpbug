@@ -5,7 +5,7 @@ let state = null;          // built from STATE packets
 // The two record slots, matching the two live-view cards. `inflight` is the
 // in-flight extraction (CURRENT_RECORD + appended SAMPLE_BATCHes, bound to
 // its packet shotSeq); it either graduates into `lastRecord` (FINAL_RECORD)
-// or is dropped. `lastRecord` is the device's display shot — the last
+// or is dropped. `lastRecord` is the device's Last Shot record — the last
 // graduated pull, or a stored shot loaded onto the device (boot restore,
 // "set as last shot").
 let inflight = null;
@@ -21,15 +21,11 @@ let freshBeginMs = 0;
 // pump window ends.
 let lastShotExpanded = false;
 
-// History view state. `shots` accumulates loaded pages (newest-first); null
-// means never loaded.
 let view = 'live';
-let shots = null;
-let shotsHasMore = false;
-let shotsTotal = 0;
 let selectedShotId = null;
 let selectedShot = null;
 let selectedShotError = null;
+let selectedShotMetadata = null;
 let renderPending = false;
 
 function fmtMMSS(ms) {
@@ -182,6 +178,7 @@ function render() {
   const app = document.getElementById('app');
   app.replaceChildren();
   renderBanner();
+  synchronizeMetadataOverlayState();
   if (!state) return;
   renderTabs(app);
   appendStorageWarning(app, state);
@@ -206,5 +203,10 @@ function scheduleLiveRender() {
     renderBanner();
   }
 }
+
+historyStore.subscribe(() => {
+  scheduleRender();
+  if (coffeePicker || coffeeComparisonOpen) renderMetadataOverlay();
+});
 
 connect();

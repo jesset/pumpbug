@@ -756,7 +756,7 @@ ShotStoreReadResult ShotStore::readUserMetadata(uint32_t id,
 ShotUserMetadataWriteResult ShotStore::_writeUserMetadataUnlocked(
     uint32_t id, const uint8_t* json, size_t jsonLength,
     ShotMetadataStoredState newState, const ShotUserMetadata& expected,
-    ShotUserMetadata& saved) {
+    MetadataMatch match, ShotUserMetadata& saved) {
   const bool expectedAvailable = expected.available;
   const ShotUserMetadataState expectedState = expected.state;
   const uint32_t expectedCrc = expected.crc32;
@@ -811,7 +811,8 @@ ShotUserMetadataWriteResult ShotStore::_writeUserMetadataUnlocked(
   }
 
   if (current.metadata.state != expectedState ||
-      current.metadata.crc32 != expectedCrc) {
+      (match == MetadataMatch::StateAndCrc &&
+       current.metadata.crc32 != expectedCrc)) {
     return ShotUserMetadataWriteResult::Conflict;
   }
   if (current.metadata.state == ShotUserMetadataState::Unsupported) {
@@ -851,15 +852,29 @@ ShotUserMetadataWriteResult ShotStore::writeUserMetadata(
     uint32_t id, const uint8_t* json, size_t jsonLength,
     const ShotUserMetadata& expected, ShotUserMetadata& saved) {
   Lock lock(_mutex);
-  return _writeUserMetadataUnlocked(
-      id, json, jsonLength, ShotMetadataStoredState::Active, expected, saved);
+  return _writeUserMetadataUnlocked(id, json, jsonLength,
+                                    ShotMetadataStoredState::Active, expected,
+                                    MetadataMatch::StateAndCrc, saved);
+}
+
+ShotUserMetadataWriteResult ShotStore::initializeUserMetadata(
+    uint32_t id, const uint8_t* json, size_t jsonLength,
+    ShotUserMetadata& saved) {
+  ShotUserMetadata expected;
+  expected.available = true;
+  expected.state = ShotUserMetadataState::Absent;
+  Lock lock(_mutex);
+  return _writeUserMetadataUnlocked(id, json, jsonLength,
+                                    ShotMetadataStoredState::Active, expected,
+                                    MetadataMatch::StateOnly, saved);
 }
 
 ShotUserMetadataWriteResult ShotStore::clearUserMetadata(
     uint32_t id, const ShotUserMetadata& expected, ShotUserMetadata& saved) {
   Lock lock(_mutex);
-  return _writeUserMetadataUnlocked(
-      id, nullptr, 0, ShotMetadataStoredState::Cleared, expected, saved);
+  return _writeUserMetadataUnlocked(id, nullptr, 0,
+                                    ShotMetadataStoredState::Cleared, expected,
+                                    MetadataMatch::StateAndCrc, saved);
 }
 
 bool ShotStore::erase(uint32_t id) {

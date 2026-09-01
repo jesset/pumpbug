@@ -14,6 +14,17 @@ let backoffMs = INITIAL_BACKOFF_MS;
 let connecting = false;
 let connectEpoch = 0;
 let wakePollTimer = null;
+let streamStateCurrent = false;
+let streamStatus = {
+  text: 'status · connecting…',
+  cls: 'status idle',
+};
+
+function setStreamStatus(text, kind = 'idle') {
+  streamStateCurrent = false;
+  streamStatus = { text, cls: 'status ' + kind };
+  setBanner(streamStatus.text, streamStatus.cls);
+}
 
 function base64Decode(b64) {
   const bin = atob(b64);
@@ -88,12 +99,12 @@ function parseFinalRecordPayload(dv, off) {
 
 function handleStatePacket(dv, payloadOff, shotSeq) {
   const s = parseStatePayload(dv, payloadOff);
+  streamStateCurrent = true;
   s.shotSeq = shotSeq;
   // Receipt time anchors the pouring timer between rate-limited STATEs.
   s.rxAtMs = performance.now();
 
   const wasPumping = inPumpWindow(state);
-
   // Abandoned-in-flight detection: a screen exit or a rejected finalize
   // (flush, grinder dose) clears the recorder without a FINAL_RECORD, so
   // the stream sends a STATE going IDLE with the shot seq unchanged. Drop
@@ -108,20 +119,30 @@ function handleStatePacket(dv, payloadOff, shotSeq) {
   // expanded it; the next idle render collapses back to the default.
   if (wasPumping && !inPumpWindow(s)) lastShotExpanded = false;
 
-  // The device says it has no display shot (e.g. a reflashed/reset device
-  // behind a reconnect, or a failed shot load with nothing to fall back to):
-  // drop ours, or the card would show a shot the device no longer has.
+  // The device says it has no display shot (e.g. after storage was erased, or
+  // a failed shot load left nothing to fall back to). Drop the browser's copy.
   if (!s.hasDisplayShot) lastRecord = null;
 
   const historyChanged = state && s.latestShotSaved &&
     (s.shotSeq !== state.shotSeq || !state.latestShotSaved);
   state = s;
-  if (historyChanged) maybeRefreshShots();
+  historyStore.observeDeviceState(
+    s.storage, historyChanged, !inPumpWindow(s));
+  updateCoffeeContextHistoryForState(s);
 }
 
 function handleCurrentRecordPacket(dv, payloadOff, shotSeq) {
   try {
     const ext = parseExtractionFromDv(dv, payloadOff);
+    const sameShot = inflight && inflight.shotSeq === shotSeq &&
+      inflight.beginMs === ext.beginMs;
+    // A newly connected client receives a pumping STATE before an active
+    // CURRENT_RECORD. During an established connection, a shot observed from
+    // idle sends CURRENT_RECORD before its pumping STATE. Preserve that verdict
+    // across later phase snapshots.
+    ext.recipeAttachmentEligible = sameShot
+      ? inflight.recipeAttachmentEligible
+      : !!state && !inPumpWindow(state);
     ext.shotSeq = shotSeq;
     inflight = ext;
   } catch (err) {
@@ -139,8 +160,13 @@ function handleFinalRecordPacket(dv, payloadOff, shotSeq) {
     // leaves a live pour alone. The badge is bound to the graduated shot's
     // beginMs so a different record arriving inside the badge window (a
     // shot load) doesn't wear it.
-    if (inflight && shotSeq !== inflight.shotSeq) {
-      inflight = null;
+    const graduatedShot = inflight && shotSeq !== inflight.shotSeq;
+    const completedLiveShot = graduatedShot &&
+      ext.beginMs === inflight.beginMs;
+    const attachRecipe = completedLiveShot &&
+      inflight.recipeAttachmentEligible;
+    if (graduatedShot) inflight = null;
+    if (completedLiveShot) {
       freshFinalizedAt = Date.now();
       freshBeginMs = ext.beginMs;
       setTimeout(() => scheduleRender(), FRESH_SHOT_BADGE_MS + 250);
@@ -148,6 +174,8 @@ function handleFinalRecordPacket(dv, payloadOff, shotSeq) {
     ext.shotSeq = shotSeq;
     ext.shotId = shotId || null;
     lastRecord = ext;
+    setLastShotMetadataId(ext.shotId,
+      attachRecipe ? recipeForCompletedShot() : null);
   } catch (err) {
     console.warn('parseExtraction failed', err);
   }
@@ -302,8 +330,7 @@ function openStream(url) {
     if (currentStream !== stream) return;
     stream.replaced = true;
     closeStream(stream);
-    setBanner('another client took over — reload to retake the stream',
-              'idle');
+    setStreamStatus('another client took over — reload to retake the stream');
   });
 
   stream.es.addEventListener('sleeping', () => {
@@ -316,12 +343,14 @@ function openStream(url) {
   stream.es.onopen = () => {
     if (currentStream !== stream) return;
     stream.opened = true;
+    historyStore.sessionStarted();
+    metadataStreamSessionStarted();
     armIdleTimer(stream);
     backoffMs = INITIAL_BACKOFF_MS;
     // Banner gets rewritten by handleStatePacket as soon as the
     // server's initial STATE arrives; this is just a transient
     // pre-data signal.
-    if (!state) setBanner('connected, waiting for state…', 'idle');
+    setStreamStatus('status · connected, waiting for state…');
   };
 
   stream.es.onerror = () => {
@@ -330,7 +359,7 @@ function openStream(url) {
     const wasSleeping = stream.sleeping;
     closeStream(stream);
     if (!wasReplaced && !wasSleeping) {
-      setBanner('disconnected; reconnecting…', 'idle');
+      setStreamStatus('status · disconnected; reconnecting…');
       scheduleReconnect();
     }
   };
@@ -339,6 +368,7 @@ function openStream(url) {
 async function connect() {
   if (protocolMismatch) return;
   if (connecting) return;
+  setStreamStatus('status · connecting…');
   stopWakePolling();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   const myEpoch = ++connectEpoch;
@@ -352,9 +382,9 @@ async function connect() {
     if (myEpoch !== connectEpoch) return;
     if (!r.ok) {
       if (r.status === 401) {
-        setBanner('not paired — open /config to pair this device', 'bad');
+        setStreamStatus('not paired — open /config to pair this device', 'bad');
       } else {
-        setBanner('ticket request failed (' + r.status + ')', 'bad');
+        setStreamStatus('ticket request failed (' + r.status + ')', 'bad');
       }
       scheduleReconnect();
       return;
@@ -365,9 +395,9 @@ async function connect() {
   } catch (err) {
     if (myEpoch !== connectEpoch) return;
     if (err.name === 'AbortError') {
-      setBanner('ticket request timed out', 'bad');
+      setStreamStatus('ticket request timed out', 'bad');
     } else {
-      setBanner('error: ' + err.message, 'bad');
+      setStreamStatus('error: ' + err.message, 'bad');
     }
     scheduleReconnect();
   } finally {
@@ -396,7 +426,7 @@ function forceReconnect(reason) {
   // reconnect (the new session re-sends the display shot anyway).
   inflight = null;
   backoffMs = INITIAL_BACKOFF_MS;
-  setBanner('stream out of sync; reconnecting…', 'idle');
+  setStreamStatus('stream out of sync; reconnecting…');
   scheduleReconnect();
 }
 
@@ -414,7 +444,7 @@ function startWakePolling(reason) {
   backoffMs = INITIAL_BACKOFF_MS;
   if (reason) {
     console.log('start wake polling:', reason);
-    setBanner(reason + ' — waiting for device…', 'idle');
+    setStreamStatus(reason + ' — waiting for device…');
   }
 
   async function poll() {
@@ -426,6 +456,7 @@ function startWakePolling(reason) {
       // ticket. Only network-level failure keeps us polling.
       await fetchWithTimeout('/app/extraction/state',
                              { cache: 'no-store' },
+                             response => response.status,
                              WAKE_POLL_TIMEOUT_MS);
       // Device is back. Reconnect via the normal SSE path.
       connect();

@@ -172,6 +172,13 @@ class ShotStore {
       uint32_t id, const uint8_t* json, size_t jsonLength,
       const ShotUserMetadata& expected, ShotUserMetadata& saved);
 
+  // Writes one JSON object only when the stored metadata state is Absent.
+  // The state check and write occur under the same store lock.
+  ShotUserMetadataWriteResult initializeUserMetadata(uint32_t id,
+                                                     const uint8_t* json,
+                                                     size_t jsonLength,
+                                                     ShotUserMetadata& saved);
+
   // Sets the stored state to Cleared and the JSON length to zero. Existing
   // payload capacity and its bytes are retained.
   ShotUserMetadataWriteResult clearUserMetadata(
@@ -195,6 +202,8 @@ class ShotStore {
   uint32_t bootNonce() const { return _bootNonce; }
 
  private:
+  enum class MetadataMatch : uint8_t { StateAndCrc, StateOnly };
+
   mutable SemaphoreHandle_t _mutex;
   uint32_t _bootNonce = 0;
   uint32_t _revision = 0;
@@ -218,7 +227,7 @@ class ShotStore {
   ShotUserMetadataWriteResult _writeUserMetadataUnlocked(
       uint32_t id, const uint8_t* json, size_t jsonLength,
       ShotMetadataStoredState newState, const ShotUserMetadata& expected,
-      ShotUserMetadata& saved);
+      MetadataMatch match, ShotUserMetadata& saved);
   static void _pathFor(uint32_t id, char* buf, size_t cap);
 };
 

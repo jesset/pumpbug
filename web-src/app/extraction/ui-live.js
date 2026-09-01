@@ -8,12 +8,17 @@ function renderBanner() {
     setBanner(protocolMismatch, 'bad');
     return;
   }
-  if (!state) { setBanner('connecting…', 'idle'); return; }
+  if (!streamStateCurrent) {
+    setBanner(streamStatus.text, streamStatus.cls);
+    return;
+  }
+  if (!state) { setBanner('status · connecting…', 'status idle'); return; }
   if (state.active) {
-    setBanner(`device live · phase ${state.phase} · scale ${state.scale}`,
-              state.phase === 'IDLE' ? 'idle' : 'live');
+    setBanner(`status · device live · phase ${state.phase} · scale ${state.scale}`,
+              'status ' + (state.phase === 'IDLE' ? 'idle' : 'live'));
   } else {
-    setBanner('device idle (extraction screen not foreground)', 'idle');
+    setBanner('status · device idle (extraction screen not foreground)',
+              'status idle');
   }
 }
 
@@ -21,30 +26,36 @@ function renderTabs(app) {
   const tabs = el('div', { class: 'tabs' },
     el('button', {
       class: view === 'live' ? 'active' : '',
+      'aria-pressed': view === 'live' ? 'true' : 'false',
       onclick: () => switchView('live'),
     }, 'Live'),
     el('button', {
       class: view === 'live' ? '' : 'active',
+      'aria-pressed': view === 'live' ? 'false' : 'true',
       onclick: () => switchView('list'),
     }, 'History'),
   );
   app.append(tabs);
 }
 
-// Product summary rows for a finished record: target and the cut-alert
-// outcome (the whole point of the target feature), how the shot ended when
-// that's news (a timeout; a normal settle is omitted), and time under pump.
-// Yield and duration already lead as the big readouts, so they aren't
-// repeated here.
-function recordRows(e) {
-  const rows = el('dl', { class: 'rows' },
-    row('target', (e.target.targetCg > 0)
-      ? fmtG(e.target.targetCg) + ' g' : 'none'));
-  rows.append(row('cut alert', fmtCutAlert(e)));
+function targetText(e) {
+  return e.target.targetCg > 0 ? fmtG(e.target.targetCg) + ' g' : 'none';
+}
+
+// Finished-shot summary rows. The Live view keeps only an unusual end cause;
+// History includes target, the cut-alert outcome, and time under pump.
+function recordRows(e, variant) {
+  const rows = el('dl', { class: 'rows' });
+  if (variant === 'detail') {
+    rows.append(row('target', targetText(e)));
+    rows.append(row('cut alert', fmtCutAlert(e)));
+  }
   if (e.endCause in END_CAUSE_LABEL) {
     rows.append(row('ended', END_CAUSE_LABEL[e.endCause]));
   }
-  rows.append(row('pump time', fmtSec(e.totalPumpOnMs) + ' s'));
+  if (variant === 'detail') {
+    rows.append(row('pump time', fmtSec(e.totalPumpOnMs) + ' s'));
+  }
   return rows;
 }
 
@@ -103,22 +114,29 @@ function renderCurve(chart, parent, e) {
   chart.update(e, nowMs);
 }
 
-// One finished, graduated shot as a record card: title line, the big
-// yield/duration readouts, the chart, the product summary, the technical
-// fold. Shared by the live view's Last-shot card and the history detail view
-// so a shot looks the same the moment it finishes and a week later.
+// One finished, graduated shot as a record card. The caller adds any material
+// that follows the measurement summary, such as metadata or diagnostics.
 function renderShotRecord(app, e, opts) {
+  if (opts.variant !== 'live' && opts.variant !== 'detail') {
+    throw new Error('unknown shot-record variant');
+  }
+  const detail = opts.variant === 'detail';
   const card = el('section',
     { class: 'card record' + (opts.fresh ? ' fresh' : '') });
   const head = el('h2', {}, opts.title);
   if (opts.fresh) head.append(el('span', { class: 'chip' }, 'new'));
   card.append(head);
   card.append(bigWeight(e.yieldCg, rawFinalCg(e)));
+  if (!detail) {
+    card.append(el('div', { class: 'record-target' },
+      'target ' + targetText(e)));
+  }
   card.append(el('div', { class: 'big' }, fmtMMSS(finishedElapsedMs(e) ?? 0)));
   renderCurve(RecordChart, card, e);
-  card.append(recordRows(e));
-  card.append(techFold(e));
+  const rows = recordRows(e, opts.variant);
+  if (rows.childNodes.length) card.append(rows);
   app.append(card);
+  return card;
 }
 
 // Fixed-height slot for the in-flight curve. Exists for the whole pump
@@ -173,7 +191,7 @@ function renderNowCard(app) {
     state.pumpDecayCandidate;
 
   const card = el('section', {
-    class: pumpStopping ? 'now decay' : 'now',
+    class: 'card now' + (pumpStopping ? ' decay' : ''),
   });
   card.append(el('h2', {},
     el('span', { class: 'livedot' + (state.active ? ' on' : '') }), 'Now'));
@@ -205,7 +223,7 @@ function renderNowCard(app) {
   app.append(card);
 }
 
-// The Last-shot card: the device's display shot (FINAL_RECORD — the last
+// The Last Shot card: the device's Last Shot record (FINAL_RECORD — the last
 // graduated pull or a loaded stored shot), so a flush or grinder dose can
 // never appear here. Collapses to a tap-to-expand header while the pump
 // window is live so the pour owns the screen.
@@ -222,13 +240,19 @@ function renderLastShot(app) {
   const fresh = freshFinalizedAt > 0 &&
       Date.now() - freshFinalizedAt < FRESH_SHOT_BADGE_MS &&
       lastRecord.beginMs === freshBeginMs;
-  renderShotRecord(app, lastRecord, {
+  const card = renderShotRecord(app, lastRecord, {
+    variant: 'live',
     title: 'Last shot · ' + (fmtDate(lastRecord.startUtcSec) || 'time unknown'),
     fresh,
   });
+  if (lastRecord.shotId) {
+    appendShotMetadataDetails(
+      card, lastRecord.shotId, lastShotMetadata, { openInHistory: true });
+  }
 }
 
 function renderLive(app) {
+  renderCoffeeContext(app);
   renderNowCard(app);
   renderLastShot(app);
 }

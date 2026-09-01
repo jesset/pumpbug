@@ -222,6 +222,9 @@ class ExtractionController {
   // _mutex because LittleFS writes can block. Failures remain visible without
   // producing a main-loop retry storm.
   void persistAcceptedShot();
+  // Limits unattended recipe attachment to the latest shot saved in this boot.
+  // A later accepted shot supersedes it.
+  uint32_t shotIdForMetadataInitialization() const;
 
   // Consume a queued replay-shot load (main task): decode it from the store
   // into _loadedShot. Returns true when a shot was successfully loaded this

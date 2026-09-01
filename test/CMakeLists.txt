@@ -166,6 +166,28 @@ add_test(
     "${CMAKE_CURRENT_SOURCE_DIR}/test_extraction_constants_js.js"
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/stream.js"
+    "${PROJECT_SOURCE_DIR}/src/apps/extraction/ExtractionStream.h"
+)
+
+add_test(
+  NAME test_shot_metadata_ui_js
+  COMMAND
+    "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_shot_metadata_ui.js"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-metadata.js"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-history.js"
+    "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/shot_metadata_codec.h"
+)
+
+add_test(
+  NAME test_history_coordinator_js
+  COMMAND
+    "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_history_coordinator.js"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-metadata.js"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-history.js"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/stream.js"
 )
 
 add_test(

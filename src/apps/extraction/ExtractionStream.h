@@ -135,6 +135,10 @@ class ExtractionController;
 //     the next liveSeq tickle, preserving FINAL_RECORD ordering.
 //   * A changed record beginMs identifies a new in-flight extraction, which
 //     receives CURRENT_RECORD before any SAMPLE_BATCH.
+//   * A newly connected client receives STATE before any active CURRENT_RECORD.
+//     During an established connection, a newly started shot's CURRENT_RECORD
+//     precedes its corresponding STATE. The browser uses this ordering to
+//     distinguish joining a shot in progress from observing its live start.
 //   * SAMPLE_BATCH is append-only from lastSentSampleIdx and uses lastSentTMs
 //     and lastSentCg as its delta base.
 //   * Significant STATE changes bypass the rate limit. Continuously changing

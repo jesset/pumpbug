@@ -289,6 +289,11 @@ void ExtractionController::persistAcceptedShot() {
   }
 }
 
+uint32_t ExtractionController::shotIdForMetadataInitialization() const {
+  Lock lock(_mutex);
+  return _lastAcceptedShotId;
+}
+
 void ExtractionController::registerWith(HttpServer& server) {
   server.registerApp(
       "extraction",
@@ -306,6 +311,11 @@ void ExtractionController::registerWith(HttpServer& server) {
           HttpRoute{"/shot-metadata", HTTP_GET,
                     [this](WebServer& s) {
                       pump_scale::handleShotMetadataGet(s, _shotStore);
+                    }},
+          HttpRoute{"/shot-metadata", HTTP_POST,
+                    [this](WebServer& s) {
+                      pump_scale::handleShotMetadataInitialize(
+                          s, _shotStore, shotIdForMetadataInitialization());
                     }},
           HttpRoute{"/shot-metadata", HTTP_PUT,
                     [this](WebServer& s) {

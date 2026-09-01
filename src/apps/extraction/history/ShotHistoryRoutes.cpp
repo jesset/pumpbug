@@ -361,8 +361,9 @@ bool requireMetadataPrecondition(WebServer& server, const ShotStore& store,
     return false;
   }
   if (nonce != store.bootNonce() || etagId != id) {
+    server.sendHeader("X-Shot-Metadata-Conflict", "shot-identity");
     server.send(412, "application/json",
-                "{\"error\":\"shot metadata changed; reload before saving\"}");
+                "{\"error\":\"shot identity changed; reopen before saving\"}");
     return false;
   }
   return true;
@@ -431,6 +432,7 @@ void sendMetadataWriteError(WebServer& server,
                   "{\"error\":\"shot metadata version is unsupported\"}");
       return;
     case ShotUserMetadataWriteResult::Conflict:
+      server.sendHeader("X-Shot-Metadata-Conflict", "metadata");
       server.send(
           412, "application/json",
           "{\"error\":\"shot metadata changed; reload before saving\"}");
@@ -482,6 +484,35 @@ void handleShotMetadataGet(WebServer& server, ShotStore& store) {
       break;
   }
   sendReadableMetadata(server, id, store, metadata, true);
+}
+
+void handleShotMetadataInitialize(WebServer& server, ShotStore& store,
+                                  uint32_t eligibleShotId) {
+  uint32_t id = 0;
+  if (!requireShotId(server, id)) return;
+  String body;
+  if (!requireJsonRequestBody(server, body)) return;
+  if (id != eligibleShotId) {
+    server.send(409, "application/json",
+                "{\"error\":\"shot is not eligible for automatic metadata "
+                "initialization\",\"reason\":\"shot_not_eligible\"}");
+    return;
+  }
+
+  ShotUserMetadata saved;
+  const auto result = store.initializeUserMetadata(
+      id, reinterpret_cast<const uint8_t*>(body.c_str()), body.length(), saved);
+  if (result == ShotUserMetadataWriteResult::Conflict) {
+    server.send(409, "application/json",
+                "{\"error\":\"shot metadata has already been set or cleared\","
+                "\"reason\":\"metadata_not_absent\"}");
+    return;
+  }
+  if (result != ShotUserMetadataWriteResult::Ok) {
+    sendMetadataWriteError(server, result);
+    return;
+  }
+  sendReadableMetadata(server, id, store, saved, false);
 }
 
 void handleShotMetadataPut(WebServer& server, ShotStore& store) {
