@@ -106,6 +106,12 @@ struct CausalPourSample {
   bool haveFlow = false;
   float flowCgPerS = 0.0f;
   CausalPourBand band = CausalPourBand::Unknown;
+  // The classifier's current settled weight. settledReferenceUpdated is true
+  // when this sample established or refreshed it. haveSettledReference becomes
+  // false after a gap or a step that cannot be caused by pouring.
+  bool haveSettledReference = false;
+  bool settledReferenceUpdated = false;
+  int16_t settledReferenceCg = 0;
   // The weight to use as the pour's starting point if a run opens at this
   // sample: the last settled weight if still trustworthy, else this sample's
   // own weight.
@@ -187,7 +193,10 @@ class CausalPourClassifier {
     if ((isSettledBand(s.band) && flatStep) || _flatRun >= kRunCloseSamples) {
       _lastSettledCg = cg;
       _haveSettled = true;
+      s.settledReferenceUpdated = true;
     }
+    s.haveSettledReference = _haveSettled;
+    s.settledReferenceCg = _lastSettledCg;
     s.pourStartCandidateCg = _haveSettled ? _lastSettledCg : cg;
     return s;
   }

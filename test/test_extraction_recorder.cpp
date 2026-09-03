@@ -424,6 +424,64 @@ void testPostPumpCupLiftUsesPreDiscontinuityEndpoint() {
   CHECK(done.yieldCg > 3500 && done.yieldCg < 4500);
 }
 
+void testSingleDisturbedReadingUsesSettledPostPumpEndpoint() {
+  pump_scale::ExtractionRecorder r;
+
+  float g = 0.0f;
+  uint32_t t = pourTo(r, 2000, 40.0f, g);
+  for (int i = 0; i < 5; ++i) {
+    r.update(t, pumpOff(), scaleAt(t, 38.7f));
+    t += 200;
+  }
+  r.update(t, pumpOff(), scaleAt(t, 38.8f));
+  t += 200;
+  r.update(t, pumpOff(), scaleAt(t, 41.1f));
+  t += 200;
+  r.update(t, pumpOff(), scaleAt(t, 88.5f));
+
+  for (int i = 0; i < 100 && r.finishedSeq() == 0; ++i) {
+    t += 200;
+    r.update(t, pumpOff(), scaleAt(t, 88.5f));
+  }
+
+  CHECK(r.finishedSeq() == 1);
+  if (r.finishedSeq() != 1) return;
+  const pump_scale::Extraction& done = r.lastFinished();
+  CHECK(done.yieldStatus == pump_scale::YieldStatus::DISTURBED);
+  CHECK(done.settledRawCg == 8850);
+  CHECK(done.yieldCg == 3880);
+}
+
+void testSustainedPostPumpGainSurvivesEndpointRecovery() {
+  pump_scale::ExtractionRecorder r;
+
+  float g = 0.0f;
+  uint32_t t = pourTo(r, 2000, 36.0f, g);
+  for (int i = 0; i < 5; ++i) {
+    r.update(t, pumpOff(), scaleAt(t, 36.12f));
+    t += 100;
+  }
+  float postPumpG = 36.12f;
+  for (int i = 0; i < 13; ++i) {
+    postPumpG += 0.12f;
+    r.update(t, pumpOff(), scaleAt(t, postPumpG));
+    t += 100;
+  }
+  r.update(t, pumpOff(), scaleAt(t, 0.0f));
+
+  for (int i = 0; i < 100 && r.finishedSeq() == 0; ++i) {
+    t += 150;
+    r.update(t, pumpOff(), scaleAt(t, 0.0f));
+  }
+
+  CHECK(r.finishedSeq() == 1);
+  if (r.finishedSeq() != 1) return;
+  const pump_scale::Extraction& done = r.lastFinished();
+  CHECK(done.yieldStatus == pump_scale::YieldStatus::DISTURBED);
+  CHECK(done.settledRawCg == 0);
+  CHECK(done.yieldCg == 3768);
+}
+
 const pump_scale::Extraction& finishAfterPrePumpEndpointChange(
     pump_scale::ExtractionRecorder& r, uint32_t t, int16_t endpointCg) {
   // Apply the changed scale reference before pump-off, then hold that reading
@@ -660,6 +718,8 @@ int main() {
   testScaleAbsentAtStartStoresRaw();
   testCurrentYieldCgIsEndpointYield();
   testPostPumpCupLiftUsesPreDiscontinuityEndpoint();
+  testSingleDisturbedReadingUsesSettledPostPumpEndpoint();
+  testSustainedPostPumpGainSurvivesEndpointRecovery();
   testSevereEndpointGainDisagreementUsesPourGain();
   testSevereDisagreementOverridesPostPumpEndpointRecovery();
   testEndpointAtThreeQuartersOfPourGainIsDisturbed();

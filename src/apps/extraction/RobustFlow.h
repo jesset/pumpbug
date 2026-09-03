@@ -174,27 +174,75 @@ struct PourEvidence {
   int16_t startRawCg = 0;  // last flat weight before the first pour run
 };
 
-// Find the last trustworthy endpoint before the first material weight change
-// after the final pump-off. Continued dripping changes weight gradually; a
-// material step instead indicates that the cup or scale was moved. The final
-// raw reading remains available separately for diagnosis.
+// Endpoint recovery refers to finding the correct yield when the shot recorder
+// wasn't able to detect a stable yield after the pump went off, possibly
+// because the cup was lifted. Before the lift produces a large movement that
+// can be detected, it can produce a transient that alters the scale reading,
+// typically for just one sample. We filter out this transient when establishing
+// the recovered yield.
+
+// A reading further from the settled weight is considered a transient.
+// Determined experimentally.
+inline constexpr int32_t kEndpointTransientRangeCg = 20;  // 0.2 g
+// A transient is at most this far from the discontinuity. Determined
+// experimentally.
+inline constexpr uint32_t kEndpointTransientMaxMs = 330;
+
+// Find the first pour discontinuity (large weight change/step) after pump off,
+// and return the stable weight before it. Typically, it will be the last
+// reading before the discontinuity, or the one before it when that reading is
+// deemed a transient. Returns false when no material step is found.
 inline bool endpointBeforePostPumpDiscontinuity(const Sample* samples,
                                                 size_t count,
                                                 uint32_t pumpOffConfirmedMs,
                                                 int16_t& outCg) {
   if (count < 2 || pumpOffConfirmedMs == 0) return false;
 
-  for (size_t i = 1; i < count; ++i) {
-    if (static_cast<int32_t>(samples[i].tMs - pumpOffConfirmedMs) < 0) continue;
-    const int32_t rawStep =
-        static_cast<int32_t>(samples[i].cg) - samples[i - 1].cg;
-    const uint32_t dt = flowDeltaMs(samples[i - 1], samples[i]);
-    // Deliberately use the raw-step threshold, not isFlowBreakEdge: a fast
-    // sub-gram tail fluctuation is a flow-series break but not material cup or
-    // scale movement.
-    if (isNonPourStep(rawStep, dt)) {
-      outCg = samples[i - 1].cg;
-      return true;
+  // Try to find a settled weight using the classifier.
+  CausalPourClassifier classifier;
+  bool havePostPumpReference = false;
+  int16_t settledReferenceCg = 0;
+
+  auto isNearSettledReference = [&](int16_t cg) {
+    const int32_t delta = static_cast<int32_t>(cg) - settledReferenceCg;
+    return delta >= -kEndpointTransientRangeCg &&
+           delta <= kEndpointTransientRangeCg;
+  };
+
+  for (size_t i = 0; i < count; ++i) {
+    const bool postPump =
+        static_cast<int32_t>(samples[i].tMs - pumpOffConfirmedMs) >= 0;
+    if (postPump && i > 0) {
+      const int32_t rawStep =
+          static_cast<int32_t>(samples[i].cg) - samples[i - 1].cg;
+      const uint32_t dt = flowDeltaMs(samples[i - 1], samples[i]);
+      // Endpoint selection requires a material raw step.
+      if (isNonPourStep(rawStep, dt)) {
+        outCg = samples[i - 1].cg;
+        if (i >= 2) {
+          if (dt > 0 && dt <= kEndpointTransientMaxMs &&
+              samples[i - 1].tMs != samples[i - 2].tMs &&
+              havePostPumpReference &&
+              isNearSettledReference(samples[i - 2].cg) &&
+              !isNearSettledReference(samples[i - 1].cg)) {
+            outCg = samples[i - 2].cg;
+          }
+        }
+        return true;
+      }
+    }
+
+    const CausalPourSample s = classifier.update(samples[i].tMs, samples[i].cg);
+    if (!s.accepted || !postPump) continue;
+
+    if (!s.haveSettledReference) {
+      havePostPumpReference = false;
+      continue;
+    }
+
+    if (s.settledReferenceUpdated) {
+      havePostPumpReference = true;
+      settledReferenceCg = s.settledReferenceCg;
     }
   }
   return false;
