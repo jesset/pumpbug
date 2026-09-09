@@ -3,10 +3,6 @@
 
 #include "json_validate.h"
 
-#include <cJSON.h>
-
-#include <cctype>
-
 namespace json {
 namespace {
 
@@ -58,37 +54,165 @@ bool isValidUtf8(const char* text, size_t length) {
   return true;
 }
 
-bool hasAcceptableNesting(const char* text, size_t length, size_t maxNesting) {
-  size_t depth = 0;
-  bool inString = false;
-  bool escaped = false;
-  for (size_t i = 0; i < length; ++i) {
-    const char c = text[i];
-    if (inString) {
-      if (static_cast<unsigned char>(c) < 0x20u) return false;
-      if (escaped) {
-        escaped = false;
-      } else if (c == '\\') {
-        escaped = true;
-      } else if (c == '"') {
-        inString = false;
+// Only containers increase depth, which bounds the recursive calls.
+class SyntaxParser {
+ public:
+  SyntaxParser(const char* text, size_t length, size_t maxNesting)
+      : pos_(text), end_(text + length), maxNesting_(maxNesting) {}
+
+  ObjectValidationResult parseDocument() {
+    skipWhitespace();
+    const bool object = pos_ != end_ && *pos_ == '{';
+    if (!parseValue(0)) return ObjectValidationResult::InvalidJson;
+    skipWhitespace();
+    if (pos_ != end_) return ObjectValidationResult::InvalidJson;
+    return object ? ObjectValidationResult::Valid
+                  : ObjectValidationResult::NotObject;
+  }
+
+ private:
+  static bool isDigit(char c) { return c >= '0' && c <= '9'; }
+
+  static bool isHexDigit(char c) {
+    return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+  }
+
+  bool consume(char c) {
+    if (pos_ == end_ || *pos_ != c) return false;
+    ++pos_;
+    return true;
+  }
+
+  void skipWhitespace() {
+    while (pos_ != end_) {
+      switch (*pos_) {
+        case ' ':
+        case '\t':
+        case '\n':
+        case '\r':
+          ++pos_;
+          break;
+        default:
+          return;
       }
-      continue;
-    }
-    if (static_cast<unsigned char>(c) < 0x20u && c != '\t' && c != '\n' &&
-        c != '\r') {
-      return false;
-    }
-    if (c == '"') {
-      inString = true;
-    } else if (c == '{' || c == '[') {
-      if (++depth > maxNesting) return false;
-    } else if ((c == '}' || c == ']') && depth != 0) {
-      --depth;
     }
   }
-  return true;
-}
+
+  bool readString() {
+    if (!consume('"')) return false;
+    while (pos_ != end_) {
+      const auto c = static_cast<unsigned char>(*pos_++);
+      if (c == '"') return true;
+      if (c < 0x20u) return false;
+      if (c != '\\') continue;
+      if (pos_ == end_) return false;
+      switch (*pos_++) {
+        case '"':
+        case '\\':
+        case '/':
+        case 'b':
+        case 'f':
+        case 'n':
+        case 'r':
+        case 't':
+          break;
+        case 'u':
+          for (unsigned i = 0; i < 4; ++i) {
+            if (pos_ == end_ || !isHexDigit(*pos_)) return false;
+            ++pos_;
+          }
+          break;
+        default:
+          return false;
+      }
+    }
+    return false;
+  }
+
+  bool readDigits() {
+    const char* begin = pos_;
+    while (pos_ != end_ && isDigit(*pos_)) ++pos_;
+    return pos_ != begin;
+  }
+
+  // Check the spelling of numbers without conversion, so validation is
+  // independent of numeric precision, floating-point range, and locale.
+  bool readNumber() {
+    consume('-');
+    if (consume('0')) {
+      if (pos_ != end_ && isDigit(*pos_)) return false;
+    } else if (!readDigits()) {
+      return false;
+    }
+    if (consume('.') && !readDigits()) return false;
+    if (consume('e') || consume('E')) {
+      if (!consume('+')) consume('-');
+      if (!readDigits()) return false;
+    }
+    return true;
+  }
+
+  bool readKeyword(const char* keyword) {
+    while (*keyword) {
+      if (!consume(*keyword++)) return false;
+    }
+    return true;
+  }
+
+  // depth counts enclosing containers. Check the limit before descending
+  // into another one; scalar values do not consume a level.
+  bool parseValue(size_t depth) {
+    skipWhitespace();
+    if (pos_ == end_) return false;
+    switch (*pos_) {
+      case '{':
+        return depth < maxNesting_ && parseObject(depth + 1);
+      case '[':
+        return depth < maxNesting_ && parseArray(depth + 1);
+      case '"':
+        return readString();
+      case 't':
+        return readKeyword("true");
+      case 'f':
+        return readKeyword("false");
+      case 'n':
+        return readKeyword("null");
+      default:
+        return (*pos_ == '-' || isDigit(*pos_)) && readNumber();
+    }
+  }
+
+  bool parseObject(size_t depth) {
+    ++pos_;
+    skipWhitespace();
+    if (consume('}')) return true;
+    do {
+      skipWhitespace();
+      if (!readString()) return false;
+      skipWhitespace();
+      if (!consume(':') || !parseValue(depth)) return false;
+      skipWhitespace();
+      if (consume('}')) return true;
+    } while (consume(','));
+    return false;
+  }
+
+  bool parseArray(size_t depth) {
+    ++pos_;
+    skipWhitespace();
+    if (consume(']')) return true;
+    do {
+      if (!parseValue(depth)) return false;
+      skipWhitespace();
+      if (consume(']')) return true;
+    } while (consume(','));
+    return false;
+  }
+
+  const char* pos_;
+  const char* const end_;
+  const size_t maxNesting_;
+};
 
 }  // namespace
 
@@ -102,23 +226,7 @@ ObjectValidationResult validateObject(const char* text, size_t length,
   if (!isValidUtf8(text, length)) {
     return ObjectValidationResult::InvalidUtf8;
   }
-  if (!hasAcceptableNesting(text, length, maxNesting)) {
-    return ObjectValidationResult::InvalidJson;
-  }
-
-  const char* parseEnd = nullptr;
-  cJSON* root = cJSON_ParseWithLengthOpts(text, length, &parseEnd, false);
-  if (!root) return ObjectValidationResult::InvalidJson;
-  while (parseEnd < text + length &&
-         std::isspace(static_cast<unsigned char>(*parseEnd))) {
-    ++parseEnd;
-  }
-  const bool consumed = parseEnd == text + length;
-  const bool object = cJSON_IsObject(root);
-  cJSON_Delete(root);
-  if (!consumed) return ObjectValidationResult::InvalidJson;
-  return object ? ObjectValidationResult::Valid
-                : ObjectValidationResult::NotObject;
+  return SyntaxParser(text, length, maxNesting).parseDocument();
 }
 
 }  // namespace json

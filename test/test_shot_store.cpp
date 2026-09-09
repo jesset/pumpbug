@@ -840,30 +840,83 @@ void testMetadataRejectsUnsupportedAndOversizedTails() {
 
 void testMetadataWriteRejectsInvalidJsonWithoutChangingTheRecord() {
   resetStorage();
-  const std::vector<uint8_t> raw = encodedShot(encodableShot());
-  LittleFS.addFile(shotPath(1), raw);
+  const std::string original = R"({"coffee":{"name":"Keep me"},"rating":5})";
+  LittleFS.addFile(shotPath(1),
+                   storedShotWithMetadata(
+                       pump_scale::ShotMetadataStoredState::Active,
+                       std::vector<uint8_t>(original.begin(), original.end()),
+                       original.size()));
+  LittleFS.addFile(shotPath(2), encodedShot(encodableShot()));
 
   ShotStore store;
   pump_scale::ShotUserMetadata metadata;
   assert(store.readUserMetadata(1, metadata) ==
          pump_scale::ShotStoreReadResult::Ok);
+  const auto beforeEdit = readFile(shotPath(1));
+  const auto beforeInitialize = readFile(shotPath(2));
+  const auto revision = store.revision();
 
-  constexpr char empty[] = "";
-  assert(store.writeUserMetadata(1, reinterpret_cast<const uint8_t*>(empty), 0,
-                                 metadata, metadata) ==
-         pump_scale::ShotUserMetadataWriteResult::InvalidJson);
+  using Result = pump_scale::ShotUserMetadataWriteResult;
+  const struct {
+    std::string text;
+    Result result;
+  } cases[] = {
+      {"", Result::InvalidJson},
+      {"[]", Result::NotObject},
+      {"1", Result::NotObject},
+      {"\xEF\xBB\xBF{}", Result::InvalidJson},
+      {R"({"rating":01})", Result::InvalidJson},
+      {R"({"rating":1.})", Result::InvalidJson},
+      {R"({"rating":1,})", Result::InvalidJson},
+      {R"({"tags":["a",]})", Result::InvalidJson},
+      {std::string("{}\0extra", 8), Result::InvalidJson},
+      {"{\f\"rating\":1}", Result::InvalidJson},
+      {"{\"notes\":\"\xFF\"}", Result::InvalidJson},
+      {"{\"x\":" + std::string(pump_scale::kMaxShotMetadataJsonNesting, '[') +
+           "0" + std::string(pump_scale::kMaxShotMetadataJsonNesting, ']') +
+           "}",
+       Result::InvalidJson},
+      {std::string(pump_scale::kMaxShotMetadataJsonBytes + 1, 'x'),
+       Result::TooLarge},
+  };
+  for (const auto& item : cases) {
+    pump_scale::ShotUserMetadata ignored;
+    const auto* bytes = reinterpret_cast<const uint8_t*>(item.text.data());
+    assert(store.writeUserMetadata(1, bytes, item.text.size(), metadata,
+                                   ignored) == item.result);
+    assert(store.initializeUserMetadata(2, bytes, item.text.size(), ignored) ==
+           item.result);
+    assert(readFile(shotPath(1)) == beforeEdit);
+    assert(readFile(shotPath(2)) == beforeInitialize);
+    assert(store.revision() == revision);
+  }
 
-  constexpr char invalid[] = "[]";
-  const std::vector<uint8_t> before = readFile(shotPath(1));
-  assert(store.writeUserMetadata(1, reinterpret_cast<const uint8_t*>(invalid),
-                                 sizeof(invalid) - 1, metadata, metadata) ==
-         pump_scale::ShotUserMetadataWriteResult::NotObject);
+  pump_scale::ShotUserMetadata current;
+  assert(store.readUserMetadata(1, current) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(current.state == metadata.state);
+  assert(current.crc32 == metadata.crc32);
+  assert(current.json == original);
+}
 
-  constexpr uint8_t bom[] = {0xEF, 0xBB, 0xBF, '{', '}'};
-  assert(store.writeUserMetadata(1, bom, sizeof(bom), metadata, metadata) ==
-         pump_scale::ShotUserMetadataWriteResult::InvalidJson);
-  assert(readFile(shotPath(1)) == before);
-  assert(store.revision() == 0);
+void testMetadataWritesPreserveJsonText() {
+  resetStorage();
+  LittleFS.addFile(shotPath(1), encodedShot(encodableShot()));
+  ShotStore store;
+  const std::string original =
+      R"( { "n": 123456789012345678901234567890, "f": 1.2300e+004, "s": "\u0061" } )";
+  const auto* bytes = reinterpret_cast<const uint8_t*>(original.data());
+  pump_scale::ShotUserMetadata saved;
+  assert(store.initializeUserMetadata(1, bytes, original.size(), saved) ==
+         pump_scale::ShotUserMetadataWriteResult::Ok);
+  assert(saved.json == original);
+  assert(store.writeUserMetadata(1, bytes, original.size(), saved, saved) ==
+         pump_scale::ShotUserMetadataWriteResult::Ok);
+  assert(saved.json == original);
+
+  pump_scale::ShotHistoryEntry entry;
+  assert(store.readHistoryEntry(1, entry));
+  assert(entry.userMetadata.json == original);
 }
 
 void testSaveRotatesAFullWarmCache() {
@@ -989,6 +1042,7 @@ int main() {
   testMetadataGrowthLimitAndWriteFailure();
   testMetadataRejectsUnsupportedAndOversizedTails();
   testMetadataWriteRejectsInvalidJsonWithoutChangingTheRecord();
+  testMetadataWritesPreserveJsonText();
   testSaveRotatesAFullWarmCache();
   testRetentionRemovesNamedRecordFromWarmCache();
   testFailedWriteAdvancesColdRevision();

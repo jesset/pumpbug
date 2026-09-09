@@ -16,9 +16,15 @@ enum class ObjectValidationResult : uint8_t {
   NotObject,
 };
 
-// Validates one UTF-8 JSON document. The document must be an object, use at
-// most `maxLength` bytes, and have an object-or-array nesting depth no greater
-// than `maxNesting`.
+// Validates one UTF-8 JSON document without heap allocation. When all checks
+// pass, returns `Valid` for an object root or `NotObject` for any other root.
+//
+// The input is limited to `maxLength` bytes and `maxNesting` levels of objects
+// and arrays, counting the outermost container as level 1. The nesting limit
+// bounds recursive stack use; exceeding it returns `InvalidJson`.
+//
+// Null input and a leading UTF-8 byte order mark are rejected as `InvalidJson`.
+// Escaped UTF-16 surrogates need not be paired.
 ObjectValidationResult validateObject(const char* text, size_t length,
                                       size_t maxLength, size_t maxNesting);
 

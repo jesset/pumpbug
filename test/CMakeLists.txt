@@ -14,6 +14,10 @@ endfunction()
 
 add_host_test(test_navigation_stack)
 add_host_test(
+  test_json_validate
+  "${PROJECT_SOURCE_DIR}/src/util/json_validate.cpp"
+)
+add_host_test(
   test_shot_counter
   "${PROJECT_SOURCE_DIR}/src/apps/extraction/ShotCounter.cpp"
 )
@@ -35,7 +39,7 @@ add_host_test(
   "${PROJECT_SOURCE_DIR}/src/apps/extraction/ExtractionWire.cpp"
   "${PROJECT_SOURCE_DIR}/src/apps/extraction/extraction_encoding.cpp"
   "${PROJECT_SOURCE_DIR}/src/util/crc32.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/stubs/json_validate.cpp"
+  "${PROJECT_SOURCE_DIR}/src/util/json_validate.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/stubs/storage_file_access.cpp"
 )
 target_include_directories(
