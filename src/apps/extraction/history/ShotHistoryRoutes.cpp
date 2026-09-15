@@ -13,6 +13,8 @@
 
 #include "net/HttpServer.h"
 #include "net/JsonStream.h"
+#include "net/http_request_validation.h"
+#include "net/http_response_util.h"
 #include "util/storage.h"
 
 namespace pump_scale {
@@ -107,8 +109,7 @@ bool requireShotStorage(WebServer& server) {
   if (storage::mountState() == storage::MountState::Ready) return true;
   // An unavailable volume is neither empty history nor a missing record, so
   // report the recovery condition before emitting an ETag or reading a file.
-  server.send(503, "application/json",
-              "{\"error\":\"shot history unavailable\"}");
+  http::sendJsonError(server, 503, "shot history unavailable");
   return false;
 }
 
@@ -116,12 +117,11 @@ void handleShotRecovery(WebServer& server, ShotStore& store, uint32_t id) {
   storage::FileSnapshot file;
   switch (store.readStoredFile(id, file)) {
     case ShotStoreReadResult::Missing:
-      server.send(404, "application/json", "{\"error\":\"not found\"}");
+      http::sendJsonError(server, 404, "not found");
       return;
     case ShotStoreReadResult::InvalidRecord:
     case ShotStoreReadResult::Error:
-      server.send(500, "application/json",
-                  "{\"error\":\"record recovery read failed\"}");
+      http::sendJsonError(server, 500, "record recovery read failed");
       return;
     case ShotStoreReadResult::Ok:
       break;
@@ -146,7 +146,7 @@ void handleShotRecovery(WebServer& server, ShotStore& store, uint32_t id) {
 void handleShotDetail(WebServer& server, ShotStore& store) {
   uint32_t id = 0;
   if (!parseShotId(server.arg("id"), id)) {
-    server.send(400, "application/json", "{\"error\":\"bad id\"}");
+    http::sendJsonError(server, 400, "bad id");
     return;
   }
   if (!requireShotStorage(server)) return;
@@ -168,14 +168,13 @@ void handleShotDetail(WebServer& server, ShotStore& store) {
   EncodedExtraction record;
   switch (store.readEncodedExtraction(id, record)) {
     case ShotStoreReadResult::Missing:
-      server.send(404, "application/json", "{\"error\":\"not found\"}");
+      http::sendJsonError(server, 404, "not found");
       return;
     case ShotStoreReadResult::InvalidRecord:
-      server.send(422, "application/json", "{\"error\":\"record unreadable\"}");
+      http::sendJsonError(server, 422, "record unreadable");
       return;
     case ShotStoreReadResult::Error:
-      server.send(500, "application/json",
-                  "{\"error\":\"record read failed\"}");
+      http::sendJsonError(server, 500, "record read failed");
       return;
     case ShotStoreReadResult::Ok:
       break;
@@ -255,8 +254,7 @@ void handleShotList(WebServer& server, ShotStore& store) {
   uint32_t rev = 0;
   std::vector<uint32_t> ids;
   if (!store.page(before, limit, ids, &hasMore, &total, &rev)) {
-    server.send(500, "application/json",
-                "{\"error\":\"shot history listing failed\"}");
+    http::sendJsonError(server, 500, "shot history listing failed");
     return;
   }
 
@@ -301,43 +299,17 @@ void handleShotList(WebServer& server, ShotStore& store) {
 
 bool requireShotId(WebServer& server, uint32_t& id) {
   if (!server.hasArg("id") || !parseShotId(server.arg("id"), id)) {
-    server.send(400, "application/json", "{\"error\":\"bad id\"}");
+    http::sendJsonError(server, 400, "bad id");
     return false;
   }
   return requireShotStorage(server);
 }
 
-bool requireJsonRequestBody(WebServer& server, String& body) {
-  String contentType = server.header("Content-Type");
-  const int parameter = contentType.indexOf(';');
-  if (parameter >= 0) contentType.remove(parameter);
-  contentType.trim();
-  if (!contentType.equalsIgnoreCase("application/json")) {
-    server.send(415, "application/json",
-                "{\"error\":\"Content-Type must be application/json\"}");
-    return false;
-  }
-
-  body = server.arg("plain");
-  const int contentLength = server.clientContentLength();
-  if (contentLength < 0 ||
-      body.length() != static_cast<unsigned int>(contentLength)) {
-    server.send(400, "application/json",
-                "{\"error\":\"invalid request body\"}");
-    return false;
-  }
-  return true;
-}
-
 bool requireMetadataPrecondition(WebServer& server, const ShotStore& store,
                                  uint32_t id, ShotUserMetadata& expected) {
-  if (!server.hasHeader("If-Match")) {
-    server.send(428, "application/json",
-                "{\"error\":\"If-Match is required\"}");
-    return false;
-  }
-
-  const std::string value = server.header("If-Match").c_str();
+  String ifMatch;
+  if (!http::requireIfMatch(server, ifMatch)) return false;
+  const std::string value = ifMatch.c_str();
   unsigned long nonce = 0;
   unsigned long etagId = 0;
   unsigned long crc = 0;
@@ -347,7 +319,7 @@ bool requireMetadataPrecondition(WebServer& server, const ShotStore& store,
                   &etagId, &stateCode, &crc, &consumed) != 4 ||
       consumed != static_cast<int>(value.size()) ||
       !metadataStateFromCode(stateCode, expected.state)) {
-    server.send(400, "application/json", "{\"error\":\"invalid If-Match\"}");
+    http::sendJsonError(server, 400, "invalid If-Match");
     return false;
   }
   expected.available = true;
@@ -357,13 +329,13 @@ bool requireMetadataPrecondition(WebServer& server, const ShotStore& store,
   makeMetadataEtag(canonical, sizeof(canonical), static_cast<uint32_t>(nonce),
                    static_cast<uint32_t>(etagId), expected);
   if (value != canonical) {
-    server.send(400, "application/json", "{\"error\":\"invalid If-Match\"}");
+    http::sendJsonError(server, 400, "invalid If-Match");
     return false;
   }
   if (nonce != store.bootNonce() || etagId != id) {
     server.sendHeader("X-Shot-Metadata-Conflict", "shot-identity");
-    server.send(412, "application/json",
-                "{\"error\":\"shot identity changed; reopen before saving\"}");
+    http::sendJsonError(server, 412,
+                        "shot identity changed; reopen before saving");
     return false;
   }
   return true;
@@ -389,14 +361,12 @@ bool sendReadableMetadata(WebServer& server, uint32_t id,
 
   if (metadata.state == ShotUserMetadataState::Corrupt) {
     setMetadataResponseHeaders(server, metadata, etag);
-    server.send(409, "application/json",
-                "{\"error\":\"shot metadata is corrupt\"}");
+    http::sendJsonError(server, 409, "shot metadata is corrupt");
     return false;
   }
   if (metadata.state == ShotUserMetadataState::Unsupported) {
     setMetadataResponseHeaders(server, metadata, etag);
-    server.send(409, "application/json",
-                "{\"error\":\"shot metadata version is unsupported\"}");
+    http::sendJsonError(server, 409, "shot metadata version is unsupported");
     return false;
   }
 
@@ -414,40 +384,34 @@ void sendMetadataWriteError(WebServer& server,
                             ShotUserMetadataWriteResult result) {
   switch (result) {
     case ShotUserMetadataWriteResult::Missing:
-      server.send(404, "application/json", "{\"error\":\"not found\"}");
+      http::sendJsonError(server, 404, "not found");
       return;
     case ShotUserMetadataWriteResult::InvalidRecord:
-      server.send(422, "application/json", "{\"error\":\"record unreadable\"}");
+      http::sendJsonError(server, 422, "record unreadable");
       return;
     case ShotUserMetadataWriteResult::InvalidJson:
-      server.send(400, "application/json",
-                  "{\"error\":\"invalid shot metadata JSON\"}");
+      http::sendJsonError(server, 400, "invalid shot metadata JSON");
       return;
     case ShotUserMetadataWriteResult::NotObject:
-      server.send(400, "application/json",
-                  "{\"error\":\"shot metadata must be a JSON object\"}");
+      http::sendJsonError(server, 400, "shot metadata must be a JSON object");
       return;
     case ShotUserMetadataWriteResult::Unsupported:
-      server.send(409, "application/json",
-                  "{\"error\":\"shot metadata version is unsupported\"}");
+      http::sendJsonError(server, 409, "shot metadata version is unsupported");
       return;
     case ShotUserMetadataWriteResult::Conflict:
       server.sendHeader("X-Shot-Metadata-Conflict", "metadata");
-      server.send(
-          412, "application/json",
-          "{\"error\":\"shot metadata changed; reload before saving\"}");
+      http::sendJsonError(server, 412,
+                          "shot metadata changed; reload before saving");
       return;
     case ShotUserMetadataWriteResult::CannotRepair:
-      server.send(409, "application/json",
-                  "{\"error\":\"damaged shot metadata cannot be replaced\"}");
+      http::sendJsonError(server, 409,
+                          "damaged shot metadata cannot be replaced");
       return;
     case ShotUserMetadataWriteResult::TooLarge:
-      server.send(413, "application/json",
-                  "{\"error\":\"shot metadata is too large\"}");
+      http::sendJsonError(server, 413, "shot metadata is too large");
       return;
     case ShotUserMetadataWriteResult::Error:
-      server.send(500, "application/json",
-                  "{\"error\":\"could not update shot metadata\"}");
+      http::sendJsonError(server, 500, "could not update shot metadata");
       return;
     case ShotUserMetadataWriteResult::Ok:
       return;
@@ -471,14 +435,13 @@ void handleShotMetadataGet(WebServer& server, ShotStore& store) {
   ShotUserMetadata metadata;
   switch (store.readUserMetadata(id, metadata)) {
     case ShotStoreReadResult::Missing:
-      server.send(404, "application/json", "{\"error\":\"not found\"}");
+      http::sendJsonError(server, 404, "not found");
       return;
     case ShotStoreReadResult::InvalidRecord:
-      server.send(422, "application/json", "{\"error\":\"record unreadable\"}");
+      http::sendJsonError(server, 422, "record unreadable");
       return;
     case ShotStoreReadResult::Error:
-      server.send(500, "application/json",
-                  "{\"error\":\"shot metadata read failed\"}");
+      http::sendJsonError(server, 500, "shot metadata read failed");
       return;
     case ShotStoreReadResult::Ok:
       break;
@@ -491,11 +454,13 @@ void handleShotMetadataInitialize(WebServer& server, ShotStore& store,
   uint32_t id = 0;
   if (!requireShotId(server, id)) return;
   String body;
-  if (!requireJsonRequestBody(server, body)) return;
+  if (!http::requireJsonRequestBody(server, kMaxShotMetadataJsonBytes, body))
+    return;
   if (id != eligibleShotId) {
-    server.send(409, "application/json",
-                "{\"error\":\"shot is not eligible for automatic metadata "
-                "initialization\",\"reason\":\"shot_not_eligible\"}");
+    http::sendJsonError(
+        server, 409,
+        "shot is not eligible for automatic metadata initialization",
+        "shot_not_eligible");
     return;
   }
 
@@ -503,9 +468,9 @@ void handleShotMetadataInitialize(WebServer& server, ShotStore& store,
   const auto result = store.initializeUserMetadata(
       id, reinterpret_cast<const uint8_t*>(body.c_str()), body.length(), saved);
   if (result == ShotUserMetadataWriteResult::Conflict) {
-    server.send(409, "application/json",
-                "{\"error\":\"shot metadata has already been set or cleared\","
-                "\"reason\":\"metadata_not_absent\"}");
+    http::sendJsonError(server, 409,
+                        "shot metadata has already been set or cleared",
+                        "metadata_not_absent");
     return;
   }
   if (result != ShotUserMetadataWriteResult::Ok) {
@@ -519,7 +484,8 @@ void handleShotMetadataPut(WebServer& server, ShotStore& store) {
   uint32_t id = 0;
   if (!requireShotId(server, id)) return;
   String body;
-  if (!requireJsonRequestBody(server, body)) return;
+  if (!http::requireJsonRequestBody(server, kMaxShotMetadataJsonBytes, body))
+    return;
   ShotUserMetadata expected;
   if (!requireMetadataPrecondition(server, store, id, expected)) return;
 

@@ -12,6 +12,7 @@
 #include "diagnostics/RuntimeEventLog.h"
 #include "net/HttpServer.h"
 #include "net/JsonStream.h"
+#include "net/http_response_util.h"
 #include "scale_snapshot_util.h"
 #include "util/scoped_lock.h"
 #include "util/storage.h"
@@ -437,23 +438,22 @@ ExtractionController::TickOutcome ExtractionController::replayTick(
 
 void ExtractionController::_handleSetLoaded(WebServer& server) {
   if (!server.hasArg("id")) {
-    server.send(400, "application/json", "{\"error\":\"missing id\"}");
+    http::sendJsonError(server, 400, "missing id");
     return;
   }
   const long id = server.arg("id").toInt();
   if (id <= 0) {
-    server.send(404, "application/json", "{\"error\":\"no such shot\"}");
+    http::sendJsonError(server, 404, "no such shot");
     return;
   }
   // Distinguish an unreadable history volume from an absent record.
   if (storage::mountState() != storage::MountState::Ready) {
-    server.send(503, "application/json",
-                "{\"error\":\"shot history unavailable\"}");
+    http::sendJsonError(server, 503, "shot history unavailable");
     return;
   }
   ShotSummary summary;
   if (!_shotStore.readSummary(static_cast<uint32_t>(id), summary)) {
-    server.send(404, "application/json", "{\"error\":\"no such shot\"}");
+    http::sendJsonError(server, 404, "no such shot");
     return;
   }
   // Queue for the main task; the decode + slot write happen there in tick().
@@ -475,8 +475,7 @@ void ExtractionController::_writeCompact(WebServer& server,
 void ExtractionController::_sendSnapshot(WebServer& server) {
   size_t total = 0;
   if (!encodeCompactSize(_snapshot, total)) {
-    server.send(500, "application/json",
-                "{\"error\":\"record version cannot be encoded\"}");
+    http::sendJsonError(server, 500, "record version cannot be encoded");
     return;
   }
   server.setContentLength(total);
@@ -501,7 +500,7 @@ void ExtractionController::_handleLast(WebServer& server) {
     }
   }
   if (!have) {
-    server.send(404, "application/json", "{\"error\":\"no shot recorded\"}");
+    http::sendJsonError(server, 404, "no shot recorded");
     return;
   }
   _sendSnapshot(server);

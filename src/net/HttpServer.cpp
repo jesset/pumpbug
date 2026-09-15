@@ -12,6 +12,7 @@
 
 #include "WifiManager.h"
 #include "embedded_assets.h"
+#include "http_response_util.h"
 #include "product.h"
 #include "util/scoped_lock.h"
 
@@ -310,8 +311,7 @@ void HttpServer::_bindRoutes(WebServer& server) {
         AuthMiddleware gate = mw;
         sp->on(full.c_str(), route.method, [sp, handler, gate]() {
           if (!gate(*sp)) {
-            sp->send(401, "application/json",
-                     "{\"error\":\"unauthenticated\"}");
+            http::sendJsonError(*sp, 401, "unauthenticated");
             return;
           }
           handler(*sp);
@@ -319,9 +319,8 @@ void HttpServer::_bindRoutes(WebServer& server) {
       } else {
         // requiresAuth=true but no middleware installed — fail closed
         // rather than silently exposing the route.
-        sp->on(full.c_str(), route.method, [sp]() {
-          sp->send(503, "application/json", "{\"error\":\"auth unavailable\"}");
-        });
+        sp->on(full.c_str(), route.method,
+               [sp]() { http::sendJsonError(*sp, 503, "auth unavailable"); });
       }
     }
   }

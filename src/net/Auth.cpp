@@ -13,6 +13,7 @@
 
 #include "HttpServer.h"
 #include "PairRedirectPolicy.h"
+#include "http_response_util.h"
 #include "util/hex.h"
 #include "util/scoped_lock.h"
 
@@ -188,7 +189,7 @@ std::string Auth::_mintClientToken(WebServer& server) {
 
 void Auth::_handlePair(WebServer& server) {
   if (!server.hasArg("pin")) {
-    server.send(400, "application/json", "{\"error\":\"missing pin\"}");
+    http::sendJsonError(server, 400, "missing pin");
     return;
   }
   // An already-paired browser re-pairing would only burn a token slot;
@@ -201,14 +202,12 @@ void Auth::_handlePair(WebServer& server) {
     return;
   }
   if (!_consumePairing(server.arg("pin").c_str(), /*isToken=*/false)) {
-    server.send(401, "application/json",
-                "{\"error\":\"invalid or expired pin\"}");
+    http::sendJsonError(server, 401, "invalid or expired pin");
     return;
   }
   const std::string token = _mintClientToken(server);
   if (token.empty()) {
-    server.send(500, "application/json",
-                "{\"error\":\"token store unavailable\"}");
+    http::sendJsonError(server, 500, "token store unavailable");
     return;
   }
   const std::string body = "{\"token\":\"" + token + "\"}";

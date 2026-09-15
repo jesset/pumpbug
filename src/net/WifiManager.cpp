@@ -17,6 +17,7 @@
 #include "JsonStream.h"
 #include "SseServer.h"
 #include "diagnostics/RuntimeEventLog.h"
+#include "http_response_util.h"
 #include "product.h"
 
 WifiManager wifiManager;
@@ -921,19 +922,17 @@ void WifiManager::_handleStatus(WebServer& server) {
 
 void WifiManager::_handleSetSta(WebServer& server) {
   if (!server.hasArg("ssid")) {
-    server.send(400, "application/json", "{\"error\":\"missing ssid\"}");
+    http::sendJsonError(server, 400, "missing ssid");
     return;
   }
   const String ssid = server.arg("ssid");
   const String pass = server.hasArg("pass") ? server.arg("pass") : String();
   if (ssid.length() == 0 || ssid.length() > kMaxSsidLen) {
-    server.send(400, "application/json",
-                "{\"error\":\"ssid must be 1-32 bytes\"}");
+    http::sendJsonError(server, 400, "ssid must be 1-32 bytes");
     return;
   }
   if (pass.length() > kMaxPassLen) {
-    server.send(400, "application/json",
-                "{\"error\":\"pass must be at most 63 bytes\"}");
+    http::sendJsonError(server, 400, "pass must be at most 63 bytes");
     return;
   }
   // Defer the switch to the main loop — startSta() would tear down the AP
@@ -1012,14 +1011,14 @@ void WifiManager::_handleForget(WebServer& server) {
 
 void WifiManager::_handleSetHostname(WebServer& server) {
   if (!server.hasArg("name")) {
-    server.send(400, "application/json", "{\"error\":\"missing name\"}");
+    http::sendJsonError(server, 400, "missing name");
     return;
   }
   const String name = server.arg("name");
   if (!setHostname(name.c_str())) {
-    server.send(400, "application/json",
-                "{\"error\":\"invalid name (use letters, digits, hyphens; "
-                "1-31 chars; no leading/trailing hyphen)\"}");
+    http::sendJsonError(server, 400,
+                        "invalid name (use letters, digits, hyphens; 1-31 "
+                        "chars; no leading/trailing hyphen)");
     return;
   }
   server.send(200, "application/json", "{\"ok\":true}");

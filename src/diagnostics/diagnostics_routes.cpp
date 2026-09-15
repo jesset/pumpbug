@@ -21,6 +21,7 @@
 #include "net/HttpServer.h"
 #include "net/JsonStream.h"
 #include "net/WifiManager.h"
+#include "net/http_response_util.h"
 #include "power/PowerEventLog.h"
 #include "util/power.h"  // power::getBatteryStatus() for the live block
 
@@ -464,7 +465,7 @@ bool parsePowerOffset(WebServer& s, size_t& out) {
 void servePower(WebServer& s, power::PowerEventLog& powerEventLog) {
   size_t offset = 0;
   if (!parsePowerOffset(s, offset)) {
-    s.send(400, "application/json", "{\"error\":\"bad offset\"}");
+    http::sendJsonError(s, 400, "bad offset");
     return;
   }
   power::BatteryStatus live{};
@@ -547,7 +548,7 @@ void handleLog(WebServer& s, power::PowerEventLog& powerEventLog) {
   } else if (log == "scalemsg") {
     serveScaleMsg(s);
   } else {
-    s.send(400, "application/json", "{\"error\":\"missing or unknown log\"}");
+    http::sendJsonError(s, 400, "missing or unknown log");
   }
 }
 
@@ -556,7 +557,7 @@ void handleLog(WebServer& s, power::PowerEventLog& powerEventLog) {
 // can fail (NVS open/erase), so we surface that as a 500.
 void handleClear(WebServer& s, power::PowerEventLog& powerEventLog) {
   if (!s.hasArg("log")) {
-    s.send(400, "application/json", "{\"error\":\"missing log\"}");
+    http::sendJsonError(s, 400, "missing log");
     return;
   }
   const String log = s.arg("log");
@@ -581,11 +582,11 @@ void handleClear(WebServer& s, power::PowerEventLog& powerEventLog) {
     heapMonitor.clearHistory();
     ok = diagnostics::clearLastPanicAndResync() && ok;
   } else {
-    s.send(400, "application/json", "{\"error\":\"unknown log\"}");
+    http::sendJsonError(s, 400, "unknown log");
     return;
   }
   if (!ok) {
-    s.send(500, "application/json", "{\"error\":\"clear failed\"}");
+    http::sendJsonError(s, 500, "clear failed");
     return;
   }
   std::string body = "{\"cleared\":\"";

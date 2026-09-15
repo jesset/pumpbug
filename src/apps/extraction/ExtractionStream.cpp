@@ -18,6 +18,7 @@
 #include "extraction_encoding.h"
 #include "net/HttpServer.h"
 #include "net/SseServer.h"
+#include "net/http_response_util.h"
 
 namespace pump_scale {
 
@@ -49,8 +50,7 @@ void ExtractionStream::notifySleeping() const {
 
 void ExtractionStream::_handleTicketRoute(WebServer& server) {
   if (!_sse) {
-    server.send(503, "application/json",
-                "{\"error\":\"sse server not initialized\"}");
+    http::sendJsonError(server, 503, "sse server not initialized");
     return;
   }
   // Hard-stop any active stream so the new ticket holder is the only one
