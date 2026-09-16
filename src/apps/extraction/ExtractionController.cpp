@@ -106,8 +106,8 @@ void ExtractionController::resetInFlightAndNotify() {
 
 ExtractionController::TickOutcome ExtractionController::tick(
     uint32_t nowMs, const PumpSignalObservation& pumpSignal,
-    const ScaleSnapshot& snap, uint32_t utcSec, bool newScaleSample,
-    bool scaleStateChanged) {
+    const ScaleSnapshot& snap, const TargetCoeffs& targetCoeffs,
+    uint32_t utcSec, bool newScaleSample, bool scaleStateChanged) {
   // Service a queued replay-shot load before the recorder work.
   const bool loadedShotChanged = processPendingLoad();
 
@@ -153,7 +153,7 @@ ExtractionController::TickOutcome ExtractionController::tick(
     // recorder so its STOP_NOW edge is recorded at-source.
     TrustedYieldSample ts;
     _recorder.lastTrustedYieldSample(ts);
-    _runTargetAlert(nowMs, out.phase == Phase::RUNNING, ts, curBeginMs);
+    _runTargetAlert(nowMs, out.phase, ts, curBeginMs, targetCoeffs);
     out.alertState = _targetAlert.state();
 
     // Record the frame/clock this advance ran on, so /state and SSE report the
@@ -397,7 +397,8 @@ void ExtractionController::requestRestoreLastShotIfEmpty() {
 }
 
 ExtractionController::TickOutcome ExtractionController::replayTick(
-    uint32_t nowMs, bool pumpOn, const ScaleSnapshot& snap) {
+    uint32_t nowMs, bool pumpOn, const ScaleSnapshot& snap,
+    const TargetCoeffs& targetCoeffs) {
   TickOutcome out{};
   {
     Lock l(_mutex);
@@ -415,7 +416,7 @@ ExtractionController::TickOutcome ExtractionController::replayTick(
     // Run the predictor on the same virtual clock as the recorder.
     TrustedYieldSample ts;
     _recorder.lastTrustedYieldSample(ts);
-    _runTargetAlert(nowMs, out.phase == Phase::RUNNING, ts, curBeginMs);
+    _runTargetAlert(nowMs, out.phase, ts, curBeginMs, targetCoeffs);
     out.alertState = _targetAlert.state();
 
     // Base /state's live weight/yield/elapsed on the synthesized frame and the
@@ -617,27 +618,23 @@ bool ExtractionController::snapshotDisplayShot(Extraction& out,
   return true;
 }
 
-void ExtractionController::setTargetCoeffs(const pump_scale::TargetCoeffs& c) {
-  Lock l(_mutex);
-  _targetCoeffs = c;
-}
-
-void ExtractionController::_runTargetAlert(uint32_t nowMs, bool phaseRunning,
+void ExtractionController::_runTargetAlert(uint32_t nowMs, Phase phase,
                                            const TrustedYieldSample& sample,
-                                           uint32_t curBeginMs) {
+                                           uint32_t curBeginMs,
+                                           const TargetCoeffs& targetCoeffs) {
   // Reset the predictor only on a genuinely new shot, keyed by beginMs. A
   // POST_PUMP→RUNNING coalesce keeps the same beginMs and must preserve the
   // flow estimate and STOP_NOW state across the brief pump-off.
-  if (phaseRunning && curBeginMs != _alertShotBeginMs) {
+  if (phase == Phase::RUNNING && curBeginMs != _alertShotBeginMs) {
     _alertShotBeginMs = curBeginMs;
     _targetAlert.onRunningEntry();
-    _targetAlert.setCoeffs(_targetCoeffs);
+    _targetAlert.setCoeffs(targetCoeffs);
     // Stamp the per-shot target snapshot into the record at-source.
     _recorder.setTargetSnapshot(_targetAlert.coeffs());
   }
 
   const TargetAlert::State& st =
-      _targetAlert.update(nowMs, phaseRunning, sample);
+      _targetAlert.update(nowMs, phase == Phase::RUNNING, sample);
   if (st.stopNowEdge) {
     _recorder.triggerAlarm(AlarmTrigger{nowMs, _targetAlert.snapshotAtStop()});
   }

@@ -6,10 +6,11 @@
 #include "ExtractionController.h"
 #include "ExtractionStream.h"
 #include "ShotCounter.h"
+#include "TargetRoutes.h"
+#include "TargetStore.h"
 #include "ui/ExtractionScreen.h"
 #include "ui/ResetShotCounterScreen.h"
 #include "ui/SetTargetScreen.h"
-#include "ui/TargetStore.h"
 
 class HttpServer;
 class SseServer;
@@ -24,6 +25,7 @@ class ExtractionApp {
 
   void begin() {
     _shotCounter.load();
+    _targetStore.load();
     _extractionScreen.allocateRenderingBuffers();
   }
 
@@ -37,7 +39,8 @@ class ExtractionApp {
 
   void registerWith(HttpServer& http, SseServer& sse) {
     _controller.registerWith(http);
-    _stream.registerWith(sse, http, _controller);
+    _stream.registerWith(sse, http, _controller, _targetStore);
+    pump_scale::registerTargetRoutes(http, _targetStore);
   }
 
   void notifySleeping() const { _stream.notifySleeping(); }

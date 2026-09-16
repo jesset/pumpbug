@@ -5,18 +5,35 @@
 
 #include <cstdio>
 
-#include "apps/extraction/ui/TargetStore.h"
+#include "apps/extraction/TargetStore.h"
 #include "ui/blocks.h"
 #include "ui/fonts.h"
 #include "ui/gauge.h"
 #include "ui/layout.h"
+#include "ui/message_cards.h"
 #include "ui/theme.h"
 
-void SetTargetScreen::onEnter() {
-  // Seed the digits from the shared store (load() is idempotent — a no-op once
-  // ExtractionScreen has loaded it at boot).
+static_assert(
+    pump_scale::kMinTargetCg == 1000 && pump_scale::kMaxTargetCg == 9950 &&
+        pump_scale::kTargetStepCg == 50,
+    "SetTargetScreen's digit layout assumes 10.0-99.5 g in 0.5 g steps");
+
+void SetTargetScreen::onEnter() { reload(); }
+
+void SetTargetScreen::reload() {
+  // Retry a failed load before presenting editable settings.
   _store.load();
-  const uint16_t cg = _store.targetCg();
+  _baseline = _store.snapshot();
+  if (!_baseline.available) {
+    _stage = Stage::Unavailable;
+    _field = Field::None;
+    requestDraw();
+    return;
+  }
+  _expected = _baseline;
+  _stage = Stage::Editing;
+  _edited = false;
+  const uint16_t cg = _baseline.targetCg;
   const uint16_t grams = cg / 100;  // whole grams, 0-99
   _tens = static_cast<uint8_t>((grams / 10) % 10);
   _ones = static_cast<uint8_t>(grams % 10);
@@ -24,18 +41,36 @@ void SetTargetScreen::onEnter() {
   // An unset target (0) seeds the tens digit to 1 rather than an uneditable 0,
   // so editing opens at the minimum sensible target.
   if (_tens == 0) _tens = 1;
-  _armed = _store.armed();
+  _armed = _baseline.armed;
   _field = Field::None;
   _blinkOn = true;
   requestDraw();
 }
 
-void SetTargetScreen::onExit() { persist(); }
-
-void SetTargetScreen::persist() const {
-  // Unchanged values are a no-op write: setTargetAndArmed compares against the
-  // store's current (in-memory) value first.
-  _store.setTargetAndArmed(valueCg(), _armed);
+ScreenResult SetTargetScreen::save() {
+  if (!_edited ||
+      (valueCg() == _baseline.targetCg && _armed == _baseline.armed))
+    return exit();
+  const auto current = _store.snapshot();
+  if (current.available && valueCg() == current.targetCg &&
+      _armed == current.armed)
+    return exit();
+  if (!current.sameValues(_expected)) {
+    _expected = current;
+    _stage = Stage::Conflict;
+    requestDraw();
+    return stay();
+  }
+  const auto result = _store.apply(valueCg(), _armed, current);
+  if (result == TargetStore::Result::Applied) return exit();
+  if (result == TargetStore::Result::Conflict) {
+    _expected = _store.snapshot();
+    _stage = Stage::Conflict;
+  } else {
+    _stage = Stage::Failed;
+  }
+  requestDraw();
+  return stay();
 }
 
 void SetTargetScreen::advanceField() {
@@ -60,6 +95,7 @@ void SetTargetScreen::advanceField() {
 }
 
 void SetTargetScreen::bumpField() {
+  if (_field != Field::None) _edited = true;
   switch (_field) {
     case Field::Tens:
       // Never rest at 0: that would allow a target below
@@ -84,6 +120,17 @@ void SetTargetScreen::bumpField() {
 }
 
 ScreenResult SetTargetScreen::onEvent(button::Gesture event) {
+  if (_stage != Stage::Editing) {
+    if (event == button::Gesture::A_LONG) {
+      if (_stage == Stage::Unavailable) {
+        reload();
+        return stay();
+      }
+      return save();
+    }
+    if (event == button::Gesture::B_SHORT) return exit();
+    return ignored();
+  }
   switch (event) {
     case button::Gesture::A_LONG:
       advanceField();
@@ -94,7 +141,7 @@ ScreenResult SetTargetScreen::onEvent(button::Gesture event) {
       requestDraw();
       return stay();
     case button::Gesture::B_SHORT:
-      return exit();  // onExit() persists.
+      return save();
     default:
       return ignored();
   }
@@ -111,6 +158,37 @@ ScreenResult SetTargetScreen::tick() {
 }
 
 bool SetTargetScreen::onDraw(LGFX_Sprite* c) {
+  if (_stage == Stage::Unavailable) {
+    ui::drawCriticalMessageScreen(
+        c, "Target unavailable",
+        "Device settings could not be loaded. Retry or go back.");
+    return true;
+  }
+  if (_stage == Stage::Conflict) {
+    char current[24];
+    char edited[24];
+    std::snprintf(current, sizeof(current), "%.1f g %s",
+                  _expected.targetCg / 100.0f, _expected.armed ? "ON" : "OFF");
+    std::snprintf(edited, sizeof(edited), "%.1f g %s", valueCg() / 100.0f,
+                  _armed ? "ON" : "OFF");
+    c->fillScreen(theme::bg());
+    const bool landscape = c->width() > c->height();
+    const int headerH = ui::drawViewHeader(
+        c, landscape ? "Target changed" : "Changed", theme::accent());
+    const ui::InfoBlock blocks[] = {
+        {"Current", current, theme::fg()},
+        {"Your edit", edited, theme::fg()},
+    };
+    ui::drawInfoScreen(c, headerH, nullptr, nullptr, blocks, 2, theme::bg(),
+                       "Your edit");
+    return true;
+  }
+  if (_stage == Stage::Failed) {
+    ui::drawCriticalMessageScreen(
+        c, "Target not saved",
+        "Device settings could not be saved. Retry or discard your edits.");
+    return true;
+  }
   constexpr int pad = 2;
   const int W = c->width();
   const int H = c->height();
@@ -156,6 +234,13 @@ bool SetTargetScreen::onDraw(LGFX_Sprite* c) {
 }
 
 ButtonHints SetTargetScreen::buttonHints() const {
+  if (_stage != Stage::Editing) {
+    return {{{},
+             Hint{HintGlyph::None,
+                  _stage == Stage::Conflict ? "REPLACE" : "RETRY"}},
+            {Hint{_stage == Stage::Unavailable ? HintGlyph::Back
+                                               : HintGlyph::Trash}}};
+  }
   // A-hold advances the cursor; A-tap changes the active field (so it has no
   // meaning until editing starts). B-short exits and saves.
   ButtonHints h{};

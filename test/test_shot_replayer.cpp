@@ -28,6 +28,7 @@ using pump_scale::ShotReplayer;
 // beginMs=1000, pump 1000..5000, end 6000; three raw samples; 15 g cup.
 Extraction makeShot() {
   Extraction e{};
+  e.hasTargetSnapshot = true;
   e.beginMs = 1000;
   e.lastPumpOffConfirmedMs = 5000;
   e.endMs = 6000;
@@ -128,9 +129,60 @@ void testResumeWithoutPausedTicksPreservesPosition() {
   CHECK(r.virtualNowMs() == 2500);
 }
 
+void testReplayCapturesRecordedTarget() {
+  Extraction shot = makeShot();
+  ShotReplayer replay;
+  shot.target.targetCg = 3600;
+  shot.target.armed = true;
+  shot.target.tauMs = 1234;
+  shot.target.cCg = 50;
+  shot.target.reactionLeadMs = 250;
+  replay.start(shot, 0);
+  CHECK(replay.targetCoeffs().targetCg == 3600);
+  CHECK(replay.targetCoeffs().armed);
+  CHECK(replay.targetCoeffs().tauMs == 1234);
+  CHECK(replay.targetCoeffs().cCg == 50);
+  CHECK(replay.targetCoeffs().reactionLeadMs == 250);
+  replay.setPaused(true, 100);
+  replay.setPaused(false, 200);
+  CHECK(replay.targetCoeffs().targetCg == 3600);
+
+  shot.target.targetCg = 0;
+  shot.target.armed = false;
+  replay.start(shot, 0);
+  CHECK(replay.targetCoeffs().targetCg == 0);
+  CHECK(!replay.targetCoeffs().armed);
+  CHECK(replay.targetCoeffs().tauMs == 1234);
+}
+
+void testReplayMissingTargetSnapshotDisablesAlert() {
+  Extraction shot = makeShot();
+  ShotReplayer replay;
+  shot.target.targetCg = 4000;
+  shot.target.armed = true;
+  replay.start(shot, 0);
+  CHECK(replay.targetCoeffs().armed);
+
+  // An absent snapshot must not reuse the previous session's target or the
+  // unrecorded values still present in the source object.
+  shot.hasTargetSnapshot = false;
+  replay.start(shot, 0);
+  CHECK(replay.active());
+  CHECK(replay.targetCoeffs().targetCg == 0);
+  CHECK(!replay.targetCoeffs().armed);
+  bool pumpOn = false, newSample = false;
+  ScaleSnapshot snap{};
+  CHECK(replay.tick(1000, pumpOn, snap, newSample));
+  CHECK(pumpOn);
+  CHECK(newSample);
+  CHECK(snap.grams == 17.0f);
+}
+
 }  // namespace
 
 int main() {
+  testReplayCapturesRecordedTarget();
+  testReplayMissingTargetSnapshotDisablesAlert();
   testEmitsPumpAndRawWeight();
   testStopsPastEnd();
   testPauseFreezesReplayPosition();

@@ -5,10 +5,10 @@
 const fs = require('fs');
 const vm = require('vm');
 
-const [sourcePath, historyPath, codecHeaderPath] = process.argv.slice(2);
-if (!sourcePath || !historyPath || !codecHeaderPath) {
+const [sourcePath, historyPath, codecHeaderPath, constantsPath] = process.argv.slice(2);
+if (!sourcePath || !historyPath || !codecHeaderPath || !constantsPath) {
   console.error(
-    'usage: test_shot_metadata_ui.js UI_METADATA_JS UI_HISTORY_JS CODEC_HEADER');
+    'usage: test_shot_metadata_ui.js UI_METADATA_JS UI_HISTORY_JS CODEC_HEADER CONSTANTS_JS');
   process.exit(2);
 }
 
@@ -55,6 +55,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(
+  fs.readFileSync(constantsPath, 'utf8') + '\n' +
   fs.readFileSync(historyPath, 'utf8') + '\n' +
   fs.readFileSync(sourcePath, 'utf8') + '\n' +
   'globalThis.api = { maxBytes: SHOT_METADATA_MAX_BYTES, fetchWithTimeout,' +
@@ -62,7 +63,7 @@ vm.runInContext(
     'coffeeIdentity, recipeFromMetadata, nextShotCoffee,' +
     'fieldValue, editorSectionCompatible,' +
     'readEditorValue, metadataNumericInputError, metadataEditorShot,' +
-    'recipeForCompletedShot, initializeRecentShotMetadata,' +
+    'snapshotNextShotRecipe, initializeRecentShotMetadata,' +
     'setLastShotMetadataId,' +
     'setEditor: value => { metadataEditor = value; },' +
     'editor: () => metadataEditor,' +
@@ -257,6 +258,7 @@ const form = { elements: {
   'prep.grind': element('', true),
   'prep.doseG': element('18.0'),
   'prep.tempC': element('93'),
+  'prep.targetYieldG': element('36.5'),
   'prep.pressure': element('9 bar'),
   'prep.water': element('Lotus Light & Bright'),
   tdsPct: element('8.6'),
@@ -264,6 +266,7 @@ const form = { elements: {
   notes: element('Try finer'),
 } };
 const edited = context.api.readEditorValue(form, original);
+check(edited.prep.targetYieldG === 36.5, 'target yield was not collected');
 check(edited.future.retained && edited.coffee.futureCoffeeField === 9,
   'editing removed unknown metadata fields');
 check(edited.prep.grind.unsupported,
@@ -316,18 +319,18 @@ check(context.api.editor().original.coffee.name === 'Coffee-only recipe' &&
 context.api.setNextRecipe({
   coffee: { name: 'Halo Beriti' }, prep: { grind: '18.5' },
 });
-const shotARecipe = context.api.recipeForCompletedShot();
+const shotARecipe = context.api.snapshotNextShotRecipe();
 check(shotARecipe.prep.grind === '18.5',
   'the completed shot did not receive the current recipe');
 
 context.api.setNextRecipe({ prep: { grind: '19' } });
 context.api.setNextRecipe({ prep: { grind: '20' } });
-const shotBRecipe = context.api.recipeForCompletedShot();
+const shotBRecipe = context.api.snapshotNextShotRecipe();
 check(shotARecipe.prep.grind === '18.5' && shotBRecipe.prep.grind === '20',
   'recipe copies were not independent at shot completion');
 
 context.api.setNextRecipe({});
-check(context.api.recipeForCompletedShot() === null,
+check(context.api.snapshotNextShotRecipe() === null,
   'an empty next-shot recipe created a metadata initialization attempt');
 
 context.api.setNextRecipe({
@@ -397,6 +400,7 @@ const noCoffeeForm = { elements: {
   'prep.grind': element('19'),
   'prep.doseG': element(''),
   'prep.tempC': element(''),
+  'prep.targetYieldG': element(''),
   'prep.pressure': element(''),
   'prep.water': element(''),
 } };
@@ -414,7 +418,10 @@ context.api.saveMetadataEditor({ elements: {
   'coffee.name': element('Halo Beriti'),
   'coffee.roaster': element('Example'),
   'prep.grind': element('20'),
+  'prep.targetYieldG': element('37'),
 } });
+check(JSON.parse(storedBrowserState).nextShotRecipe.prep.targetYieldG === 37,
+  'offline recipe target was not saved in browser storage');
 check(context.api.browserState().nextShotRecipeSourceId === 42,
   'adjusting a recipe discarded its source shot');
 check(!('nextShotRecipeSourceId' in JSON.parse(storedBrowserState)),
@@ -843,6 +850,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
     'prep.grind': element('20'),
     'prep.doseG': element(''),
     'prep.tempC': element(''),
+  'prep.targetYieldG': element(''),
     'prep.pressure': element(''),
     'prep.water': element(''),
     notes: element('Saved shot note'),
@@ -1732,8 +1740,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
 
   check(context.api.downloadShotJson(8, {}, { loading: true }) === false,
     'JSON export accepted unresolved shot metadata');
-  if (checkCount !== 140) {
-    throw new Error(`expected 140 assertions, ran ${checkCount}`);
+  if (checkCount !== 142) {
+    throw new Error(`expected 142 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

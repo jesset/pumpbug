@@ -32,8 +32,11 @@ namespace pump_scale {
 class ShotReplayer {
  public:
   // Begin replaying `shot` from `nowMs`. The shot must outlive the replay.
+  // Captured target settings are reproduced as recorded. If the snapshot is
+  // missing, replay proceeds with no target and the alert disabled.
   void start(const Extraction& shot, uint32_t nowMs) {
     _shot = &shot;
+    _targetCoeffs = shot.hasTargetSnapshot ? shot.target : TargetCoeffs{};
     _durationMs = shot.endMs - shot.beginMs;  // unsigned, millis()-wrap safe
     _lastNowMs = nowMs;
     _virtualElapsedMs = 0;
@@ -44,6 +47,7 @@ class ShotReplayer {
 
   void stop() { _active = false; }
   bool active() const { return _active; }
+  const TargetCoeffs& targetCoeffs() const { return _targetCoeffs; }
   bool paused() const { return _paused; }
 
   // Toggle pause. Folds time up to nowMs into the virtual clock first so a
@@ -127,6 +131,7 @@ class ShotReplayer {
   }
 
   const Extraction* _shot = nullptr;
+  TargetCoeffs _targetCoeffs;
   uint32_t _durationMs = 0;
   uint32_t _lastNowMs = 0;
   uint32_t _virtualElapsedMs = 0;

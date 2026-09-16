@@ -19,7 +19,7 @@ constexpr esp_err_t ESP_ERR_NVS_READ_ONLY = 0x110c;
 
 enum nvs_open_mode_t { NVS_READONLY, NVS_READWRITE };
 
-enum class TestNvsType { U32, U64 };
+enum class TestNvsType { U8, U16, U32, U64 };
 
 struct TestNvsValue {
   TestNvsType type;
@@ -108,6 +108,22 @@ inline esp_err_t testNvsGet(nvs_handle_t handle, const char* key,
   if (found->second.type != type) return ESP_ERR_NVS_TYPE_MISMATCH;
   value = found->second.value;
   return ESP_OK;
+}
+
+inline esp_err_t nvs_get_u16(nvs_handle_t handle, const char* key,
+                             uint16_t* value) {
+  uint64_t stored = 0;
+  const esp_err_t error = testNvsGet(handle, key, TestNvsType::U16, stored);
+  if (error == ESP_OK) *value = static_cast<uint16_t>(stored);
+  return error;
+}
+
+inline esp_err_t nvs_get_u8(nvs_handle_t handle, const char* key,
+                            uint8_t* value) {
+  uint64_t stored = 0;
+  const esp_err_t error = testNvsGet(handle, key, TestNvsType::U8, stored);
+  if (error == ESP_OK) *value = static_cast<uint8_t>(stored);
+  return error;
 }
 
 inline esp_err_t nvs_get_u32(nvs_handle_t handle, const char* key,

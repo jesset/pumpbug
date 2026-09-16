@@ -209,6 +209,11 @@ function renderNowCard(app) {
     mode = state.active ? 'scale ' + state.scale : 'device idle';
   }
   card.append(el('div', { class: 'mode' }, mode));
+  if (pumping && inflight && inflight.target) {
+    card.append(el('div', { class: 'record-target' },
+      'This shot: ' + targetText(inflight) + ' · alert ' +
+      (inflight.target.armed ? 'enabled' : 'disabled')));
+  }
   const timer = el('div', { class: 'big timer' + (pouring ? '' : ' dim') },
     pouring ? fmtTimer(liveElapsedNowMs()) : '0:00.0');
   card.append(timer);

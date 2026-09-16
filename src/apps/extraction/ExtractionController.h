@@ -130,10 +130,12 @@ class ExtractionController {
   // shot, and wake SSE readers when web-visible state changed. `newScaleSample`
   // and `scaleStateChanged` are observed by the view from the BLE snapshot.
   // `pumpSignal` carries the pump state and accepted decay onset determined by
-  // vibration analysis.
+  // vibration analysis. `targetCoeffs` is captured at shot start; subsequent
+  // ticks cannot change the ongoing shot's alert or recorded target.
   TickOutcome tick(uint32_t nowMs, const PumpSignalObservation& pumpSignal,
-                   const ScaleSnapshot& snap, uint32_t utcSec,
-                   bool newScaleSample, bool scaleStateChanged);
+                   const ScaleSnapshot& snap, const TargetCoeffs& targetCoeffs,
+                   uint32_t utcSec, bool newScaleSample,
+                   bool scaleStateChanged);
 
   // Advance the recorder one tick from REPLAYED inputs, reusing the live
   // recorder (no separate sandbox — that cost too much SRAM). It deliberately
@@ -144,8 +146,8 @@ class ExtractionController {
   // resetInFlightAndNotify() when replay ends. Returns the same TickOutcome the
   // view needs to drive the gauge and target alert. Bracket a replay session
   // with resetInFlightAndNotify() before and after.
-  TickOutcome replayTick(uint32_t nowMs, bool pumpOn,
-                         const ScaleSnapshot& snap);
+  TickOutcome replayTick(uint32_t nowMs, bool pumpOn, const ScaleSnapshot& snap,
+                         const TargetCoeffs& targetCoeffs);
 
   // ---- Button-driven recorder commands (main task) ------------------------
   enum class ContextAction { None, RequestTare, Cleared };
@@ -170,17 +172,6 @@ class ExtractionController {
   bool currentIsPouring() const {
     return currentInPumpWindow() && _recorder.hasMeaningfulYield();
   }
-
-  // Set the target-alert coefficients the engine should use for live shots and
-  // for replaying shots that have no recorded target snapshot. ExtractionApp
-  // owns the shared TargetStore; ExtractionScreen pushes its current
-  // coefficients down on load and whenever the user edits them.
-  //
-  // Coeffs set here take effect at the start of the next shot. The per-shot
-  // snapshot is fixed at the first RUNNING tick, so mid-shot edits
-  // intentionally do not perturb the running predictor or the recorded
-  // snapshot.
-  void setTargetCoeffs(const pump_scale::TargetCoeffs& c);
 
   // ---- Display-shot selection ----------------------------------------------
   // Effective device Last Shot: loaded replay shot if present, otherwise the
@@ -258,8 +249,9 @@ class ExtractionController {
 
   // Run the target-alert predictor and, the first time STOP_NOW fires in a
   // shot, record an ALARM_TRIGGERED event. Caller holds _mutex.
-  void _runTargetAlert(uint32_t nowMs, bool phaseRunning,
-                       const TrustedYieldSample& sample, uint32_t curBeginMs);
+  void _runTargetAlert(uint32_t nowMs, Phase phase,
+                       const TrustedYieldSample& sample, uint32_t curBeginMs,
+                       const TargetCoeffs& targetCoeffs);
 
   ExtractionRecorder _recorder;
   ShotCounter& _shotCounter;
@@ -296,7 +288,6 @@ class ExtractionController {
   // the recorder's trusted yield and produces a timeline event
   // (ALARM_TRIGGERED) the first time STOP_NOW fires.
   TargetAlert _targetAlert;
-  TargetCoeffs _targetCoeffs;
   // beginMs of the shot the alert is currently tracking. The predictor +
   // STOP_NOW state reset only when this changes (a genuinely new extraction),
   // NOT on every RUNNING edge — a POST_PUMP→RUNNING coalesce keeps the same

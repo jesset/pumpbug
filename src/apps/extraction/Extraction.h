@@ -91,8 +91,10 @@ struct Event {
 
 static_assert(sizeof(Event) == 8, "Extraction events must remain 8 bytes");
 
-// The smallest target accepted by both the editor and persistent settings.
+// Target range and increment accepted by the editor and persistent settings.
 constexpr int16_t kMinTargetCg = 1000;
+constexpr int16_t kMaxTargetCg = 9950;
+constexpr int16_t kTargetStepCg = 50;
 
 // Target-weight alert settings recorded with each extraction.
 struct TargetCoeffs {
@@ -316,18 +318,6 @@ inline uint32_t extractionElapsedMs(const Extraction& e, uint32_t nowMs) {
   if (e.phase == Phase::IDLE) return 0;
   if (e.phase == Phase::DONE) return e.endMs - e.beginMs;
   return nowMs - e.beginMs;
-}
-
-// Resolve which target-alert coefficients to use when replaying `shot`.
-// Whole-struct replacement on the recorded snapshot: if the shot explicitly
-// recorded its target config at the start of the pull, use that snapshot so
-// the replay alarm fires at exactly the same point it did originally. If the
-// shot has no recorded snapshot, fall back to the caller-supplied live/user
-// coefficients. Mid-shot edits to live coefficients intentionally do not
-// affect a shot that has already started.
-inline TargetCoeffs resolveReplayCoeffs(const Extraction& shot,
-                                        const TargetCoeffs& live) {
-  return shot.hasTargetSnapshot ? shot.target : live;
 }
 
 }  // namespace pump_scale

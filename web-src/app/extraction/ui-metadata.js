@@ -16,6 +16,122 @@ let metadataOverlayReturnFocus = null;
 let nextShotRecipe = {};
 let nextShotRecipeSourceId = null;
 
+// Device state is populated only by SSE. Applying a recipe is a one-time
+// command; neither storage restoration nor a stream reconnect sends settings.
+let deviceTarget = null;
+let deviceTargetCurrent = false;
+let targetApplyPending = false;
+
+function invalidateDeviceTarget() {
+  deviceTargetCurrent = false;
+  scheduleRender();
+}
+
+function validTargetWeightCg(cg) {
+  return Number.isInteger(cg) && cg >= TARGET_MIN_CG && cg <= TARGET_MAX_CG &&
+    cg % TARGET_STEP_CG === 0;
+}
+
+function receiveDeviceTarget(dv, off) {
+  if (dv.byteLength - off < 6) throw new Error('Invalid target packet');
+  let etag = '';
+  for (let i = off + 4; i < dv.byteLength; ++i) {
+    const byte = dv.getUint8(i);
+    if (byte < 0x21 || byte > 0x7e) throw new Error('Invalid target ETag');
+    etag += String.fromCharCode(byte);
+  }
+  if (!/^"[^"\\]*"$/.test(etag)) throw new Error('Invalid target ETag');
+  const targetCg = dv.getUint16(off, true);
+  const armed = dv.getUint8(off + 2);
+  const available = dv.getUint8(off + 3);
+  if (available > 1 || armed > 1 || (targetCg === 0 ? armed !== 0
+      : !validTargetWeightCg(targetCg))) {
+    throw new Error('Invalid device target');
+  }
+  if (!available) {
+    deviceTarget = null;
+    deviceTargetCurrent = false;
+    return;
+  }
+  deviceTarget = {
+    targetCg,
+    armed: armed === 1,
+    etag,
+  };
+  deviceTargetCurrent = true;
+}
+
+function recipeTargetCg() {
+  const grams = nextShotRecipe.prep && nextShotRecipe.prep.targetYieldG;
+  return Number.isFinite(grams) && validTargetWeightCg(grams * 100)
+    ? grams * 100 : null;
+}
+
+async function applyRecipeTarget() {
+  const targetCg = recipeTargetCg();
+  if (!deviceTargetCurrent || !deviceTarget || targetApplyPending ||
+      targetCg === null) return;
+  // Capture the last observed validator before awaiting I/O.
+  const expected = { ...deviceTarget };
+  targetApplyPending = true;
+  scheduleRender();
+  try {
+    const status = await fetchWithTimeout('/app/extraction/target', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'If-Match': expected.etag },
+      body: JSON.stringify({ targetCg, armed: true }),
+    }, response => response.status);
+    if (status === 204) {
+      flashBanner('Applied ' + (targetCg / 100) + ' g and enabled the alert. ' +
+        'A shot already in progress keeps its starting target.', 'ok');
+    } else if (status === 412) {
+      flashBanner('The device target changed. Review its updated setting before applying again.', 'bad');
+    } else {
+      flashBanner('Target was not applied (HTTP ' + status + '). Your recipe is unchanged.', 'bad');
+    }
+  } catch (_) {
+    flashBanner('Target application could not be confirmed. Check the device alert setting before trying again; your recipe is unchanged.', 'bad');
+  } finally {
+    targetApplyPending = false;
+    scheduleRender();
+  }
+}
+
+function renderDeviceTarget(parent) {
+  const targetCg = recipeTargetCg();
+  const matches = deviceTarget && deviceTarget.targetCg === targetCg;
+  if (matches && deviceTarget.armed) return;
+
+  const box = el('div', { class: 'device-target' });
+  if (!deviceTargetCurrent) {
+    if (deviceTarget) {
+      const status = deviceTarget.armed ? (deviceTarget.targetCg / 100) + '\u00a0g' : 'disabled';
+      box.append(el('div', { class: 'coffee-last-detail' },
+        'Last known device alert: ' + status));
+    }
+    if (targetCg !== null) {
+      box.append(el('div', { class: 'coffee-last-detail' },
+        'Connect to sync the recipe target.'));
+    }
+    if (deviceTarget || targetCg !== null) parent.append(box);
+    return;
+  }
+
+  const status = deviceTarget.armed ? (deviceTarget.targetCg / 100) + ' g' : 'disabled';
+  box.append(el('div', { class: 'coffee-last-detail' },
+    deviceTarget.armed ? 'Device alert currently set to ' : 'Device alert is currently ',
+    el('span', { class: targetCg !== null ? 'device-target-warning' : '' }, status)));
+  if (targetCg !== null) {
+    box.append(el('button', { class: 'secondary',
+      ...(targetApplyPending ? { disabled: true } : {}),
+      onclick: applyRecipeTarget },
+      targetApplyPending ? 'Applying…' : matches ? 'Enable alert' : 'Apply recipe target'));
+    box.append(el('div', { class: 'coffee-last-detail' },
+      'Sets ' + (targetCg / 100) + ' g and enables the alert for the next shot.'));
+  }
+  parent.append(box);
+}
+
 function loadMetadataBrowserState() {
   try {
     const saved = JSON.parse(localStorage.getItem(SHOT_METADATA_BROWSER_STATE_KEY));
@@ -181,7 +297,7 @@ async function setLastShotMetadataId(id, completedShotRecipe = null) {
   });
 }
 
-function recipeForCompletedShot() {
+function snapshotNextShotRecipe() {
   const recipe = cloneJson(nextShotRecipe);
   return Object.keys(recipe).length ? recipe : null;
 }
@@ -214,6 +330,9 @@ function metadataPreparationParts(prep) {
   if (Number.isFinite(prep.doseG)) {
     const value = String(prep.doseG);
     preparation.push({ text: value + ' g', value, suffix: ' g' });
+  }
+  if (Number.isFinite(prep.targetYieldG)) {
+    preparation.push({ text: prep.targetYieldG + ' g target' });
   }
   if (Number.isFinite(prep.tempC)) {
     preparation.push({ text: prep.tempC + '°C' });
@@ -635,7 +754,7 @@ function fillMissingPreparationFromRecipe(value, recipe) {
   const prep = isPlainObject(value.prep) ? value.prep : {};
   const fields = [
     ['grinder', 'string'], ['grind', 'string'], ['doseG', 'number'],
-    ['tempC', 'number'], ['pressure', 'string'], ['water', 'string'],
+    ['tempC', 'number'], ['targetYieldG', 'number'], ['pressure', 'string'], ['water', 'string'],
   ];
   for (const [name, kind] of fields) {
     if (name in prep) continue;
@@ -779,6 +898,7 @@ function renderCoffeeContext(app) {
       }, label));
     if (coffee) head.append(coffeeClearButton());
     section.append(head);
+    renderDeviceTarget(section);
     app.append(section);
     return;
   }
@@ -787,6 +907,7 @@ function renderCoffeeContext(app) {
     section.append(el('button', { class: 'secondary',
       'data-overlay-return-key': 'choose-coffee',
       onclick: () => openCoffeePicker() }, 'Choose coffee'));
+    renderDeviceTarget(section);
     app.append(section);
     return;
   }
@@ -824,8 +945,9 @@ function renderCoffeeContext(app) {
       'data-overlay-return-key': 'adjust-recipe',
       onclick: () => openNextShotEditor() },
       'Adjust recipe')));
+  renderDeviceTarget(next);
   section.append(next);
-  if (state.storage === 'unavailable') {
+  if (!state || state.storage === 'unavailable') {
     app.append(section);
     return;
   }
@@ -1205,9 +1327,9 @@ function readEditorValue(form, original) {
     const input = form.elements[group + '.' + name];
     if (!input.disabled) setField(value, group, name, input.value.trim());
   }
-  for (const [group, name] of [['prep', 'doseG'], ['prep', 'tempC']]) {
+  for (const [group, name] of [['prep', 'doseG'], ['prep', 'tempC'], ['prep', 'targetYieldG']]) {
     const input = form.elements[group + '.' + name];
-    if (!input.disabled) {
+    if (input && !input.disabled) {
       const raw = input.value.trim();
       setField(value, group, name, raw === '' ? null : Number(raw));
     }
@@ -1235,6 +1357,8 @@ function metadataNumericInputError(form) {
     ['prep.doseG', 'Dose must be a finite number greater than zero.',
       value => value > 0],
     ['prep.tempC', 'Temperature must be a finite number.', () => true],
+    ['prep.targetYieldG', `Target yield must be ${TARGET_MIN_CG / 100}–${TARGET_MAX_CG / 100} g in ${TARGET_STEP_CG / 100} g steps.`,
+      value => validTargetWeightCg(value * 100)],
     ['tdsPct', 'TDS must be a finite percentage from 0 to 100.',
       value => value >= 0 && value <= 100],
   ];
@@ -1280,6 +1404,7 @@ const COFFEE_EDITOR_FIELDS = [
 ];
 const PREP_EDITOR_FIELDS = [
   ['grinder'], ['grind'], ['doseG', 'number'], ['tempC', 'number'],
+  ['targetYieldG', 'number'],
   ['pressure'], ['water'],
 ];
 
@@ -1755,6 +1880,11 @@ function renderMetadataEditor() {
     inputField('Dose (g)', { name: 'prep.doseG', type: 'number', step: 'any',
       value: fieldValue(value, 'prep', 'doseG', 'number'),
       disabled: !editorFieldCompatible(value, 'prep', 'doseG', 'number') }),
+    inputField('Target yield (g)', { name: 'prep.targetYieldG', type: 'number',
+      min: String(TARGET_MIN_CG / 100), max: String(TARGET_MAX_CG / 100),
+      step: String(TARGET_STEP_CG / 100),
+      value: fieldValue(value, 'prep', 'targetYieldG', 'number'),
+      disabled: !editorFieldCompatible(value, 'prep', 'targetYieldG', 'number') }),
     inputField('Temp (°C)', { name: 'prep.tempC', type: 'number', step: 'any',
       value: fieldValue(value, 'prep', 'tempC', 'number'),
       disabled: !editorFieldCompatible(value, 'prep', 'tempC', 'number') }),

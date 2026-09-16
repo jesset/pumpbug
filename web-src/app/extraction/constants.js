@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: 2026 ludable
 // SPDX-License-Identifier: AGPL-3.0-only
 
+// Keep these aligned with the firmware target limits in Extraction.h.
+const TARGET_MIN_CG = 1000;
+const TARGET_MAX_CG = 9950;
+const TARGET_STEP_CG = 50;
+
 const PHASE = ['IDLE', 'RUNNING', 'POST_PUMP', 'DONE'];
 const END_CAUSE = ['NONE', 'STABLE', 'TIMEOUT'];
 // User-facing wording for abnormal shot ends. STABLE (the scale settled) is
@@ -25,7 +30,8 @@ const PACKET_SAMPLE_BATCH = 3;
 const PACKET_FINAL_RECORD = 4;
 const PACKET_HEARTBEAT = 5;
 const PACKET_HEADER_BYTES = 14;
-const PACKET_VERSION = 5;
+const PACKET_TARGET = 6;
+const PACKET_VERSION = 6;
 const SAMPLE_BATCH_FLAG_SCALE_TIMERS = 0x01;
 const RECORD_FLAG_SCALE_TIMERS = 0x02;
 const SCALE_TIMER_UNKNOWN_MS = 0xffffffff;

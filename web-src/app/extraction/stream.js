@@ -22,6 +22,7 @@ let streamStatus = {
 
 function setStreamStatus(text, kind = 'idle') {
   streamStateCurrent = false;
+  invalidateDeviceTarget();
   streamStatus = { text, cls: 'status ' + kind };
   setBanner(streamStatus.text, streamStatus.cls);
 }
@@ -143,6 +144,8 @@ function handleCurrentRecordPacket(dv, payloadOff, shotSeq) {
     ext.recipeAttachmentEligible = sameShot
       ? inflight.recipeAttachmentEligible
       : !!state && !inPumpWindow(state);
+    ext.recipeSnapshot = sameShot ? inflight.recipeSnapshot
+      : ext.recipeAttachmentEligible ? snapshotNextShotRecipe() : null;
     ext.shotSeq = shotSeq;
     inflight = ext;
   } catch (err) {
@@ -165,6 +168,7 @@ function handleFinalRecordPacket(dv, payloadOff, shotSeq) {
       ext.beginMs === inflight.beginMs;
     const attachRecipe = completedLiveShot &&
       inflight.recipeAttachmentEligible;
+    const completedRecipe = attachRecipe ? inflight.recipeSnapshot : null;
     if (graduatedShot) inflight = null;
     if (completedLiveShot) {
       freshFinalizedAt = Date.now();
@@ -175,7 +179,7 @@ function handleFinalRecordPacket(dv, payloadOff, shotSeq) {
     ext.shotId = shotId || null;
     lastRecord = ext;
     setLastShotMetadataId(ext.shotId,
-      attachRecipe ? recipeForCompletedShot() : null);
+      completedRecipe);
   } catch (err) {
     console.warn('parseExtraction failed', err);
   }
@@ -240,6 +244,13 @@ function onPacketEvent(event) {
       handleFinalRecordPacket(dv, PACKET_HEADER_BYTES, shotSeq);
       shouldRender = view === 'live';
       break;
+    case PACKET_TARGET:
+      try {
+        receiveDeviceTarget(dv, PACKET_HEADER_BYTES);
+      } catch (error) {
+        forceReconnect(error.message);
+      }
+      break;
     case PACKET_HEARTBEAT:
       shouldRender = false;
       break;
@@ -297,7 +308,10 @@ function closeStream(stream) {
   if (!stream) return;
   clearTimeout(stream.idleTimer);
   stream.es.close();
-  if (currentStream === stream) currentStream = null;
+  if (currentStream === stream) {
+    currentStream = null;
+    invalidateDeviceTarget();
+  }
 }
 
 function closeCurrentStream() {

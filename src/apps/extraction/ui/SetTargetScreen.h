@@ -7,6 +7,7 @@
 
 #include <cstdint>
 
+#include "apps/extraction/TargetSettings.h"
 #include "ui/Screen.h"
 #include "ui/button.h"
 
@@ -14,8 +15,9 @@ class TargetStore;
 
 // Standalone editor for the extraction target-weight stop alert.
 //
-// Launched from the main menu. Edits the shared TargetStore and persists on
-// exit.
+// Launched from the main menu. B-short saves to the shared TargetStore if the
+// values differ from those when the screen opened. Concurrent changes (through
+// the web interface) trigger a confirmation screen.
 //
 // Digit-by-digit editing. A-long advances the cursor through the fields
 // (tens -> ones -> half-gram -> armed -> settled); A-short changes the active
@@ -27,7 +29,6 @@ class SetTargetScreen : public Screen {
   explicit SetTargetScreen(TargetStore& store) : _store(store) {}
 
   void onEnter() override;
-  void onExit() override;
   ScreenResult onEvent(button::Gesture event) override;
   ScreenResult tick() override;
   bool onDraw(LGFX_Sprite* canvas) override;
@@ -52,7 +53,16 @@ class SetTargetScreen : public Screen {
   }
   void advanceField();  // A-long: move the cursor to the next field
   void bumpField();     // A-short: change the active field's value
-  void persist() const;
+  void reload();
+  ScreenResult save();
+  enum class Stage { Editing, Unavailable, Conflict, Failed };
+  Stage _stage = Stage::Editing;
+  bool _edited = false;
+  // Opening values determine whether there are edits.
+  pump_scale::TargetSettings _baseline;
+  // Compare saves against this snapshot. In Conflict state, it is displayed for
+  // comparison/confirmation before saving.
+  pump_scale::TargetSettings _expected;
 
   TargetStore& _store;
 };

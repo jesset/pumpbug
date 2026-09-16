@@ -171,6 +171,7 @@ add_test(
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/stream.js"
     "${PROJECT_SOURCE_DIR}/src/apps/extraction/ExtractionStream.h"
+    "${PROJECT_SOURCE_DIR}/src/apps/extraction/Extraction.h"
 )
 
 add_test(
@@ -181,6 +182,7 @@ add_test(
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-metadata.js"
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-history.js"
     "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/shot_metadata_codec.h"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
 )
 
 add_test(
@@ -250,3 +252,12 @@ add_host_test(
 target_include_directories(
   test_extraction_wire PRIVATE "${PROJECT_SOURCE_DIR}/src/apps/extraction"
 )
+
+add_host_test(test_target_store "${PROJECT_SOURCE_DIR}/src/apps/extraction/TargetStore.cpp")
+target_include_directories(test_target_store BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/stubs")
+
+add_test(NAME test_recipe_target_js COMMAND "${NODE_EXECUTABLE}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/test_recipe_target.js"
+  "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-metadata.js"
+  "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
+  "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-live.js")

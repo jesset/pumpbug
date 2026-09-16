@@ -179,7 +179,10 @@ function render() {
   app.replaceChildren();
   renderBanner();
   synchronizeMetadataOverlayState();
-  if (!state) return;
+  if (!state) {
+    renderCoffeeContext(app);
+    return;
+  }
   renderTabs(app);
   appendStorageWarning(app, state);
   if (view === 'live') renderLive(app);

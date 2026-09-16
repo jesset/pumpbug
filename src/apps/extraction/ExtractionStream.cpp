@@ -15,6 +15,7 @@
 
 #include "ExtractionController.h"
 #include "ScaleReadingTimingObserver.h"
+#include "TargetStore.h"
 #include "extraction_encoding.h"
 #include "net/HttpServer.h"
 #include "net/SseServer.h"
@@ -30,7 +31,9 @@ constexpr size_t base64EncodedLen(size_t n) { return ((n + 2) / 3) * 4; }
 }  // namespace
 
 void ExtractionStream::registerWith(SseServer& sse, HttpServer& http,
-                                    ExtractionController& controller) {
+                                    ExtractionController& controller,
+                                    TargetStore& targetStore) {
+  _targetStore = &targetStore;
   _controller = &controller;
   _sse = &sse;
   sse.registerRoute("/app/extraction/events",
@@ -159,6 +162,26 @@ bool ExtractionStream::_sendState(WiFiClient& client, Session& s,
   s.lastSentStateInit = true;
   s.lastStateMs = millis();
   s.lastPacketMs = s.lastStateMs;
+  return true;
+}
+
+bool ExtractionStream::_sendTarget(WiFiClient& client, Session& s,
+                                   const TargetSettings& target,
+                                   uint32_t shotSeq) {
+  const std::string etag = target.etag();
+  uint8_t packet[kPacketHeaderBytes + 4 + TargetSettings::kEtagBufferSize]{};
+  _writePacketHeader(packet, kPacketTarget, s.streamSeq, shotSeq);
+  uint8_t* payload = packet + kPacketHeaderBytes;
+  writeU16LE(payload, target.targetCg);
+  payload[2] = target.armed ? 1 : 0;
+  payload[3] = target.available ? 1 : 0;
+  memcpy(payload + 4, etag.data(), etag.size());
+  if (!_writeSseFrame(client, s.streamSeq, packet,
+                      kPacketHeaderBytes + 4 + etag.size()))
+    return false;
+  ++s.streamSeq;
+  s.lastPacketMs = millis();
+  s.lastTarget = target;
   return true;
 }
 
@@ -404,6 +427,7 @@ void ExtractionStream::_runSession(WiFiClient& client) {
   // the client is gone, and continuing to encode/send packets to a dead
   // socket just delays release of the SSE session slot for the next
   // ticket holder.
+  if (!_sendTarget(client, s, _targetStore->snapshot(), snap.shotSeq)) return;
   if (!_sendState(client, s, snap)) return;
   if (!sendDisplayRecord(snap)) return;
   if (snap.active && snap.currentPhase != Phase::IDLE) {
@@ -429,6 +453,12 @@ void ExtractionStream::_runSession(WiFiClient& client) {
   // immediately — a dead client shouldn't keep the session slot warm.
   while (client.connected() && !_sse->isSessionStopRequested()) {
     const uint32_t now = millis();
+    // Compare the last successfully sent values with a coherent store copy.
+    const TargetSettings target = _targetStore->snapshot();
+    if ((!target.sameValues(s.lastTarget) ||
+         target.available != s.lastTarget.available) &&
+        !_sendTarget(client, s, target, snap.shotSeq))
+      break;
     const uint32_t curLiveSeq = _controller->liveSeq();
     const bool tickle = curLiveSeq != s.lastSeenLiveSeq;
     if (tickle) s.lastSeenLiveSeq = curLiveSeq;

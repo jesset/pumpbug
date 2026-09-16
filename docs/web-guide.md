@@ -145,13 +145,30 @@ You can compare their ratings, results and recipes, then choose `Use for next
 shot` to copy a shot's recipe. `Search older history` loads additional history
 pages when the shots you want are not already in the browser.
 
-The next-shot recipe is stored in the browser rather than the device. When the
-connected browser follows a shot from its live start through completion, it asks
-the device to save the current recipe with that new shot. Recipe changes saved
-before completion are included. Select `Rate and save details` to enter the
-result fields afterward. If the browser misses the live shot or the automatic
-save does not happen, open the shot's details and choose `Copy next recipe` to
-review and save it with the shot.
+The next-shot recipe is stored in the browser rather than the device. When a
+connected browser has a recipe selected as a shot starts, it asks the device to
+attach the recipe to the shot as soon as it confirms the shot is complete.
+Recipe changes made during brewing (after the shot starts) apply to subsequent
+shots. Select `Rate and save details` to enter the result fields afterward. If
+the browser misses the live shot or the automatic save does not happen, open the
+shot's details and choose `Copy next recipe` to review and save it with the
+shot.
+
+### Recipe target yield
+
+`Adjust recipe` includes an optional `Target yield (g)`, from 10 to 99.5 g in
+0.5 g steps. Saving or copying a recipe changes the browser recipe only.
+
+When the device target doesn't match the recipe, the Live view shows a message.
+In that case, you can choose `Apply recipe target` to set the recipe target
+yield on the device and enable the alert. If the weight already matches but the
+alert is off, it offers `Enable alert`.
+
+Changing the target on the device or in the browser during a shot affects only
+the next shot. Changing the target on the device while also trying to apply a
+new target yield from the browser can cause conflicts and you may need to
+retry. If an apply cannot be confirmed, check the device alert setting before
+trying again.
 
 ## Shot history
 

@@ -433,7 +433,7 @@ void testTargetAndAlarmRoundTrip() {
 
 void testZeroTargetStillASnapshot() {
   // A shot recorded with no target set must still carry hasTargetSnapshot, so
-  // replay does not fall back to the user's current target settings.
+  // replay recognizes it as a captured target configuration.
   pump_scale::Extraction e = makeShot();
   e.target.targetCg = 0;
   e.target.armed = false;
@@ -446,68 +446,6 @@ void testZeroTargetStillASnapshot() {
   CHECK(d.hasTargetSnapshot);
   CHECK(d.target.targetCg == 0);
   CHECK(d.target.armed == false);
-}
-
-void testResolveReplayCoeffs() {
-  // Whole-struct replacement on hasTargetSnapshot. The recorded target must
-  // be used as-is when present, even if targetCg == 0 / armed == false, so a
-  // disarmed or zero-target shot replays exactly as it was recorded. Only
-  // when the shot has no snapshot do we fall back to the caller-supplied live
-  // coefficients.
-  pump_scale::TargetCoeffs live;
-  live.targetCg = 4000;
-  live.armed = true;
-  live.tauMs = 600;
-  live.cCg = 30;
-  live.reactionLeadMs = 200;
-
-  {
-    pump_scale::Extraction shot;
-    shot.hasTargetSnapshot = true;
-    shot.target.targetCg = 3600;
-    shot.target.armed = true;
-    shot.target.tauMs = 800;
-    shot.target.cCg = 50;
-    shot.target.reactionLeadMs = 250;
-    const pump_scale::TargetCoeffs c =
-        pump_scale::resolveReplayCoeffs(shot, live);
-    CHECK(c.targetCg == 3600);
-    CHECK(c.armed == true);
-    CHECK(c.tauMs == 800);
-    CHECK(c.cCg == 50);
-    CHECK(c.reactionLeadMs == 250);
-  }
-
-  {
-    // Disarmed/zero-target snapshot still wins over live armed target.
-    pump_scale::Extraction shot;
-    shot.hasTargetSnapshot = true;
-    shot.target.targetCg = 0;
-    shot.target.armed = false;
-    shot.target.tauMs = 750;
-    shot.target.cCg = 0;
-    shot.target.reactionLeadMs = 0;
-    const pump_scale::TargetCoeffs c =
-        pump_scale::resolveReplayCoeffs(shot, live);
-    CHECK(c.targetCg == 0);
-    CHECK(c.armed == false);
-    CHECK(c.tauMs == 750);
-    CHECK(c.cCg == 0);
-    CHECK(c.reactionLeadMs == 0);
-  }
-
-  {
-    // No snapshot -> use live coeffs wholesale.
-    pump_scale::Extraction shot;
-    shot.hasTargetSnapshot = false;
-    const pump_scale::TargetCoeffs c =
-        pump_scale::resolveReplayCoeffs(shot, live);
-    CHECK(c.targetCg == 4000);
-    CHECK(c.armed == true);
-    CHECK(c.tauMs == 600);
-    CHECK(c.cCg == 30);
-    CHECK(c.reactionLeadMs == 200);
-  }
 }
 
 void testRawScaleTimerField() {
@@ -604,7 +542,6 @@ int main() {
   testTargetBlockGoldenBytes();
   testTargetAndAlarmRoundTrip();
   testZeroTargetStillASnapshot();
-  testResolveReplayCoeffs();
   if (g_failures == 0) {
     std::printf("OK: all assertions passed\n");
     return 0;

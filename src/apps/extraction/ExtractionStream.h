@@ -10,9 +10,11 @@
 
 #include "Extraction.h"
 #include "ExtractionStatusSnapshot.h"
+#include "TargetSettings.h"
 
 class HttpServer;
 class SseServer;
+class TargetStore;
 
 namespace pump_scale {
 
@@ -25,7 +27,7 @@ class ExtractionController;
 //
 //   offset  size  field
 //      0      4   magic "STKP"
-//      4      1   version (= 5)
+//      4      1   version (= 6)
 //      5      1   type (see kPacket* below)
 //      6      4   streamSeq (u32 — monotonic per SSE connection)
 //     10      4   shotSeq (u32 — latest accepted-shot sequence)
@@ -62,19 +64,26 @@ class ExtractionController;
 //                          the current EXTR schema. shotId is zero when the
 //                          record was not saved.
 //   HEARTBEAT      (5)  — empty payload, keeps proxies/clients from idling.
+//   TARGET         (6)  — configured next-shot alert, initially and on change:
+//                          u16 targetCg, u8 armed, u8 available, followed by
+//                          the quoted ASCII ETag (remaining bytes, no NUL).
+//                          available=0 means settings could not be loaded.
 //
-// ExtractionStream keeps one browser's SSE session synchronized with the
-// controller.
+// ExtractionStream keeps one browser's SSE session synchronized with extraction
+// state and configured target settings.
 //
-// The controller owns extraction state. A Session stores only what this
-// connection has successfully received: packet sequence numbers, the latest
-// controller update observed, the accepted shot reported to the client, the
-// in-flight shot base, sample-delta positions, and packet timestamps. Comparing
-// a new controller snapshot with those values determines which packet to send.
+// The controller owns extraction state; TargetStore owns target settings. A
+// Session tracks what this connection has successfully sent: packet sequence
+// numbers, the accepted shot, target settings, the in-flight shot base,
+// sample-delta positions, and packet timestamps. It also tracks the latest
+// controller update observed to detect changes requiring another snapshot.
 //
-// ExtractionController::liveSeq() is the inexpensive change signal. Equality
-// lets the session skip controller snapshots. A changed value causes one status
-// snapshot and the following work, in order:
+// Target settings are checked on every loop because they can change without a
+// controller update.
+//
+// ExtractionController::liveSeq() is the inexpensive extraction change signal.
+// Equality lets the session skip controller snapshots. A changed value causes
+// one status snapshot and the following work, in order:
 //
 //   1. If the display-shot counter (_displayShotSeq) changed (a shot graduated,
 //      or a stored shot was loaded — boot restore, web "set as last shot"),
@@ -96,10 +105,11 @@ class ExtractionController;
 //
 //   1. Creates a fresh Session and records liveSeq before taking snapshots, so
 //      an update during initial encoding remains visible to the main loop.
-//   2. Sends STATE and enough record data to render immediately: FINAL_RECORD
-//      for the display shot when one exists, plus CURRENT_RECORD for an active
-//      extraction.
-//   3. Polls liveSeq and processes changed controller state as described above.
+//   2. Sends TARGET, then STATE and enough record data to render immediately:
+//      FINAL_RECORD for the display shot when one exists, plus CURRENT_RECORD
+//      for an active extraction.
+//   3. Checks target settings and sends TARGET when they or their availability
+//      change, then polls liveSeq and processes changed controller state.
 //   4. Sends HEARTBEAT when no other packet has been sent for
 //      kHeartbeatIntervalMs.
 //   5. Returns when the client disconnects, SseServer requests replacement or
@@ -108,10 +118,10 @@ class ExtractionController;
 // SseServer owns connection admission and socket cleanup. Session cursors are
 // never reused by a later connection.
 //
-// ## Controller inputs
+// ## State sources
 //
-//   ExtractionController::liveSeq()            Reports whether stream-visible
-//                                              state may have changed.
+//   ExtractionController::liveSeq()            Signals extraction changes
+//                                              visible to the stream.
 //   ExtractionController::snapshotStatus()     Provides the small status copy
 //                                              used for decisions and STATE.
 //   ExtractionController::snapshotCurrentExtraction()
@@ -120,6 +130,8 @@ class ExtractionController;
 //   ExtractionController::snapshotDisplayShot()
 //                                              Provides the display record,
 //                                              sequence, and stored shot ID.
+//   TargetStore::snapshot()                   Provides target settings and
+//                                              their availability for TARGET.
 //
 // ## Invariants
 //
@@ -152,14 +164,15 @@ class ExtractionStream {
   static constexpr uint8_t kPacketSampleBatch = 3;
   static constexpr uint8_t kPacketFinalRecord = 4;
   static constexpr uint8_t kPacketHeartbeat = 5;
-  static constexpr uint8_t kPacketVersion = 5;
+  static constexpr uint8_t kPacketTarget = 6;
+  static constexpr uint8_t kPacketVersion = 6;
   static constexpr size_t kPacketHeaderBytes = 14;
 
   // Registers the SSE session route and the authenticated ticket route.
   // `sse`, `http`, and `controller` must outlive this object. Requesting a
   // ticket stops the active session so a new browser tab replaces a stale one.
   void registerWith(SseServer& sse, HttpServer& http,
-                    ExtractionController& controller);
+                    ExtractionController& controller, TargetStore& targetStore);
 
   // Flush a final `event: sleeping` control frame to any connected web
   // client and close the SSE session. Called by the power manager just before
@@ -174,10 +187,12 @@ class ExtractionStream {
 
   ExtractionController* _controller = nullptr;
   SseServer* _sse = nullptr;
+  TargetStore* _targetStore = nullptr;
 
   // Per-connection state — the SSE handler runs synchronously inside
   // SseServer's task; only one of these is alive at a time.
   struct Session {
+    TargetSettings lastTarget{};
     uint32_t streamSeq = 0;
     uint32_t lastSeenLiveSeq = 0;
     // The displayShotSeq value most recently reported to this client; a
@@ -206,6 +221,8 @@ class ExtractionStream {
   // successful write, and returns whether the write succeeded.
   bool _sendState(WiFiClient& client, Session& s,
                   const ExtractionStatusSnapshot& snap);
+  bool _sendTarget(WiFiClient& client, Session& s, const TargetSettings& target,
+                   uint32_t shotSeq);
   bool _sendSampleBatch(WiFiClient& client, Session& s, const Extraction& ext,
                         uint32_t shotSeq);
   bool _sendCurrentRecord(WiFiClient& client, Session& s, const Extraction& ext,

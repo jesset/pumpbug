@@ -10,12 +10,12 @@
 
 #include <cstdint>
 
-#include "TargetStore.h"
 #include "apps/extraction/ExtractionController.h"
 #include "apps/extraction/RobustFlow.h"
 #include "apps/extraction/ScaleReadingTimingObserver.h"
 #include "apps/extraction/ShotReplayer.h"
 #include "apps/extraction/TargetAlert.h"
+#include "apps/extraction/TargetStore.h"
 #include "ble/BleScaleService.h"
 #include "ui/Screen.h"
 #include "ui/button.h"
@@ -141,6 +141,7 @@ class ExtractionScreen : public Screen {
   bool _replayShowFlowBand = false;
 
   TargetStore& _targetStore;
+  pump_scale::TargetCoeffs _configuredTargetCoeffs{};
   const char* _liveViewTitle = "LIVE";
 
   // Latest predictor state plus output bookkeeping. The previous alert level
@@ -164,8 +165,6 @@ class ExtractionScreen : public Screen {
   bool _latestAcceptedShotSaved = true;
 
   BleStatus bleStatus() const;
-  // Push the store's current config into the engine so the predictor uses it.
-  void applyTargetCoeffs();
   // Map the alert level to the countdown/cut audio and the blue cut-state
   // overlay. Main task only.
   void driveAlert(const pump_scale::TargetAlert::State& st, uint32_t nowMs);
@@ -181,6 +180,7 @@ class ExtractionScreen : public Screen {
 
     ViewMode viewMode;
     const pump_scale::Extraction* chart = nullptr;
+    pump_scale::TargetCoeffs bandTargetCoeffs{};
     float gaugeGrams;
     bool gaugeValid;
     bool gaugeActive;  // self-tared yield is available (meaningful yield has
@@ -220,10 +220,6 @@ class ExtractionScreen : public Screen {
   void fillLiveModel(ScreenModel& m, bool haveYield, int16_t yieldCg,
                      float rawGrams, bool haveRawWeight, uint32_t nowMs) const;
   void fillLastShotModel(ScreenModel& m) const;
-  // Target config resolved for the current view: replay uses the shot's
-  // recorded coeffs, every other view uses the live store.
-  uint16_t effectiveTargetCg(const ScreenModel& m) const;
-  bool effectiveArmed(const ScreenModel& m) const;
 
   // Replay control + per-tick advance. startReplay uses the controller-selected
   // display shot.

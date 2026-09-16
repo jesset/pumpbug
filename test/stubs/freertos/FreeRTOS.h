@@ -6,7 +6,10 @@
 // Host stub for the FreeRTOS types util/i2c_lock.h names. The tests are
 // single-threaded and have no shared bus, so the lock is a no-op here.
 
+#include <cassert>
 #include <cstdint>
+
+#define configASSERT(value) assert(value)
 
 using TickType_t = uint32_t;
 

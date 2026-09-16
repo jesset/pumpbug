@@ -5,12 +5,27 @@
 const fs = require('fs');
 const vm = require('vm');
 
-const [constantsPath, streamPath, streamHeaderPath] = process.argv.slice(2);
-if (!constantsPath || !streamPath || !streamHeaderPath) {
+const [constantsPath, streamPath, streamHeaderPath, extractionHeaderPath] = process.argv.slice(2);
+if (!constantsPath || !streamPath || !streamHeaderPath || !extractionHeaderPath) {
   console.error(
     'usage: test_extraction_constants_js.js CONSTANTS_JS STREAM_JS ' +
-    'EXTRACTION_STREAM_H');
+    'EXTRACTION_STREAM_H EXTRACTION_H');
   process.exit(2);
+}
+
+const extractionHeader = fs.readFileSync(extractionHeaderPath, 'utf8');
+const targetConstants = [
+  ['TARGET_MIN_CG', 'kMinTargetCg'],
+  ['TARGET_MAX_CG', 'kMaxTargetCg'],
+  ['TARGET_STEP_CG', 'kTargetStepCg'],
+];
+const targetContext = vm.createContext({});
+vm.runInContext(fs.readFileSync(constantsPath, 'utf8'), targetContext);
+for (const [browserName, firmwareName] of targetConstants) {
+  const match = extractionHeader.match(new RegExp(firmwareName + '\\s*=\\s*(\\d+)'));
+  if (!match || vm.runInContext(browserName, targetContext) !== Number(match[1])) {
+    throw new Error(browserName + ' differs from firmware ' + firmwareName);
+  }
 }
 
 let historySessionStarts = 0;
@@ -33,6 +48,7 @@ const context = {
     },
   },
   setBanner: () => {},
+  invalidateDeviceTarget: () => {},
   parseExtractionFromDv: (_dv, off) => ({ decodedAt: off }),
 };
 vm.createContext(context);
@@ -64,7 +80,7 @@ if (context.eventKindLabel(7, 99) !== 99) {
   throw new Error('unknown event kind did not retain its numeric value');
 }
 
-if (context.packetVersion !== 5 || context.packetHeaderBytes !== 14) {
+if (context.packetVersion !== 6 || context.packetHeaderBytes !== 14) {
   throw new Error('unexpected extraction stream packet version');
 }
 const streamHeader = fs.readFileSync(streamHeaderPath, 'utf8');
@@ -140,7 +156,7 @@ const displayedRecords = [];
 let recipeCopies = 0;
 context.inflight = { shotSeq: 7, beginMs: 1000 };
 context.parseExtractionFromDv = () => ({ beginMs: 1000 });
-context.recipeForCompletedShot = () => {
+context.snapshotNextShotRecipe = () => {
   ++recipeCopies;
   return { coffee: { name: 'Prepared coffee' } };
 };
@@ -166,6 +182,7 @@ if (recipeCopies || context.inflight !== null ||
 
 context.inflight = {
   shotSeq: 8, beginMs: 3000, recipeAttachmentEligible: true,
+  recipeSnapshot: context.snapshotNextShotRecipe(),
 };
 context.parseExtractionFromDv = () => ({ beginMs: 3000 });
 context.handleFinalRecordPacket(finalView, 0, 9);
@@ -199,6 +216,10 @@ if (!context.inflight.recipeAttachmentEligible) {
   throw new Error('an observed shot start was not eligible for attachment');
 }
 context.state = { active: true, phase: 'RUNNING' };
+context.snapshotNextShotRecipe = () => {
+  ++recipeCopies;
+  return { coffee: { name: 'Changed during brewing' } };
+};
 context.handleCurrentRecordPacket(finalView, 0, 11);
 if (!context.inflight.recipeAttachmentEligible) {
   throw new Error('a phase snapshot lost recipe-attachment eligibility');

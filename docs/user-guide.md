@@ -180,7 +180,16 @@ the target.
 
 Targets can be set from 10.0 g to 99.5 g in 0.5 g steps. Changing the target
 automatically turns the alert on; the `ON`/`OFF` field can disable it without
-changing the saved weight.
+changing the saved weight. Holding B from the editor discards unsaved edits
+and returns to `LIVE`.
+
+If the web app changes the target while you are editing, saving shows the
+current device setting and asks whether to replace it. Hold A to replace it
+with your edits, or tap B to discard them.
+
+If settings cannot be loaded, the screen shows `Target unavailable`; hold A to
+retry or tap B to go back. If saving fails, hold A to retry or tap B to discard
+your edits.
 
 | Main menu | Target editor |
 |:---:|:---:|

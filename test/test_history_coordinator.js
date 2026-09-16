@@ -12,7 +12,8 @@ if (!metadataPath || !historyPath || !constantsPath || !streamPath) {
   throw new Error('usage: test_history_coordinator.js UI_METADATA_JS UI_HISTORY_JS CONSTANTS_JS STREAM_JS');
 }
 const pageUrl = '/app/extraction/shots?limit=20&meta=1';
-const source = fs.readFileSync(historyPath, 'utf8') + '\n' +
+const source = fs.readFileSync(constantsPath, 'utf8') + '\n' +
+  fs.readFileSync(historyPath, 'utf8') + '\n' +
   fs.readFileSync(metadataPath, 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const harnesses = [];
@@ -811,8 +812,7 @@ async function testStreamDefersNewBackgroundReads() {
     state: null, inflight: null, lastShotExpanded: false,
   });
   h.context.loadMetadataBrowserState();
-  vm.runInContext(fs.readFileSync(constantsPath, 'utf8') + '\n' +
-    fs.readFileSync(streamPath, 'utf8'), h.context);
+  vm.runInContext(fs.readFileSync(streamPath, 'utf8'), h.context);
   const bytes = new Uint8Array(12);
   bytes[0] = 1;
   function state(phase) {

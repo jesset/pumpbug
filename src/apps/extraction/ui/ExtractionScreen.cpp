@@ -309,11 +309,10 @@ void ExtractionScreen::onEnter() {
   _lastScaleSnap = BleScaleService::Snapshot{};
   _storageState = storage::mountState();
   _viewMode = ViewMode::Live;
-  // Load persisted target config and prime the live predictor. The alert state
-  // resets per shot on the RUNNING edge; reset here too so stale alert state
-  // from a prior session can't carry over.
+  // Refresh the configured target for the idle display and clear alert output
+  // state from the previous screen session.
   _targetStore.load();
-  applyTargetCoeffs();
+  _configuredTargetCoeffs = _targetStore.coeffs();
   _alertState = {};
   _cutAudioSilenced = false;
   _lastCountdownBucket = 0;
@@ -452,13 +451,21 @@ ScreenResult ExtractionScreen::tick() {
     return stay();
   }
 
+  // Pick up any changes to the target.
+  const auto target = _targetStore.coeffs();
+  if (target.targetCg != _configuredTargetCoeffs.targetCg ||
+      target.armed != _configuredTargetCoeffs.armed) {
+    requestDraw();
+  }
+  _configuredTargetCoeffs = target;
+
   // Advance the recorder and persist any finished shot. The controller does the
   // locked work and wakes SSE readers when web-visible state changed, then
   // hands back what the UI needs to react to without touching the recorder
   // again.
-  const auto outcome =
-      _controller.tick(millis(), _lastSensorData.pumpSignal, snap,
-                       wallclock::utcNow(), newScaleSample, scaleStateChanged);
+  const auto outcome = _controller.tick(
+      millis(), _lastSensorData.pumpSignal, snap, _configuredTargetCoeffs,
+      wallclock::utcNow(), newScaleSample, scaleStateChanged);
   if (outcome.latestAcceptedShotSaved != _latestAcceptedShotSaved) {
     _latestAcceptedShotSaved = outcome.latestAcceptedShotSaved;
     requestDraw();
@@ -634,15 +641,18 @@ void ExtractionScreen::fillLiveModel(ScreenModel& m, bool haveYield,
     m.liveState = ScreenModel::LiveState::Ready;
   }
 
+  const bool showShotTarget = _controller.currentInPumpWindow();
+  m.bandTargetCoeffs = showShotTarget && cur.hasTargetSnapshot
+                           ? cur.target
+                           : _configuredTargetCoeffs;
+
   // The live scrolling trace is shown only while actively pouring. Finished
   // real shots render a static chart; everything else shows a blank baseline.
   m.showLiveSamples = (m.liveState == ScreenModel::LiveState::Pouring);
 
-  // Self-tared display for yield in Pouring and FinishedRealShot; raw scale
-  // weight otherwise. The band brightens to mark yield mode.
-  m.gaugeActive = (m.liveState == ScreenModel::LiveState::Pouring ||
-                   m.liveState == ScreenModel::LiveState::FinishedRealShot) &&
-                  haveYield;
+  // Self-tared yield appears for an in-flight pour; otherwise the gauge shows
+  // the current scale weight.
+  m.gaugeActive = m.liveState == ScreenModel::LiveState::Pouring && haveYield;
   if (m.gaugeActive) {
     m.gaugeGrams = yieldCg / 100.0f;
     m.gaugeValid = true;
@@ -695,15 +705,16 @@ void ExtractionScreen::fillLastShotModel(ScreenModel& m) const {
 void ExtractionScreen::startReplay() {
   const pump_scale::Extraction* shot = _controller.effectiveLastShot();
   if (!shot) return;
-  // Prime the replay predictor with the target config captured when the
-  // original pull began, so the alert fires at the same point.
-  _controller.setTargetCoeffs(
-      pump_scale::resolveReplayCoeffs(*shot, _targetStore.coeffs()));
+  if (!shot->hasTargetSnapshot) {
+    M5_LOGW(
+        "Replay shot has no target snapshot; using no target, alert disabled");
+  }
+  _replayer.start(*shot, millis());
   // Wipe the recorder's in-flight state (and sync the finalize cursor) so the
   // replay starts clean and its later finalize isn't mistaken for a real shot.
   _controller.resetInFlightAndNotify();
   _replaySnap = pump_scale::ScaleSnapshot{};
-  _replayer.start(*shot, millis());
+  _configuredTargetCoeffs = _replayer.targetCoeffs();
   _viewMode = ViewMode::Replay;
   _replayShowFlowBand = false;
   power::powerManager.setForegroundFullPerformanceRequired(true);
@@ -720,9 +731,7 @@ void ExtractionScreen::stopReplay() {
   // Wipe the recorder's replay state (and resync the finalize cursor) so
   // /current and the next real shot are unaffected.
   _controller.resetInFlightAndNotify();
-  // Restore the live user target coeffs; startReplay() overwrites them with
-  // the replayed shot's recorded snapshot.
-  applyTargetCoeffs();
+  _configuredTargetCoeffs = _targetStore.coeffs();
   sounds::targetSilence();
   _alertState = {};
   _cutAudioSilenced = false;
@@ -755,7 +764,8 @@ void ExtractionScreen::tickReplay() {
   // dropout/settle timeouts, and synthesized timestamps share one ms space),
   // with all live side effects suppressed by replayTick.
   const uint32_t vNow = _replayer.virtualNowMs();
-  const auto outcome = _controller.replayTick(vNow, pumpOn, snap);
+  const auto outcome =
+      _controller.replayTick(vNow, pumpOn, snap, _configuredTargetCoeffs);
 
   if (outcome.meaningfulPourStarted) {
     _cutAudioSilenced = false;
@@ -1050,34 +1060,14 @@ void ExtractionScreen::drawLastShotChartView(LGFX_Sprite* c,
                                    body.w, body.h, m.showLiveSamples);
 }
 
-// During replay, m.chart is the shot being reconstructed. Until the first
-// replay tick reaches RUNNING and stamps the recorded target, these accessors
-// fall back to the user's live TargetStore. The PUMP_ON event is at offset
-// zero, so the difference is limited to the pre-tick frame.
-uint16_t ExtractionScreen::effectiveTargetCg(const ScreenModel& m) const {
-  if (m.viewMode == ViewMode::Replay && m.chart) {
-    return pump_scale::resolveReplayCoeffs(*m.chart, _targetStore.coeffs())
-        .targetCg;
-  }
-  return _targetStore.targetCg();
-}
-
-bool ExtractionScreen::effectiveArmed(const ScreenModel& m) const {
-  if (m.viewMode == ViewMode::Replay && m.chart) {
-    return pump_scale::resolveReplayCoeffs(*m.chart, _targetStore.coeffs())
-        .armed;
-  }
-  return _targetStore.armed();
-}
-
 void ExtractionScreen::drawTargetBand(LGFX_Sprite* c, const ScreenModel& m,
                                       uint16_t targetCg, bool armed,
                                       bool forceFlow, layout::rect box) {
   // Two signals share the band and move independently: the bar inside shows
   // pour progress, the outline around the band means the pump is running. A
   // thicker warning outline marks possible pump-signal decay while pump-off
-  // confirmation is pending. Vibration stopping mid-pour hollows the bar out
-  // at the point it reached; a finished shot keeps a solid bar with no outline.
+  // confirmation is pending. Progress is hollow while the scale settles;
+  // after completion, the bar is empty and the target label is dim.
   constexpr int cornerR = 5;
   c->fillRoundRect(box.x, box.y, box.w, box.h, cornerR, theme::surface());
 
@@ -1171,8 +1161,7 @@ void ExtractionScreen::drawTargetBand(LGFX_Sprite* c, const ScreenModel& m,
   std::snprintf(targetValue, sizeof(targetValue), "%.1f", targetGrams);
 
   const int fillW = static_cast<int>(box.w * progress);
-  const bool solidProgress =
-      m.pumpDetected || m.liveState == ScreenModel::LiveState::FinishedRealShot;
+  const bool solidProgress = m.pumpDetected;
   if (fillW > 0 && solidProgress) {
     c->fillRoundRect(box.x, box.y, fillW, box.h, cornerR, theme::accent());
   } else if (fillW > 0) {
@@ -1203,8 +1192,7 @@ void ExtractionScreen::drawLiveBody(LGFX_Sprite* c, const ScreenModel& m,
                                     layout::rect body, bool dimTimer,
                                     int gaugeMargin) {
   constexpr int pad = 2;
-  const uint16_t targetCg = effectiveTargetCg(m);
-  const bool targetArmed = effectiveArmed(m);
+  const auto& target = m.bandTargetCoeffs;
   const bool forceFlow = m.viewMode == ViewMode::Replay && _replayShowFlowBand;
 
   // Portrait: weight gauge on top, target/flow band, then timer. Landscape:
@@ -1222,14 +1210,14 @@ void ExtractionScreen::drawLiveBody(LGFX_Sprite* c, const ScreenModel& m,
     const auto bottomSplit = layout::splitHFixed(bottomBox, timerW, pad);
     timerBox = bottomSplit.first;
     const auto barBox = layout::inset(bottomSplit.second, 4);
-    drawTargetBand(c, m, targetCg, targetArmed, forceFlow, barBox);
+    drawTargetBand(c, m, target.targetCg, target.armed, forceFlow, barBox);
   } else {
     const auto split = layout::splitV(body, 0.5, pad);
     weightBox = split.first;
     const auto barSplit = layout::splitV(split.second, 0.45, pad * 2);
     timerBox = barSplit.second;
     const auto barBox = layout::inset(barSplit.first, 4);
-    drawTargetBand(c, m, targetCg, targetArmed, forceFlow, barBox);
+    drawTargetBand(c, m, target.targetCg, target.armed, forceFlow, barBox);
   }
 
   // Lateral inset for the weight gauge: centered with a margin equal to the
@@ -1399,10 +1387,6 @@ void ExtractionScreen::drawSummaryPanel(LGFX_Sprite* c, const ScreenModel& m,
     drawRule(c, {split.second.x, split.second.y - 2, split.second.w, 1});
     drawDetails(layout::inset(split.second, 1), /*compactRows=*/false);
   }
-}
-
-void ExtractionScreen::applyTargetCoeffs() {
-  _controller.setTargetCoeffs(_targetStore.coeffs());
 }
 
 void ExtractionScreen::driveAlert(const TargetAlert::State& st,
