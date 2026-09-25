@@ -44,7 +44,11 @@ const context = {
       this.children.push(...more);
       this.childNodes = this.children;
     },
-    addEventListener() {},
+    prepend(...more) {
+      this.children.unshift(...more);
+    },
+    listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
   }),
   setBanner: (message, kind) => banners.push({ message, kind }),
   flashBanner: (message, kind) => banners.push({ message, kind }),
@@ -61,7 +65,7 @@ vm.runInContext(
   'globalThis.api = { maxBytes: SHOT_METADATA_MAX_BYTES, fetchWithTimeout,' +
     'metadataRecordFromRow, metadataValue, metadataSummaryLines,' +
     'coffeeIdentity, recipeFromMetadata, nextShotCoffee,' +
-    'fieldValue, editorSectionCompatible,' +
+    'fieldValue, editorSectionCompatible, renderEditorCoffee, renderEditorPreparation, inputField,' +
     'readEditorValue, metadataNumericInputError, metadataEditorShot,' +
     'snapshotNextShotRecipe, initializeRecentShotMetadata,' +
     'setLastShotMetadataId,' +
@@ -83,7 +87,7 @@ vm.runInContext(
     'setCoffeePicker: value => { coffeePicker = value; },' +
     'setCoffeeComparisonOpen: value => { coffeeComparisonOpen = value; },' +
     'coffeePickerState: () => coffeePicker,' +
-    'chooseCoffee, saveMetadataEditor, clearSavedMetadata,' +
+    'chooseCoffee, confirmCoffeeChoice, readCoffeeFields, saveMetadataEditor, clearSavedMetadata,' +
     'closeActiveMetadataOverlay,' +
     'overwriteMetadataConflict, keepSavedMetadataConflict,' +
     'historyStore, loadMoreHistory, downloadShotJson,' +
@@ -153,6 +157,37 @@ check(unavailablePickerCoffee.attrs['data-overlay-initial-focus'] === 'true' &&
   'unavailable history did not leave new-coffee entry usable');
 context.state = null;
 context.api.setCoffeePicker(null);
+
+const fullCoffee = { coffee: { name: 'Halo Beriti', roaster: 'Royal Mile',
+  origin: 'Ethiopia', roastDate: '2026-09-17', roast: 'light',
+  process: 'washed', variety: 'Heirloom' } };
+const detailCoffeeNodes = descendants(context.api.renderEditorCoffee(fullCoffee, () => {}, true));
+check(['Ethiopia', '2026-09-17', 'light', 'washed', 'Heirloom'].every(value =>
+  detailCoffeeNodes.some(node => node.tag === 'dd' && node.children.includes(value))),
+'saved-shot coffee summary omitted a populated detail');
+check(!detailCoffeeNodes.some(node => node.tag === 'input') &&
+  detailCoffeeNodes.some(node => node.tag === 'button' && node.children.includes('Edit coffee')),
+'saved-shot coffee details are not read-only with a separate edit action');
+check(!descendants(context.api.renderEditorCoffee(fullCoffee, () => {}, false))
+  .some(node => node.tag === 'dl'), 'next-shot coffee summary is not compact');
+const grindInput = descendants(context.api.inputField('Grind', { name: 'prep.grind' }))
+  .find(node => node.tag === 'input');
+check(grindInput.attrs.type === 'text' && !grindInput.attrs.inputmode,
+  'grind input restricts access to the text keyboard');
+
+const prepSummary = descendants(context.api.renderEditorPreparation({ prep: {
+  grinder: 'Lagom O1', grind: '1.6', doseG: 16, targetYieldG: 40,
+  tempC: 93, pressure: '6 bar', water: 'Filtered',
+} }, () => {}));
+check(['Lagom O1', '1.6', '16 g', '40 g', '93 °C', '6 bar', 'Filtered']
+  .every(value => prepSummary.some(node => node.tag === 'dd' && node.children.includes(value))),
+  'preparation summary omitted a recorded field or unit');
+check(!prepSummary.some(node => node.tag === 'input') &&
+  prepSummary.some(node => node.tag === 'button' && node.children.includes('Edit preparation')),
+  'saved-shot preparation is not read-only with an edit action');
+check(descendants(context.api.renderEditorPreparation({}, () => {}))
+  .some(node => node.tag === 'button' && node.children.includes('Add preparation')),
+  'empty preparation lacks an add action');
 
 const focused = [];
 const focusControl = (name, { initial = false, input = false } = {}) => ({
@@ -237,6 +272,13 @@ check(!context.api.editorSectionCompatible(
   'nested unsupported coffee data lacked a warning-safe presentation');
 context.api.setEditor({ rating: 4, tags: ['old', 'floral'] });
 const element = (value, disabled = false) => ({ value, disabled });
+function coffeeChoiceForm(fields = {}) {
+  return { elements: {
+    'coffee.name': element(context.api.coffeePickerState().recipe.coffee.name),
+    ...fields,
+  } };
+}
+
 const historyPage = (shots, options = {}) => ({
   status: 200,
   shots,
@@ -265,6 +307,14 @@ const form = { elements: {
   tags: element('dial-in'),
   notes: element('Try finer'),
 } };
+const resultOnlyForm = { elements: {
+  tdsPct: element('8.6'), tags: element('dial-in'), notes: element('Updated result'),
+} };
+const resultOnlyEdit = context.api.readEditorValue(resultOnlyForm, original);
+check(JSON.stringify(resultOnlyEdit.prep) === JSON.stringify(original.prep) &&
+      JSON.stringify(resultOnlyEdit.coffee) === JSON.stringify(original.coffee) &&
+      resultOnlyEdit.notes === 'Updated result',
+  'saving result-only edits changed read-only coffee or preparation');
 const edited = context.api.readEditorValue(form, original);
 check(edited.prep.targetYieldG === 36.5, 'target yield was not collected');
 check(edited.future.retained && edited.coffee.futureCoffeeField === 9,
@@ -354,6 +404,19 @@ check(compactCoffee.attrs.class === 'coffee-context compact' &&
       compactCoffeeHead.children[1].attrs['aria-label'] ===
         'Clear next recipe',
   'the pump-window coffee card did not retain its identity and Clear action');
+context.api.setNextRecipe({ coffee: {
+  name: 'Halo Beriti', roaster: 'Example', roastDate: '2026-09-17',
+} });
+for (const phase of ['RUNNING', 'IDLE']) {
+  context.state = { storage: 'ready', active: phase === 'RUNNING', phase };
+  const app = { children: [], append(...items) { this.children.push(...items); } };
+  context.api.renderCoffeeContext(app);
+  check(descendants(app).some(node => node.attrs &&
+    node.attrs.class === 'coffee-roast-date' &&
+    node.children.includes('Roasted 2026-09-17')),
+  'the selected roast date is missing from the ' + phase + ' coffee card');
+}
+context.state = { storage: 'ready', active: true, phase: 'RUNNING' };
 compactCoffeeHead.children[1].attrs.onclick();
 const cleared = context.api.browserState();
 check(Object.keys(cleared.nextShotRecipe).length === 0,
@@ -693,7 +756,9 @@ check(Object.keys(blankEditor.original).length === 0 &&
       reject(err);
     }, { once: true });
   });
+  context.api.setCoffeePicker({ onChoose: null });
   context.api.chooseCoffee({ name: 'Halo Beriti' });
+  context.api.confirmCoffeeChoice(coffeeChoiceForm());
   const savedDuringInitialLoad = context.api.historyStore.shotSaved();
   check(initialHistoryRequests.length === 1 &&
         !initialHistoryRequests[0].signal.aborted,
@@ -829,7 +894,11 @@ check(Object.keys(blankEditor.original).length === 0 &&
   context.api.setNextRecipe({ coffee: { name: 'Existing template' } });
   context.api.openNextShotEditor();
   context.api.openEditorCoffeePicker(form);
+  const beforeSelection = JSON.stringify(context.api.editor().original);
   context.api.chooseCoffee({ name: 'Prior coffee', roaster: 'Prior roaster' });
+  check(JSON.stringify(context.api.editor().original) === beforeSelection,
+    'selecting a coffee committed it before the details confirmation');
+  context.api.confirmCoffeeChoice(coffeeChoiceForm());
   check(context.api.editor().original.coffee.origin === 'Ethiopia' &&
         context.api.editor().original.coffee.roastDate === '2026-08-12' &&
         context.api.editor().original.coffee.futureCoffeeField.retained &&
@@ -857,6 +926,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   } };
   context.api.openEditorCoffeePicker(savedShotForm);
   context.api.chooseCoffee({ name: 'Prior coffee', roaster: 'Prior roaster' });
+  context.api.confirmCoffeeChoice(coffeeChoiceForm());
   check(context.api.editor().original.coffee.origin === 'Ethiopia' &&
         context.api.editor().original.prep.grinder === 'Niche Zero' &&
         context.api.editor().original.prep.grind === '20' &&
@@ -868,8 +938,43 @@ check(Object.keys(blankEditor.original).length === 0 &&
         context.api.editor().original.rating === 4,
     'saved-shot coffee selection did not fill blanks or preserve entered fields');
 
+  // Detail edits are drafts: cancel preserves the parent, confirm preserves
+  // preparation and unknown coffee properties without changing history.
+  const draftForm = { elements: { ...savedShotForm.elements } };
+  for (const key of Object.keys(draftForm.elements)) {
+    if (key.startsWith('coffee.')) delete draftForm.elements[key];
+  }
+  const beforeCoffee = JSON.stringify(context.api.editor().original.coffee);
+  context.api.openEditorCoffeePicker(draftForm);
+  check(context.api.coffeePickerState().stage === 'details',
+    'editing the selected coffee did not open its details directly');
+  const detailNodes = descendants(context.api.renderCoffeePicker());
+  check(detailNodes.some(node => node.attrs && node.attrs.name === 'coffee.roastDate') &&
+        detailNodes.some(node => node.attrs && node.attrs.name === 'coffee.variety'),
+    'the shared coffee editor omitted roast date or variety');
+  context.api.coffeePickerState().recipe.coffee.roastDate = '2026-09-17';
+  context.api.closeActiveMetadataOverlay();
+  check(JSON.stringify(context.api.editor().original.coffee) === beforeCoffee &&
+        context.api.editor().original.prep.grind === '20',
+    'cancelling coffee details changed the parent coffee or preparation');
+  context.api.openEditorCoffeePicker(draftForm);
+  context.api.confirmCoffeeChoice(coffeeChoiceForm({
+    'coffee.roastDate': element('2026-09-17'),
+    'coffee.variety': element('Heirloom'),
+  }));
+  check(context.api.editor().original.coffee.roastDate === '2026-09-17' &&
+        context.api.editor().original.coffee.variety === 'Heirloom' &&
+        context.api.editor().original.coffee.futureCoffeeField.retained &&
+        context.api.editor().original.prep.grind === '20',
+    'editing coffee details replaced preparation or lost unknown fields');
+  check(context.api.historyStore.rows.find(row => row.id === 11)
+        .userMetadata.coffee.roastDate === '2026-08-12',
+    'editing a coffee changed its historical source');
+
   context.api.historyStore.sessionStarted();
+  context.api.setCoffeePicker({ onChoose: null });
   context.api.chooseCoffee({ name: 'Prior coffee', roaster: 'Prior roaster' });
+  context.api.confirmCoffeeChoice(coffeeChoiceForm());
   check(context.api.browserState().nextShotRecipeSourceId === null &&
         context.api.browserState().nextShotRecipe.coffee.origin === 'Ethiopia',
     'cached history attributed a recipe to an unvalidated shot identity');
@@ -1740,8 +1845,131 @@ check(Object.keys(blankEditor.original).length === 0 &&
 
   check(context.api.downloadShotJson(8, {}, { loading: true }) === false,
     'JSON export accepted unresolved shot metadata');
-  if (checkCount !== 142) {
-    throw new Error(`expected 142 assertions, ran ${checkCount}`);
+  check(descendants(context.api.renderEditorCoffee({}, () => {}, true))
+    .some(node => node.tag === 'button' && node.children.includes('Choose coffee')),
+    'a shot without coffee lacks a direct choose action');
+  context.api.setEditor({ kind: 'shot', original: {}, rating: 0, tags: [] });
+  context.api.openEditorCoffeePicker({ elements: {
+    tags: element(''), notes: element(''), tdsPct: element(''),
+  } });
+  check(context.api.coffeePickerState().stage === 'select',
+    'a shot without coffee opened an empty details form instead of selection');
+  context.api.closeActiveMetadataOverlay();
+
+  context.api.setCoffeePicker({ onChoose: null });
+  context.api.chooseCoffee({ name: 'Prior coffee', roaster: 'Prior roaster' });
+  const reconnectPicker = context.api.coffeePickerState();
+  reconnectPicker.sourceId = 12;
+  reconnectPicker.sourceCoffeeIdentity = context.api.coffeeIdentity(reconnectPicker.recipe.coffee);
+  context.api.metadataStreamSessionStarted();
+  check(reconnectPicker.sourceId === null && reconnectPicker.sourceCoffeeIdentity === null,
+    'reconnect retained the coffee picker source identity');
+  context.api.confirmCoffeeChoice(coffeeChoiceForm());
+  check(context.api.browserState().nextShotRecipeSourceId === null,
+    'confirming coffee after reconnect restored stale shot attribution');
+
+  for (const prep of [{ doseG: '16', grind: 3 }, 'unsupported']) {
+    const nodes = descendants(context.api.renderEditorPreparation({ prep }, () => {}));
+    check(nodes.some(node => node.attrs.class === 'field-warning') &&
+          !nodes.some(node => node.children.includes('No preparation recorded.')),
+      'incompatible preparation was reported as absent');
+  }
+
+  const invalidPicker = { stage: 'details', recipe: { coffee: { name: 42 } } };
+  context.api.setCoffeePicker(invalidPicker);
+  context.api.confirmCoffeeChoice({ elements: { 'coffee.name': {
+    disabled: true, focus: () => { throw new Error('focused disabled coffee name'); },
+  } } });
+  check(invalidPicker.error ===
+        "This coffee's name cannot be edited here. Choose another coffee.",
+    'an incompatible coffee name offered an unavailable editing action');
+
+  const blankNamePicker = { stage: 'details', recipe: { coffee: { name: 'Coffee' } } };
+  context.api.setCoffeePicker(blankNamePicker);
+  let focusedName = false;
+  let inlineError = null;
+  const nameForm = {
+    elements: { 'coffee.name': { value: '', disabled: false,
+      focus: () => { focusedName = true; } } },
+    querySelector: selector => selector === '.editor-error' ? inlineError : null,
+    append: node => { inlineError = node; },
+  };
+  const renderBeforeValidation = context.renderMetadataOverlay;
+  context.renderMetadataOverlay = () => { throw new Error('validation rebuilt the overlay'); };
+  context.api.confirmCoffeeChoice(nameForm);
+  check(focusedName && blankNamePicker.error === 'Enter a coffee name.' &&
+        inlineError.textContent === blankNamePicker.error && inlineError.attrs.role === 'alert',
+    'empty coffee name did not show an inline alert and focus the editable field');
+  focusedName = false;
+  nameForm.elements['coffee.name'].disabled = true;
+  blankNamePicker.recipe.coffee.name = 42;
+  const firstErrorNode = inlineError;
+  context.api.confirmCoffeeChoice(nameForm);
+  check(!focusedName && inlineError === firstErrorNode &&
+        inlineError.textContent.includes('Choose another coffee.'),
+    'disabled coffee name moved focus or replaced the existing error node');
+  context.renderMetadataOverlay = renderBeforeValidation;
+
+  const largeCoffee = { name: 'Large coffee', origin: 'x'.repeat(context.api.maxBytes) };
+  await context.api.openCoffeePicker(null, largeCoffee);
+  context.api.confirmCoffeeChoice(coffeeChoiceForm());
+  const largePicker = context.api.coffeePickerState();
+  check(!!largePicker.error, 'standalone coffee selection accepted oversized metadata');
+  const coffeeForm = descendants(context.api.renderCoffeePicker()).find(node => node.tag === 'form');
+  coffeeForm.elements = { 'coffee.origin': element('Short origin') };
+  let removedError = false;
+  coffeeForm.querySelector = () => ({ remove: () => { removedError = true; } });
+  coffeeForm.listeners.input();
+  check(largePicker.error === null && removedError,
+    'editing coffee left an obsolete validation error visible');
+
+  let nestedDraft = null;
+  await context.api.openCoffeePicker(recipe => { nestedDraft = recipe; }, largeCoffee);
+  context.api.confirmCoffeeChoice(coffeeChoiceForm());
+  check(nestedDraft && nestedDraft.coffee.origin === largeCoffee.origin &&
+        context.api.coffeePickerState() === null,
+    'nested coffee editing bypassed the parent draft workflow with a partial size check');
+
+  await context.api.openCoffeePicker(() => {}, { name: 'Coffee' });
+  const loadingDetails = context.api.coffeePickerState();
+  loadingDetails.loadingHistory = true;
+  const detailTree = descendants(context.api.renderCoffeePicker());
+  detailTree.find(node => node.tag === 'form').elements = {};
+  let pickerRenders = 0;
+  const priorRender = context.renderMetadataOverlay;
+  context.renderMetadataOverlay = () => { ++pickerRenders; };
+  detailTree.find(node => node.tag === 'button' && node.children.includes('Choose another'))
+    .attrs.onclick();
+  context.renderMetadataOverlay = priorRender;
+  check(loadingDetails.stage === 'select' && pickerRenders === 1,
+    'choosing another coffee waited for an in-flight history request to render');
+  context.api.setCoffeePicker(null);
+  let confirmedCoffee = null;
+  await context.api.openCoffeePicker(recipe => { confirmedCoffee = recipe.coffee; },
+    { name: 'Coffee', roaster: 'Royal', origin: 'Ethiopia', futureField: 'preserved' });
+  const rawDraftForm = descendants(context.api.renderCoffeePicker()).find(node => node.tag === 'form');
+  rawDraftForm.elements = {
+    'coffee.name': element(' Coffee '),
+    'coffee.roaster': element('Royal '),
+    'coffee.origin': element('   '),
+  };
+  rawDraftForm.listeners.input();
+  const rebuiltCoffeeInputs = descendants(context.api.renderCoffeePicker());
+  const rebuiltRoaster = rebuiltCoffeeInputs.find(node => node.attrs.name === 'coffee.roaster');
+  check(rebuiltRoaster.attrs.value === 'Royal ' &&
+        rebuiltCoffeeInputs.find(node => node.attrs.name === 'coffee.origin').attrs.value === '   ',
+    'rebuilding coffee details trimmed unfinished input');
+  const rebuiltCoffeeForm = { elements: {
+    'coffee.name': element(' Coffee '),
+    'coffee.roaster': element(rebuiltRoaster.attrs.value + 'Mile '),
+    'coffee.origin': element('   '),
+  } };
+  context.api.confirmCoffeeChoice(rebuiltCoffeeForm);
+  check(confirmedCoffee.name === 'Coffee' && confirmedCoffee.roaster === 'Royal Mile' &&
+        !('origin' in confirmedCoffee) && confirmedCoffee.futureField === 'preserved',
+    'coffee confirmation failed to trim fields, remove blanks, or preserve unknown values');
+  if (checkCount !== 173) {
+    throw new Error(`expected 173 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

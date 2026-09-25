@@ -16,6 +16,7 @@ h2 {
   display: flex; align-items: center; gap: 8px;
 }
 section { margin: 0 0 24px; }
+.dim { color: var(--dim); }
 .page-head {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 20px;
@@ -325,6 +326,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   font-size: 1rem; margin-top: 8px; min-width: 0;
 }
 .coffee-context.compact { margin-bottom: 12px; padding: 6px 12px; }
+.coffee-roast-date { color: var(--dim); font-size: 0.8125rem; margin: 6px 0; }
 .coffee-context.compact .coffee-name { margin: 0; }
 .coffee-context.compact .coffee-name.empty { color: var(--dim); }
 .coffee-context.compact .coffee-clear {
@@ -502,3 +504,30 @@ button:disabled { opacity: 0.5; cursor: default; }
 .device-target { display: grid; gap: 8px; margin-top: 12px; }
 .device-target button { justify-self: start; }
 .device-target-warning { color: var(--warn); }
+
+.editor-coffee-summary {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 16px;
+}
+.editor-coffee-summary > div { min-width: 0; }
+.metadata-editor > .editor-actions, .new-coffee > .editor-actions {
+  position: sticky; bottom: 0; background: var(--bg);
+  padding: 12px 0; border-top: 1px solid var(--border);
+}
+
+.preparation-more { margin-bottom: 20px; }
+.preparation-more > summary { cursor: pointer; padding: 12px 0; }
+
+.editor-value-details {
+  display: grid; grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 16px; margin: 0 0 20px; font-size: 0.875rem;
+}
+.editor-value-details dt { color: var(--dim); }
+.editor-value-details dd { margin: 0; }
+.editor-value-details:empty { display: none; }
+
+.editor-section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin: 20px 0 12px;
+}
+.metadata-editor .editor-section-head h2 { margin: 0; }

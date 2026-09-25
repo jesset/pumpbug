@@ -120,10 +120,15 @@ and history requests are unaffected.
 
 The Live view can keep a coffee and recipe visible while you prepare and brew.
 Choose `Choose coffee` to select a coffee found in the loaded history or enter
-a new one. Selecting a coffee from history copies its preparation fields from
-the newest shot where it was used. `Adjust recipe` sets the parameters for the
-next shot. The picker lists coffees from loaded shot history; choose `Search
-older history` there to look through additional history pages.
+a new one. Review its details, including the roast date, then choose `Use
+coffee`. Selecting a coffee from history copies its preparation fields from the
+newest shot where it was used. The picker lists coffees from loaded shot
+history; choose `Search older history` there to look through additional pages.
+
+`Adjust recipe` sets the parameters for the next shot. `Edit coffee`
+opens the selected coffee's details; changing them preserves preparation and
+leaves historical shots unchanged. Choose `Use coffee` to return to the recipe,
+then `Save` to keep the draft.
 
 During an extraction, a compact Coffee card appears above the live
 measurements. It shows the selected coffee, or `No coffee selected`. `Clear`
@@ -203,9 +208,14 @@ coffee and preparation details, and also results after the coffee has been
 brewed. If the TDS and dose are entered, extraction yield is calculated and
 displayed automatically.
 
-In the shot details editor, `Choose` lets you select a coffee from history. It
-copies that coffee's saved details and fills preparation fields that are still
-blank. Existing preparation and result values for the shot are preserved.
+Saved-shot preparation is shown read-only. `Edit preparation` (or `Add
+preparation` when empty) opens the fields in place. The editor's bottom `Save`
+and `Cancel` buttons apply to preparation and result edits together.
+
+In the shot details editor, you can select a coffee or edit its details. Review
+the details and choose `Use coffee` to update the shot draft. Selecting another
+coffee fills preparation fields that are still blank; existing preparation and
+result values are preserved. The shot's `Save` action stores the changes.
 
 If the cut alert fired, `fired at` shows the trigger time and yield; `projected`
 shows the final yield Pump Bug predicted at that moment. Otherwise the row

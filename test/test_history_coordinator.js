@@ -452,7 +452,13 @@ async function testRecipeDemandLifecycle() {
       });
       assert.equal(h.pages.length, 0, 'restored recipe read history during pumping');
     }
-    if (action === 'select') h.context.chooseCoffee({ name: 'Selected' });
+    if (action === 'select') {
+      h.context.openCoffeePicker();
+      h.context.chooseCoffee({ name: 'Selected' });
+      h.context.confirmCoffeeChoice({ elements: {
+        'coffee.name': { value: 'Selected', disabled: false },
+      } });
+    }
     if (action === 'edit') {
       h.context.openNextShotEditor();
       const fields = ('coffee.name coffee.roaster coffee.origin coffee.roastDate ' +
