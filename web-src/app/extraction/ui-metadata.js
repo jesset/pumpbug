@@ -176,6 +176,19 @@ function metadataStreamSessionStarted() {
   if (changed) scheduleRender();
 }
 
+// Returns the same summary shape as a History row.
+function shotSummaryFromRecord(id, shot, record) {
+  return {
+    ...shot,
+    id,
+    userMetadataState: record?.loading ? 'loading' : record?.state,
+    userMetadata: record?.value,
+    userMetadataCrc: record?.crc,
+    userMetadataEtag: record?.etag,
+    userMetadataNeedsResult: record?.needsResult,
+  };
+}
+
 function metadataRecordFromRow(row) {
   if (!row || !row.userMetadataState) return null;
   return {
@@ -184,6 +197,8 @@ function metadataRecordFromRow(row) {
     value: row.userMetadataState === 'active' ? row.userMetadata : null,
     crc: row.userMetadataCrc,
     etag: row.userMetadataEtag || null,
+    loading: row.userMetadataState === 'loading',
+    needsResult: !!row.userMetadataNeedsResult,
   };
 }
 
@@ -267,12 +282,6 @@ async function initializeRecentShotMetadata(id, value) {
   };
 }
 
-function shotForMetadataId(id) {
-  if (lastRecord && lastRecord.shotId === id) return lastRecord;
-  if (selectedShotId === id && selectedShot) return selectedShot;
-  return (historyStore.rows || []).find(row => row.id === id) || null;
-}
-
 async function setLastShotMetadataId(id, completedShotRecipe = null) {
   const pending = id ? { id, loading: true } : null;
   lastShotMetadata = pending;
@@ -350,14 +359,30 @@ function metadataPreparationParts(prep) {
   return preparation;
 }
 
-function metadataSummaryEntries(value) {
+function extractionYieldPct(tdsPct, doseG, yieldCg) {
+  if (!Number.isFinite(tdsPct) || tdsPct < 0 || tdsPct > 100 ||
+      !Number.isFinite(doseG) || doseG <= 0 ||
+      !Number.isFinite(yieldCg) || yieldCg <= 0) return null;
+  const result = tdsPct * (yieldCg / 100) / doseG;
+  return Number.isFinite(result) ? result : null;
+}
+
+function extractionYieldText(value) {
+  if (value === null) return '';
+  const text = 'Extraction yield: ' + value.toFixed(1) + '%';
+  return value > 100
+    ? text + ' — check TDS, dose, and beverage weight.' : text;
+}
+
+function shotSummaryEntries(summary, { showCoffeeName = true } = {}) {
+  const value = metadataValue(metadataRecordFromRow(summary));
   const entries = [];
   const coffee = value.coffee && typeof value.coffee === 'object'
     ? value.coffee : {};
   const prep = value.prep && typeof value.prep === 'object' ? value.prep : {};
   const coffeeName = nonemptyString(coffee.name);
   const roaster = nonemptyString(coffee.roaster);
-  if (coffeeName) {
+  if (showCoffeeName && coffeeName) {
     entries.push({ text: roaster ? coffeeName + ' · ' + roaster : coffeeName });
   }
   const roastDate = nonemptyString(coffee.roastDate);
@@ -370,6 +395,10 @@ function metadataSummaryEntries(value) {
   const rating = ratingText(value);
   if (rating) result.push(rating);
   if (Number.isFinite(value.tdsPct)) result.push(value.tdsPct + '% TDS');
+  const extraction = extractionYieldPct(value.tdsPct, prep.doseG, summary.yieldCg);
+  if (extraction !== null) {
+    result.push(extractionYieldText(extraction));
+  }
   if (Array.isArray(value.tags)) {
     const tags = value.tags.filter(v => typeof v === 'string');
     if (tags.length) result.push(tags.join(', '));
@@ -383,16 +412,17 @@ function metadataSummaryEntries(value) {
   return entries;
 }
 
-function metadataSummaryLines(value) {
-  return metadataSummaryEntries(value).map(entry => entry.text ||
+function shotSummaryLines(summary, options = {}) {
+  return shotSummaryEntries(summary, options).map(entry => entry.text ||
     entry.parts.map(part => part.text).join(' · '));
 }
 
-function appendShotMetadataSummary(parent, record, options = {}) {
+function appendShotSummary(parent, summary, options = {}) {
+  const record = metadataRecordFromRow(summary);
   if (!record) return;
   const box = el('div', { class: 'metadata-summary' });
   if (record.state === 'active') {
-    for (const entry of metadataSummaryEntries(metadataValue(record))) {
+    for (const entry of shotSummaryEntries(summary, options)) {
       const line = el('div');
       if (entry.parts && options.emphasizeRecipe) {
         entry.parts.forEach((part, index) => {
@@ -425,7 +455,9 @@ function metadataActionLabel(record) {
     : 'Add shot details';
 }
 
-function shotMetadataListAction(id, record) {
+function shotMetadataListAction(summary) {
+  const { id } = summary;
+  const record = metadataRecordFromRow(summary);
   if (record && record.state === 'unsupported') return null;
   const label = 'Edit details';
   return el('button', {
@@ -435,9 +467,9 @@ function shotMetadataListAction(id, record) {
       event.stopPropagation();
       if (record && record.etag) {
         metadataOverlayReturnFocus = currentMetadataOverlayReturnFocus();
-        openMetadataEditor(id, record, { returnToHistory: true });
+        openMetadataEditor(summary, { returnToHistory: true });
       } else {
-        loadShotMetadata(id, { returnToHistory: true });
+        loadShotMetadata(summary, { returnToHistory: true });
       }
     },
   },
@@ -485,7 +517,8 @@ function currentMetadataOverlayReturnFocus() {
   };
 }
 
-async function loadShotMetadata(id, options = {}) {
+async function loadShotMetadata(summary, options = {}) {
+  const { id } = summary;
   const request = {
     id,
     view,
@@ -502,7 +535,7 @@ async function loadShotMetadata(id, options = {}) {
     }
     metadataEditorLoad = null;
     metadataOverlayReturnFocus = request.returnFocus;
-    if (!openMetadataEditor(id, record, options)) {
+    if (!openMetadataEditor(shotSummaryFromRecord(id, summary, record), options)) {
       metadataOverlayReturnFocus = null;
       flashBanner(record && record.state === 'unsupported'
         ? 'These shot details use an unsupported metadata version.'
@@ -545,7 +578,9 @@ function downloadShotDetailsJson(id, record) {
   URL.revokeObjectURL(url);
 }
 
-function appendShotMetadataDetails(parent, id, record, options = {}) {
+function appendShotMetadataDetails(parent, summary, options = {}) {
+  const { id } = summary;
+  const record = metadataRecordFromRow(summary);
   const section = el('section', { class: 'shot-metadata' },
     el('h2', {}, 'Shot details'));
   const actions = el('div', { class: 'metadata-actions' });
@@ -560,16 +595,16 @@ function appendShotMetadataDetails(parent, id, record, options = {}) {
     actions.append(el('button', {
       class: 'secondary',
       'data-overlay-return-key': 'shot-details-' + id,
-      onclick: () => loadShotMetadata(id),
+      onclick: () => loadShotMetadata(summary),
     }, 'Load shot details'));
   } else if (record.loading) {
     section.append(el('p', { class: 'empty compact' }, 'Loading shot details…'));
   } else {
-    appendShotMetadataSummary(section, record);
+    appendShotSummary(section, summary);
     if (record.state !== 'unsupported' && record.etag) {
       actions.append(el('button', {
         class: 'secondary', 'data-overlay-return-key': 'shot-details-' + id,
-        onclick: () => loadShotMetadata(id),
+        onclick: () => loadShotMetadata(summary),
       }, metadataActionLabel(record)));
     }
     if (record.state === 'active') {
@@ -1004,11 +1039,10 @@ function renderCoffeeContext(app) {
       'Loading previous shots…'));
   } else if (matches.length) {
     const newest = matches[0];
-    const value = metadataValue(metadataRecordFromRow(newest));
     previous.append(el('div', { class: 'coffee-last' },
       'Shot #' + newest.id +
       (fmtDate(newest.startUtcSec) ? ' · ' + fmtDate(newest.startUtcSec) : '')));
-    const details = metadataSummaryLines(value).slice(1);
+    const details = shotSummaryLines(newest, { showCoffeeName: false });
     if (Number.isFinite(newest.yieldCg)) {
       details.unshift(fmtG(newest.yieldCg) + ' g yield');
     }
@@ -1156,7 +1190,7 @@ function renderCoffeeComparison() {
       el('div', { class: 'comparison-result' },
         [ratingText(value), Number.isFinite(row.yieldCg)
           ? fmtG(row.yieldCg) + ' g' : null].filter(Boolean).join(' · ')));
-    appendShotMetadataSummary(card, metadataRecordFromRow(row));
+    appendShotSummary(card, row);
     card.append(el('div', { class: 'metadata-actions' },
       el('button', { class: 'secondary',
         'data-overlay-focus-key': 'comparison-use-' + row.id,
@@ -1459,7 +1493,9 @@ function closeMetadataEditor() {
   renderMetadataOverlay();
 }
 
-function openMetadataEditor(id, record, options = {}) {
+function openMetadataEditor(summary, options = {}) {
+  const { id } = summary;
+  const record = metadataRecordFromRow(summary);
   if (!record || !record.etag || record.state === 'unsupported') return false;
   cancelMetadataEditorLoad();
   const original = cloneJson(metadataValue(record));
@@ -1467,6 +1503,9 @@ function openMetadataEditor(id, record, options = {}) {
     kind: 'shot',
     id,
     record,
+    // Saved measurements are immutable. Keep the displayed value rather than
+    // resolving a numeric ID again as other views or storage sessions change.
+    yieldCg: summary.yieldCg,
     original,
     rating: Number.isInteger(original.rating) ? original.rating : 0,
     tags: Array.isArray(original.tags) ? [...original.tags] : [],
@@ -1810,11 +1849,6 @@ function tagInputField(value) {
     el('div', { class: 'tag-editor' }, chips, input));
 }
 
-function metadataEditorShot() {
-  if (!metadataEditor || metadataEditor.kind !== 'shot') return null;
-  return shotForMetadataId(metadataEditor.id);
-}
-
 function metadataConflictText(record) {
   if (record.state === 'active') return JSON.stringify(record.value, null, 2);
   if (record.state === 'cleared') return 'Saved details were cleared.';
@@ -2012,6 +2046,23 @@ function preparationCompatibilityWarning() {
     'They are preserved when you save.');
 }
 
+function editorExtractionYield(form, editor) {
+  const output = el('div', { class: 'extraction-yield' });
+  const update = () => {
+    const doseInput = form.elements['prep.doseG'];
+    const doseText = doseInput ? doseInput.value.trim()
+      : fieldValue(editor.original, 'prep', 'doseG', 'number').toString().trim();
+    const tdsText = form.elements.tdsPct.value.trim();
+    const extraction = extractionYieldPct(
+      tdsText ? Number(tdsText) : null,
+      doseText ? Number(doseText) : null, editor.yieldCg);
+    output.textContent = extractionYieldText(extraction);
+  };
+  form.addEventListener('input', update);
+  update();
+  return output;
+}
+
 function renderMetadataEditor() {
   if (!metadataEditor) return null;
   if (metadataEditor.conflict) return renderMetadataConflict();
@@ -2132,27 +2183,7 @@ function renderMetadataEditor() {
         value: fieldValue(value, null, 'tdsPct', 'number'),
         disabled: !editorFieldCompatible(value, null, 'tdsPct', 'number') }),
       ));
-    const shot = metadataEditorShot();
-    const extractionYield = el('div', { class: 'extraction-yield' });
-    const updateExtractionYield = () => {
-      const doseInput = form.elements['prep.doseG'];
-      const doseText = doseInput ? doseInput.value.trim()
-        : fieldValue(value, 'prep', 'doseG', 'number').toString().trim();
-      const tdsText = form.elements.tdsPct.value.trim();
-      const dose = Number(doseText);
-      const tds = Number(tdsText);
-      if (shot && shot.yieldCg > 0 && doseText && tdsText &&
-          Number.isFinite(dose) && dose > 0 && Number.isFinite(tds) &&
-          tds >= 0 && tds <= 100) {
-        extractionYield.textContent = 'Extraction yield: ' +
-          (tds * (shot.yieldCg / 100) / dose).toFixed(1) + '%';
-      } else {
-        extractionYield.textContent = '';
-      }
-    };
-    form.addEventListener('input', updateExtractionYield);
-    updateExtractionYield();
-    form.append(extractionYield);
+    form.append(editorExtractionYield(form, metadataEditor));
   } else {
     for (const name of ['tdsPct', 'tags', 'notes']) {
       form.append(el('input', { type: 'hidden', name, value: '' }));

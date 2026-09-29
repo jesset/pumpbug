@@ -685,7 +685,6 @@ function renderList(app) {
   }
   const ul = el('ul', { class: 'shotlist' });
   for (const s of rows) {
-    const metadata = metadataRecordFromRow(s);
     const hasSummary = Number.isFinite(s.startUtcSec) &&
       Number.isFinite(s.beginMs) && Number.isFinite(s.durationMs) &&
       Number.isFinite(s.yieldCg) && Number.isFinite(s.totalPumpOnMs);
@@ -696,11 +695,11 @@ function renderList(app) {
           shotOpenButton(s.id, 'Record unavailable'),
           el('span', { class: 'shot-row-actions' },
             el('span', { class: 'id' }, '#' + s.id),
-            shotMetadataListAction(s.id, metadata)),
+            shotMetadataListAction(s)),
         ),
       );
       item.dataset.shotId = String(s.id);
-      appendShotMetadataSummary(item, metadata);
+      appendShotSummary(item, s);
       ul.append(item);
       continue;
     }
@@ -710,7 +709,7 @@ function renderList(app) {
         shotOpenButton(s.id, when),
         el('span', { class: 'shot-row-actions' },
           el('span', { class: 'id' }, '#' + s.id),
-          shotMetadataListAction(s.id, metadata)),
+          shotMetadataListAction(s)),
       ),
       el('div', { class: 'body' },
         el('span', {},
@@ -724,7 +723,7 @@ function renderList(app) {
           el('span', { class: 'u' }, 's pump')),
       ));
     item.dataset.shotId = String(s.id);
-    appendShotMetadataSummary(item, metadata, { emphasizeRecipe: true });
+    appendShotSummary(item, s, { emphasizeRecipe: true });
     ul.append(item);
   }
   const section = el('section', {},
@@ -772,7 +771,7 @@ function renderDetail(app) {
       `or unsupported.`));
     const metadataCard = el('div', { class: 'card record' });
     appendShotMetadataDetails(
-      metadataCard, selectedShotId, selectedShotMetadata,
+      metadataCard, shotSummaryFromRecord(selectedShotId, null, selectedShotMetadata),
       { allowMetadataDownload: true });
     app.append(metadataCard);
     return;
@@ -788,10 +787,9 @@ function renderDetail(app) {
   }
   const e = selectedShot;
   const when = fmtDate(e.startUtcSec) || 'time unknown';
-  const card = renderShotRecord(
-    app, e, { variant: 'detail',
+  const card = renderCompletedShot(
+    app, shotSummaryFromRecord(selectedShotId, e, selectedShotMetadata), { variant: 'detail',
       title: `Shot #${selectedShotId} · ${when}` });
-  appendShotMetadataDetails(card, selectedShotId, selectedShotMetadata);
   card.append(techFold(e));
   // Send this shot to the device's Last Shot slot for on-device replay.
   app.append(el('button',

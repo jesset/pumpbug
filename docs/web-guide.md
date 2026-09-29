@@ -179,9 +179,11 @@ trying again.
 
 Choose `History` on the dashboard to list saved shots, newest first. Each row
 normally shows its date and time, shot ID, duration, final yield, and pump-on
-time. Recipe coffee, preparation, rating, tags, and notes appear beneath that
-summary. If for some reason the record's data cannot be read, it's listed as
-`Record unavailable`, and opening it shows a message about the issue.
+time. Recipe coffee, preparation, rating, TDS, tags, and notes appear beneath
+that summary. When TDS, dose, and measured beverage weight are available, the
+summary also shows extraction yield as a percentage. If for some reason the
+record's data cannot be read, it's listed as `Record unavailable`, and opening
+it shows a message about the issue.
 
 Use `Edit details` on a row to change its saved details without opening the
 full shot view.
@@ -205,8 +207,10 @@ Select a History row to open its detail page, where you can see the shot's
 weight-and-flow chart, target and alert outcome, pump time, etc. `Add shot
 details` or `Edit shot details` opens the shot editor, where you can enter
 coffee and preparation details, and also results after the coffee has been
-brewed. If the TDS and dose are entered, extraction yield is calculated and
-displayed automatically.
+brewed. When TDS and dose are entered and measured beverage weight is available,
+extraction yield is calculated as TDS (%) × beverage weight (g) ÷ dose (g),
+rounded to one decimal place, and displayed in the editor and in History, Last
+Shot, and coffee summaries.
 
 Saved-shot preparation is shown read-only. `Edit preparation` (or `Add
 preparation` when empty) opens the fields in place. The editor's bottom `Save`

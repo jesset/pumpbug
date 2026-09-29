@@ -63,10 +63,10 @@ vm.runInContext(
   fs.readFileSync(historyPath, 'utf8') + '\n' +
   fs.readFileSync(sourcePath, 'utf8') + '\n' +
   'globalThis.api = { maxBytes: SHOT_METADATA_MAX_BYTES, fetchWithTimeout,' +
-    'metadataRecordFromRow, metadataValue, metadataSummaryLines,' +
+    'metadataRecordFromRow, metadataValue, shotSummaryLines, appendShotSummary, shotSummaryFromRecord, appendShotMetadataDetails,' +
     'coffeeIdentity, recipeFromMetadata, nextShotCoffee,' +
     'fieldValue, editorSectionCompatible, renderEditorCoffee, renderEditorPreparation, inputField,' +
-    'readEditorValue, metadataNumericInputError, metadataEditorShot,' +
+    'readEditorValue, metadataNumericInputError, openMetadataEditor, editorExtractionYield,' +
     'snapshotNextShotRecipe, initializeRecentShotMetadata,' +
     'setLastShotMetadataId,' +
     'setEditor: value => { metadataEditor = value; },' +
@@ -219,27 +219,100 @@ const record = context.api.metadataRecordFromRow(row);
 check(record.id === 7 && record.value.future.retained && record.etag === 'etag-7',
   'history row did not retain its metadata identity');
 context.renderMetadataOverlay = () => {};
-const editAction = context.api.shotMetadataListAction(7, record);
+const editAction = context.api.shotMetadataListAction(row);
 editAction.attrs.onclick({ stopPropagation() {} });
 check(context.api.editor().record.etag === 'etag-7',
   'editing a history row discarded its available metadata version');
 check(context.api.coffeeIdentity({ name: ' Halo Beriti ', roaster: ' Example ' }) ===
       context.api.coffeeIdentity({ name: 'halo beriti', roaster: 'example' }),
   'coffee identity is not trim- and case-insensitive');
-check(context.api.metadataSummaryLines({
+// Fixtures use the same complete data shape returned by the History endpoint.
+function summary(value, measurements = {}) {
+  return { id: 7, ...measurements, userMetadataState: 'active', userMetadata: value };
+}
+check(context.api.shotSummaryLines(summary({
   coffee: { name: 'Halo Beriti', roastDate: '2026-08-12' },
   prep: { pressure: '9 bar' },
-}).includes('Roasted 2026-08-12'),
+})).includes('Roasted 2026-08-12'),
   'shot summaries omit the coffee roast date');
-check(context.api.metadataSummaryLines({ prep: { pressure: 'Blooming profile' } })
+check(context.api.shotSummaryLines(summary({ prep: { pressure: 'Blooming profile' } }))
   .includes('Blooming profile'),
   'shot summaries omit the pressure or profile');
-check(context.api.metadataSummaryLines({ prep: { water: 'Lotus Light & Bright' } })
+check(context.api.shotSummaryLines(summary({ prep: { water: 'Lotus Light & Bright' } }))
   .includes('Lotus Light & Bright'),
   'shot summaries omit the water');
-check(context.api.metadataSummaryLines({ rating: 3, tags: [1, 2] })
+check(context.api.shotSummaryLines(summary({ rating: 3, tags: [1, 2] }))
   .join('\n') === '★★★',
   'non-string tags added an empty shot-summary field');
+
+const extractionMetadata = { tdsPct: 8.6, prep: { doseG: 18, targetYieldG: 36 } };
+const extractionSummary = context.el('div');
+context.api.appendShotSummary(extractionSummary,
+  summary(extractionMetadata, { yieldCg: 3900 }));
+check(descendants(extractionSummary).some(node =>
+  node.children.includes('8.6% TDS · Extraction yield: 18.6%')),
+  'shot summary did not show extraction calculated from measured yield');
+check(context.api.shotSummaryLines(summary({ tdsPct: 0, prep: { doseG: 18 } },
+  { yieldCg: 3900 })).includes('0% TDS · Extraction yield: 0.0%'),
+  'zero TDS was treated as missing');
+for (const [name, value, measurements] of [
+  ['missing yield', extractionMetadata, {}],
+  ['zero yield', extractionMetadata, { yieldCg: 0 }],
+  ['infinite yield', extractionMetadata, { yieldCg: Infinity }],
+  ['missing dose', { tdsPct: 8.6 }, { yieldCg: 3900 }],
+  ['zero dose', { tdsPct: 8.6, prep: { doseG: 0 } }, { yieldCg: 3900 }],
+  ['missing TDS', { prep: { doseG: 18 } }, { yieldCg: 3900 }],
+  ['negative TDS', { tdsPct: -1, prep: { doseG: 18 } }, { yieldCg: 3900 }],
+  ['TDS over 100', { tdsPct: 101, prep: { doseG: 18 } }, { yieldCg: 3900 }],
+]) {
+  check(!context.api.shotSummaryLines(summary(value, measurements))
+    .join(' ').includes('Extraction yield'),
+    'shot summary calculated extraction for ' + name);
+}
+for (const coffee of [undefined, { name: 'Coffee', roastDate: '2026-08-12' }]) {
+  const lines = context.api.shotSummaryLines(summary({
+    coffee, prep: { doseG: 18 }, tdsPct: 8.6,
+  }, { yieldCg: 3900 }), { showCoffeeName: false });
+  check(lines.includes('18 g') &&
+    lines.includes('8.6% TDS · Extraction yield: 18.6%') &&
+    !lines.includes('Coffee') &&
+    (!coffee || lines.includes('Roasted 2026-08-12')),
+    'hiding the coffee name removed preparation, results, or the shot roast date');
+}
+for (const [tdsPct, expected] of [
+  [86, '186.3% — check TDS, dose, and beverage weight.'],
+  [8.6, '18.6%'],
+]) {
+  const lines = context.api.shotSummaryLines(summary({
+    tdsPct, prep: { doseG: 18 },
+  }, { yieldCg: 3900 }));
+  check(lines.includes(tdsPct + '% TDS · Extraction yield: ' + expected),
+    'extraction feedback was incorrect for TDS ' + tdsPct);
+}
+check(context.api.shotSummaryLines(summary({
+  tdsPct: 50, prep: { doseG: 18 },
+}, { yieldCg: 3600 })).includes('50% TDS · Extraction yield: 100.0%'),
+  'extraction feedback incorrectly flagged the 100% boundary');
+const summaryRecord = { id: 7, state: 'active', value: extractionMetadata, etag: 'shot-7' };
+context.lastRecord = { shotId: 7, yieldCg: 9000 };
+const detailSummary = context.el('div');
+context.api.appendShotMetadataDetails(detailSummary,
+  context.api.shotSummaryFromRecord(7, { yieldCg: 3900 }, summaryRecord));
+check(JSON.stringify(detailSummary).includes('Extraction yield: 18.6%') &&
+  !JSON.stringify(detailSummary).includes('43.0%'),
+  'detail summary used another displayed shot with the same ID');
+const damagedSummary = context.el('div');
+context.api.appendShotMetadataDetails(damagedSummary,
+  context.api.shotSummaryFromRecord(7, null, summaryRecord));
+check(JSON.stringify(damagedSummary).includes('8.6% TDS') &&
+  !JSON.stringify(damagedSummary).includes('Extraction yield'),
+  'damaged detail borrowed measurements from another view');
+context.lastRecord = null;
+const pendingSummary = context.el('div');
+context.api.appendShotMetadataDetails(pendingSummary,
+  context.api.shotSummaryFromRecord(7, { yieldCg: 3900 }, { id: 7, loading: true }));
+check(JSON.stringify(pendingSummary).includes('Loading shot details…'),
+  'adapting a live record lost its metadata loading state');
 
 const recipe = context.api.recipeFromMetadata({
   coffee: { name: 'Halo Beriti' },
@@ -655,7 +728,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   context.fetchShotMetadata = async id => ({
     id, state: 'unsupported', value: null, crc: 0, etag: null,
   });
-  await context.api.loadShotMetadata(999);
+  await context.api.loadShotMetadata({ id: 999 });
   check(context.api.editor() === null &&
         banners.some(entry => entry.message.includes('unsupported')),
     'an unsupported metadata record left a silent, stale editor action');
@@ -982,8 +1055,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
   context.lastRecord = null;
   context.selectedShotId = null;
   context.selectedShot = null;
-  context.api.setEditor({ kind: 'shot', id: 11 });
-  check(context.api.metadataEditorShot().yieldCg === 3900,
+  context.api.openMetadataEditor(context.api.historyStore.rows.find(row => row.id === 11));
+  check(context.api.editor().yieldCg === 3900,
     'a history-row editor could not use the row measurement summary');
 
   await context.api.loadCoffeeContextHistory();
@@ -1698,7 +1771,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   context.fetchShotMetadata = () => new Promise(resolve => {
     finishAbandonedMetadataLoad = resolve;
   });
-  const abandonedMetadataLoad = context.api.loadShotMetadata(11);
+  const abandonedMetadataLoad = context.api.loadShotMetadata({ id: 11 });
   context.api.openNextShotEditor();
   finishAbandonedMetadataLoad({
     id: 11, state: 'active', value: { coffee: { name: 'Saved' } },
@@ -1968,8 +2041,113 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(confirmedCoffee.name === 'Coffee' && confirmedCoffee.roaster === 'Royal Mile' &&
         !('origin' in confirmedCoffee) && confirmedCoffee.futureField === 'preserved',
     'coffee confirmation failed to trim fields, remove blanks, or preserve unknown values');
-  if (checkCount !== 173) {
-    throw new Error(`expected 173 assertions, ran ${checkCount}`);
+  // Exercise view callers, not just the shared summary renderer.
+  context.fetchShotsPage = async () => historyPage([summary(extractionMetadata, {
+    startUtcSec: 100, beginMs: 0, durationMs: 30000, totalPumpOnMs: 25000,
+    yieldCg: 3900,
+  })], { total: 1 });
+  await context.api.historyStore.refresh();
+  context.state = { storage: 'ready' };
+  context.fmtMMSS = ms => String(ms);
+  context.fmtG = cg => String(cg / 100);
+  context.fmtSec = ms => String(ms / 1000);
+  const historySummaryView = context.el('main');
+  context.api.renderList(historySummaryView);
+  check(JSON.stringify(historySummaryView).includes('Extraction yield: 18.6%'),
+    'History caller discarded measurements before rendering the summary');
+
+  const views = {
+    el: context.el, localStorage: { getItem: () => null },
+    state: null, inPumpWindow: () => false,
+    lastRecord: { shotId: 7, yieldCg: 9000 },
+    selectedShotId: 7, selectedShot: { yieldCg: 3900 },
+    selectedShotMetadata: summaryRecord, selectedShotError: null,
+    freshFinalizedAt: 0, fmtDate: () => '',
+    record: summaryRecord,
+  };
+  vm.createContext(views);
+  vm.runInContext([
+    constantsPath, historyPath, sourcePath,
+    require('path').join(require('path').dirname(sourcePath), 'ui-live.js'),
+  ].map(path => fs.readFileSync(path, 'utf8')).join('\n'), views);
+  // Chart internals are outside this test; keep the actual view composition.
+  views.renderShotRecord = app => {
+    const card = views.el('section');
+    app.append(card);
+    return card;
+  };
+  views.techFold = () => views.el('div');
+  vm.runInContext('lastShotMetadata = record;', views);
+  const selectedView = views.el('main');
+  views.renderDetail(selectedView);
+  check(JSON.stringify(selectedView).includes('Extraction yield: 18.6%'),
+    'History detail caller did not use its displayed measurements');
+  const liveView = views.el('main');
+  views.renderLastShot(liveView);
+  check(JSON.stringify(liveView).includes('Extraction yield: 43.0%'),
+    'Last Shot caller did not use its displayed measurements');
+  views.selectedShotError = 'invalid';
+  const invalidView = views.el('main');
+  views.renderDetail(invalidView);
+  check(JSON.stringify(invalidView).includes('8.6% TDS') &&
+    !JSON.stringify(invalidView).includes('Extraction yield'),
+    'damaged detail caller supplied measurements for extraction');
+  views.renderMetadataOverlay = () => {};
+  const editDetails = root => descendants(root).find(node =>
+    node.tag === 'button' && node.children.includes('Edit shot details'));
+  views.view = 'detail';
+  views.performance = performance;
+  views.scheduleRender = () => {};
+  let detailMetadataReads = 0;
+  views.fetchShotMetadata = async () => {
+    ++detailMetadataReads;
+    return { ...summaryRecord, etag: 'refreshed-shot-7' };
+  };
+  await editDetails(selectedView).attrs.onclick();
+  const detailEditor = vm.runInContext('metadataEditor', views);
+  check(detailEditor.yieldCg === 3900 && detailEditor.record.etag === 'refreshed-shot-7',
+    'shared History detail opened the editor with another shot or metadata version');
+  const extractionForm = views.el('form');
+  extractionForm.elements = { tdsPct: element('8.6'), 'prep.doseG': element('18') };
+  const ey = views.editorExtractionYield(extractionForm, detailEditor);
+  check(ey.textContent === 'Extraction yield: 18.6%',
+    'editor extraction did not use its measurement snapshot');
+  extractionForm.elements.tdsPct.value = '86';
+  extractionForm.listeners.input();
+  check(ey.textContent ===
+    'Extraction yield: 186.3% — check TDS, dose, and beverage weight.' &&
+    extractionForm.elements.tdsPct.value === '86',
+    'editor failed to flag impossible extraction or changed the entered TDS');
+  extractionForm.elements.tdsPct.value = '';
+  extractionForm.listeners.input();
+  check(ey.textContent === '', 'blank editor TDS produced an extraction percentage');
+  extractionForm.elements.tdsPct.value = '0';
+  extractionForm.listeners.input();
+  check(ey.textContent === 'Extraction yield: 0.0%', 'zero editor TDS was hidden');
+  extractionForm.elements.tdsPct.value = '9';
+  extractionForm.elements['prep.doseG'].value = '20';
+  views.lastRecord = { shotId: 7, yieldCg: 10000 };
+  views.selectedShot = { yieldCg: 10000 };
+  extractionForm.listeners.input();
+  check(ey.textContent === 'Extraction yield: 17.6%' &&
+    extractionForm.elements.tdsPct.value === '9' && extractionForm.elements['prep.doseG'].value === '20',
+    'changing displayed records replaced editor measurements or draft inputs');
+  views.closeMetadataEditor();
+  views.view = 'live';
+  await editDetails(liveView).attrs.onclick();
+  check(vm.runInContext('metadataEditor.yieldCg', views) === 9000,
+    'shared Last Shot detail did not open its own measurement snapshot');
+  views.closeMetadataEditor();
+  views.view = 'detail';
+  await editDetails(invalidView).attrs.onclick();
+  const invalidEditor = vm.runInContext('metadataEditor', views);
+  check(invalidEditor.yieldCg === undefined &&
+    views.editorExtractionYield(extractionForm, invalidEditor).textContent === '',
+    'damaged shot editor borrowed measurements from another view');
+  check(detailMetadataReads === 3,
+    'detail and Last Shot edit actions did not refresh metadata before opening');
+  if (checkCount !== 204) {
+    throw new Error(`expected 204 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

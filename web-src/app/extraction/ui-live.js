@@ -139,6 +139,12 @@ function renderShotRecord(app, e, opts) {
   return card;
 }
 
+function renderCompletedShot(app, summary, options) {
+  const card = renderShotRecord(app, summary, options);
+  if (summary.id) appendShotMetadataDetails(card, summary, options);
+  return card;
+}
+
 // Fixed-height slot for the in-flight curve. Exists for the whole pump
 // window so the layout never jumps mid-activity: before samples arrive (or
 // when the scale is gone) it holds a placeholder of the same size.
@@ -245,15 +251,13 @@ function renderLastShot(app) {
   const fresh = freshFinalizedAt > 0 &&
       Date.now() - freshFinalizedAt < FRESH_SHOT_BADGE_MS &&
       lastRecord.beginMs === freshBeginMs;
-  const card = renderShotRecord(app, lastRecord, {
+  renderCompletedShot(app,
+    shotSummaryFromRecord(lastRecord.shotId, lastRecord, lastShotMetadata), {
     variant: 'live',
     title: 'Last shot · ' + (fmtDate(lastRecord.startUtcSec) || 'time unknown'),
     fresh,
+    openInHistory: true,
   });
-  if (lastRecord.shotId) {
-    appendShotMetadataDetails(
-      card, lastRecord.shotId, lastShotMetadata, { openInHistory: true });
-  }
 }
 
 function renderLive(app) {

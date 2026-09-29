@@ -100,7 +100,7 @@ can open the tour again later from `PUMP BUG` > `Tips`.
 
 You do not have to tare the cup manually. Pump Bug treats the stable weight
 immediately before the pour as zero for that extraction. If the scale is not
-tared, the large number is the extraction yield (net weight) and a smaller
+tared, the large number is the beverage weight (net yield) and a smaller
 number appears to show the raw weight reported by the scale. To tare the scale
 itself, hold A while `LIVE` is idle.
 

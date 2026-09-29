@@ -493,7 +493,7 @@ async function testIndividualMetadataFreshness() {
         h.context.api.setLast({ id: 1, state: 'active', value: { rating: 1 } });
         const pending = consumer === 'last' ? h.context.setLastShotMetadataId(1)
           : consumer === 'detail' ? h.context.resolveShotMetadata(1)
-          : h.context.loadShotMetadata(1);
+          : h.context.loadShotMetadata({ id: 1 });
         const stale = h.take(h.reads);
         await h.write(write, 1);
         if (failedRead) stale.reject(new Error('late failure'));
@@ -615,14 +615,14 @@ async function testDraftAndUncertainWrite() {
     const h = harness({ deferredWrites: true });
     await h.load([row(1)]);
     const editor = { kind: 'shot', id: 1, record: { etag: 'original' },
-      original: { notes: 'My draft' }, saving: false, conflict: null };
+      original: { notes: 'My draft' }, yieldCg: 3900, saving: false, conflict: null };
     h.context.api.setEditor(editor);
-    const shot = h.context.metadataEditorShot();
     let renders = 0;
     h.context.renderMetadataOverlay = () => { ++renders; };
     h.store.sessionStarted();
     assert.equal(renders, 0, 'a reconnect must leave the editable form in place');
-    assert.equal(h.context.metadataEditorShot(), shot);
+    assert.equal(h.context.api.editor().yieldCg, 3900,
+      'a reconnect must preserve the editor measurement snapshot');
     const pending = kind === 'clear' ? h.context.clearShotMetadata(editor)
       : h.context.writeShotMetadata(editor, editor.original);
     const write = h.take(h.writes);
@@ -750,18 +750,16 @@ async function testMissingEditorMeasurement() {
   const h = harness();
   const etag = '"shot-meta-00000001-00000001-v-00000001"';
   await h.load([{ ...row(1), yieldCg: 3600, userMetadataEtag: etag }]);
-  h.context.openMetadataEditor(1, {
-    id: 1, state: 'active', value: {}, etag,
-  });
+  h.context.openMetadataEditor(h.store.rows[0]);
   const editor = h.context.api.editor();
-  const shot = h.context.metadataEditorShot();
+  const shot = h.context.api.editor().yieldCg;
   h.store.sessionStarted();
   const refresh = h.store.refresh();
   h.reply(h.take(), [{ ...row(1), yieldCg: 9000,
     userMetadataEtag: '"shot-meta-00000002-00000001-v-00000001"' }]);
   await refresh;
   assert.equal(h.context.api.editor(), editor);
-  assert.equal(h.context.metadataEditorShot(), shot,
+  assert.equal(h.context.api.editor().yieldCg, shot,
     'an ID reused after a reboot replaced the editor measurement');
 }
 
@@ -770,7 +768,7 @@ async function testOldRowActionRevalidates() {
   h.context.el = (_tag, attributes) => attributes;
   h.context.view = 'list';
   await h.load([row(1)]);
-  const button = h.context.shotMetadataListAction(1, h.context.metadataRecordFromRow(row(1)));
+  const button = h.context.shotMetadataListAction(row(1));
   h.store.sessionStarted();
   button.onclick({ stopPropagation() {} });
   h.replyMetadata(h.take(h.reads), 3, 'revalidated');
@@ -983,7 +981,7 @@ async function testIndividualReadDeadline() {
       if (consumer === 'conflict') h.context.api.setEditor(editor);
       const pending = consumer === 'last' ? h.context.setLastShotMetadataId(1)
         : consumer === 'detail' ? h.context.loadShotMetadataForDetail(1)
-        : consumer === 'editor' ? h.context.loadShotMetadata(1)
+        : consumer === 'editor' ? h.context.loadShotMetadata({ id: 1 })
         : h.context.loadMetadataConflict(editor, 'save', { notes: 'My draft' });
       for (const [budget, elapsed] of [[10000, 6000], [4000, 4000]]) {
         const request = h.take(h.reads);
@@ -1091,15 +1089,16 @@ async function testTransferDeadlineIncludesRetriedBody() {
   assert.equal(h.store.etagFor(pageUrl), 'baseline');
 }
 
-async function testEditorMeasurementBecomesAvailable() {
+async function testEditorDoesNotBorrowLaterMeasurements() {
   const h = harness();
   const record = { id: 1, state: 'active', etag: 'original', value: {} };
-  h.context.openMetadataEditor(1, record);
-  assert.equal(h.context.metadataEditorShot(), null);
+  h.context.openMetadataEditor(h.context.shotSummaryFromRecord(1, null, record));
+  assert.equal(h.context.api.editor().yieldCg, undefined);
   const editor = h.context.api.editor();
   await h.load([{ ...row(1), yieldCg: 3600 }]);
   assert.equal(h.context.api.editor(), editor);
-  assert.equal(h.context.metadataEditorShot().yieldCg, 3600);
+  assert.equal(h.context.api.editor().yieldCg, undefined,
+    'an unavailable measurement must not be replaced by an unrelated History load');
 }
 
 async function testConfirmedWriteAcrossReconnect() {
@@ -1249,9 +1248,10 @@ async function testLastShotRefreshPreservesOpenDetail() {
     testRepeatedWritesDuringRefresh, testCancellationDuringMetadataRevalidation,
     testMetadataRevalidationFailure, testMetadataReadDoesNotRestartPage,
     testPageReadDeadline, testIndividualReadDeadline, testOvertakenPageFailure,
-    testTransferDeadlineIncludesRetriedBody, testEditorMeasurementBecomesAvailable,
+    testTransferDeadlineIncludesRetriedBody, testEditorDoesNotBorrowLaterMeasurements,
     testConfirmedWriteAcrossReconnect, testCompletedReadAfterDeadline,
     testReadFailureAfterDeadline, testLastShotRefreshPreservesOpenDetail,
+    testMissingEditorMeasurement,
   ];
   for (const scenario of active) {
     await test(scenario.name, async () => {
@@ -1262,7 +1262,7 @@ async function testLastShotRefreshPreservesOpenDetail() {
   }
   const pending = [
     testWritesAcrossReconnect, testConflictIdentityAfterReboot,
-    testOldRowActionRevalidates, testMissingEditorMeasurement,
+    testOldRowActionRevalidates,
     testOverlappingWriteConfirmations,
   ];
   for (const scenario of pending) {
