@@ -109,11 +109,3 @@ class HttpServer {
 };
 
 extern HttpServer httpServer;
-
-// Conditional-GET helper for ETag validators. If the client's If-None-Match
-// equals `etag`, sets the ETag response header, sends a 304, and returns true.
-// On a miss it sets nothing and returns false — the caller emits its own ETag
-// header before the 200 body, so the validator on a 200 always describes the
-// body that's actually streamed. (Used by the runtime event logs and shot
-// history.)
-bool httpEtagOr304(WebServer& s, const char* etag);

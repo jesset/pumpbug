@@ -399,7 +399,7 @@ bool conditional(WebServer& s, const char* name, uint32_t changeToken) {
   std::snprintf(etag, sizeof(etag), "W/\"%s-%08lx-%lu\"", name,
                 static_cast<unsigned long>(gLogBootNonce),
                 static_cast<unsigned long>(changeToken));
-  if (httpEtagOr304(s, etag)) return true;
+  if (http::etagOr304(s, etag)) return true;
   s.sendHeader("ETag", etag);
   return false;
 }

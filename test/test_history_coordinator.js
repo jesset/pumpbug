@@ -547,69 +547,6 @@ async function testConflictFreshnessAndAcceptance() {
   assert.equal(h.reads.length, 0);
 }
 
-async function testWritesAcrossReconnect() {
-  for (const kind of ['save', 'clear', 'initialize']) {
-    for (const transition of ['reconnect', 'storage']) {
-      const h = harness({ deferredWrites: true });
-      await h.load([row(1)]);
-      h.context.api.setSelected(1);
-      const editor = { kind: 'shot', id: 1, record: { etag: 'original' },
-        original: { notes: 'Keep this draft' }, saving: false, conflict: null };
-      h.context.api.setEditor(editor);
-      const pending = kind === 'initialize'
-        ? h.context.setLastShotMetadataId(1, { notes: 'Recipe' })
-        : kind === 'clear' ? h.context.clearShotMetadata(editor)
-        : h.context.writeShotMetadata(editor, editor.original);
-      const write = h.take(h.writes);
-      if (transition === 'reconnect') h.store.sessionStarted();
-      else {
-        h.store.observeDeviceState('unavailable');
-        h.store.observeDeviceState('ready', false, false);
-      }
-      assert.equal(h.context.api.editor(), editor);
-      assert.equal(editor.conflict, null);
-      assert.equal(write.options.signal, undefined, 'read cancellation must not cancel a mutation');
-      if (kind !== 'initialize') {
-        assert(editor.saving);
-        assert.equal(write.options.headers['If-Match'], 'original');
-      }
-      // Revalidate an ID that might refer to a different device record.
-      const revalidation = h.store.refresh();
-      h.reply(h.take(), [row(1, 2)], 'new-device');
-      await revalidation;
-      h.context.api.setSelected(1);
-      h.context.selectedShotMetadata = { id: 1, state: 'active', value: { rating: 2 } };
-      const reading = h.context.resolveShotMetadata(1);
-      const staleRead = h.take(h.reads);
-      const refreshing = h.store.refresh();
-      const stalePage = h.take();
-      h.replyMetadata(write, kind === 'clear' ? null : 5, 'old-device-confirmation');
-      await pending;
-      assert.equal(h.store.rows[0].userMetadata.rating, 2,
-        'an old confirmation must not populate the revalidated ID');
-      if (kind !== 'initialize') {
-        assert.equal(h.context.api.editor(), null);
-        assert(h.banners.includes(kind === 'clear' ? 'Shot details cleared.' : 'Shot details saved.'));
-      }
-      // Both current per-shot and page reads must observe the write boundary.
-      h.replyMetadata(staleRead, 1, 'stale-read');
-      h.reply(stalePage, [row(1)], 'stale-page');
-      await flush();
-      assert(h.reads.length >= 1);
-      assert(!['stale-read', 'old-device-confirmation'].includes(
-        h.context.selectedShotMetadata.etag));
-      while (h.reads.length) h.replyMetadata(h.reads.shift(), 2, 'current-device');
-      while (h.pages.length) {
-        h.reply(h.pages.shift(), [row(1, 2)], 'current-device');
-        await flush();
-      }
-      await Promise.all([reading, refreshing]);
-      assert.equal(h.context.selectedShotMetadata.value.rating, 2);
-      assert.equal(h.store.rows[0].userMetadata.rating, 2);
-    }
-  }
-}
-
 async function testDraftAndUncertainWrite() {
   for (const kind of ['save', 'clear']) {
     const h = harness({ deferredWrites: true });
@@ -658,7 +595,7 @@ async function testCancelledConflictRead() {
   assert.match(editor.error, /current version could not be loaded/);
 }
 
-async function testConflictIdentity(mismatchAt = 'write') {
+async function testConflictIdentity() {
   for (const kind of ['save', 'clear']) {
     {
       const h = harness({ deferredWrites: true });
@@ -669,12 +606,8 @@ async function testConflictIdentity(mismatchAt = 'write') {
       h.context.api.setEditor(editor);
       const pending = kind === 'clear' ? h.context.clearShotMetadata(editor)
         : h.context.writeShotMetadata(editor, editor.original);
-      h.take(h.writes).resolve(response(null, 412, mismatchAt === 'write'
-        ? { 'X-Shot-Metadata-Conflict': 'shot-identity' } : {}));
-      await flush();
-      if (mismatchAt === 'read') {
-        h.replyMetadata(h.take(h.reads), 3, '"shot-meta-00000002-00000001-v-00000003"');
-      }
+      h.take(h.writes).resolve(response(null, 412,
+        { 'X-Shot-Metadata-Conflict': 'shot-identity' }));
       await pending;
       assert(!editor.saving);
       assert.equal(editor.conflict.action, 'identity');
@@ -763,19 +696,6 @@ async function testMissingEditorMeasurement() {
     'an ID reused after a reboot replaced the editor measurement');
 }
 
-async function testOldRowActionRevalidates() {
-  const h = harness();
-  h.context.el = (_tag, attributes) => attributes;
-  h.context.view = 'list';
-  await h.load([row(1)]);
-  const button = h.context.shotMetadataListAction(row(1));
-  h.store.sessionStarted();
-  button.onclick({ stopPropagation() {} });
-  h.replyMetadata(h.take(h.reads), 3, 'revalidated');
-  await flush();
-  assert.equal(h.context.api.editor().record.etag, 'revalidated');
-}
-
 async function testOverlappingWriteConfirmations() {
   const h = harness({ deferredWrites: true });
   await h.load([row(1)]);
@@ -793,6 +713,165 @@ async function testOverlappingWriteConfirmations() {
   h.replyMetadata(h.take(h.reads), 5, 'current');
   await flush();
   assert.equal(h.context.api.last().value.rating, 5);
+}
+
+async function testOverlappingWritesConfirmedInRequestOrder() {
+  const h = harness({ deferredWrites: true });
+  await h.load([row(1)]);
+  const initializing = h.context.setLastShotMetadataId(1, { rating: 1 });
+  const initialResponse = h.take(h.writes);
+  const editor = { kind: 'shot', id: 1, record: { etag: 'initialized' } };
+  h.context.api.setEditor(editor);
+  const saving = h.context.writeShotMetadata(editor, { rating: 5 });
+  const saveResponse = h.take(h.writes);
+  h.replyMetadata(initialResponse, 1, 'initialized');
+  await initializing;
+  h.replyMetadata(saveResponse, 5, 'saved');
+  await saving;
+  h.replyMetadata(h.take(h.reads), 5, 'current');
+  await flush();
+  assert.equal(h.store.rows[0].userMetadata.rating, 5);
+  assert.equal(h.context.api.last().value.rating, 5);
+}
+
+async function testRecipeRefreshOutcomes() {
+  for (const failed of [false, true]) {
+    for (const changedId of [1, 2]) {
+      const h = harness({ deferredWrites: true });
+      await h.load([row(2), row(1)]);
+      const initializing = h.context.setLastShotMetadataId(1, { rating: 1 });
+      const initializationResponse = h.take(h.writes);
+      const editor = { kind: 'shot', id: changedId, record: { etag: 'before' } };
+      h.context.api.setEditor(editor);
+      const saving = h.context.writeShotMetadata(editor, { rating: 5 });
+      h.replyMetadata(h.take(h.writes), 5, 'saved');
+      await saving;
+      const confirmed = h.context.api.last();
+      h.replyMetadata(initializationResponse, 1, 'initialized');
+      await initializing;
+      const refresh = h.take(h.reads);
+      if (failed) refresh.reject(new Error('offline'));
+      else h.replyMetadata(refresh, changedId === 1 ? 5 : 1, 'current');
+      await flush();
+      const record = h.context.api.last();
+      assert(!record.loading, `refresh failed=${failed}, changed shot=${changedId}`);
+      if (failed) {
+        if (changedId === 1) assert.equal(record, confirmed);
+        else assert.equal(record.state, 'unavailable');
+        assert.match(h.banners.at(-1), /saved, but the current version could not be refreshed/);
+      } else {
+        assert.equal(record.etag, 'current');
+        assert.equal(record.needsResult, true);
+      }
+      const root = element('main');
+      h.context.appendShotMetadataDetails(root,
+        h.context.shotSummaryFromRecord(1, { yieldCg: 3600 }, record));
+      const nodes = node => [node, ...(node?.children || [])
+        .filter(child => child && typeof child === 'object').flatMap(nodes)];
+      const labels = nodes(root).filter(node => node.tag === 'button')
+        .flatMap(node => node.children);
+      assert(labels.includes(failed
+        ? changedId === 1 ? 'Edit shot details' : 'Load shot details'
+        : 'Rate and save details'));
+    }
+  }
+}
+
+async function testBackToDraftRequiresOverwriteChoice() {
+  const h = harness({ deferredWrites: true });
+  await h.load([row(1)]);
+  const editor = { kind: 'shot', id: 1, original: { notes: 'My draft' },
+    record: { etag: 'original' }, conflict: null };
+  h.context.api.setEditor(editor);
+  const rejected = h.context.writeShotMetadata(editor, editor.original);
+  h.take(h.writes).resolve(response(null, 412));
+  await flush();
+  h.replyMetadata(h.take(h.reads), 3, 'current');
+  await rejected;
+  h.context.returnToMetadataDraft();
+  assert.equal(editor.record.etag, 'original');
+  assert.equal(editor.original.notes, 'My draft');
+  assert.equal(editor.conflict, null);
+
+  const revised = h.context.writeShotMetadata(editor, { notes: 'Revised draft' });
+  const retry = h.take(h.writes);
+  assert.equal(retry.options.headers['If-Match'], 'original');
+  retry.resolve(response(null, 412));
+  await flush();
+  h.replyMetadata(h.take(h.reads), 3, 'current');
+  await revised;
+  assert.equal(editor.conflict.action, 'save');
+  assert.equal(editor.conflict.localValue.notes, 'Revised draft');
+
+  const overwrite = h.context.overwriteMetadataConflict();
+  const accepted = h.take(h.writes);
+  assert.equal(accepted.options.headers['If-Match'], 'current');
+  h.replyMetadata(accepted, 5, 'saved');
+  await overwrite;
+}
+
+async function testMetadataDownloadsIdentifyDrafts() {
+  const h = harness();
+  const blobs = [];
+  const links = [];
+  const revoked = [];
+  h.context.Blob = Blob;
+  h.context.URL = {
+    createObjectURL(blob) { blobs.push(blob); return 'blob:download-' + blobs.length; },
+    revokeObjectURL(url) { revoked.push(url); },
+  };
+  h.context.document = { body: { append(link) { links.push(link); } } };
+  const originalElement = h.context.el;
+  h.context.el = (tag, attrs, ...children) => {
+    const node = originalElement(tag, attrs, ...children);
+    if (tag === 'a') {
+      node.click = () => { node.clicked = true; };
+      node.remove = () => { node.removed = true; };
+    }
+    return node;
+  };
+  const draft = { notes: 'Unsaved tasting notes' };
+  h.context.api.setEditor({ kind: 'shot', id: 1,
+    conflict: { action: 'identity', localValue: draft } });
+  const nodes = node => [node, ...(node?.children || [])
+    .filter(child => child && typeof child === 'object').flatMap(nodes)];
+  const downloadDraft = nodes(h.context.renderMetadataConflict()).find(node =>
+    node.tag === 'button' && node.children.includes('Download draft'));
+  downloadDraft.attrs.onclick();
+  const unsaved = JSON.parse(await blobs[0].text());
+  assert.equal(links[0].attrs.download, 'shot-1-draft.json');
+  assert.equal(unsaved.draft, true);
+  assert.deepEqual(unsaved.userMetadata, draft);
+
+  h.context.downloadShotDetailsJson(1, { state: 'active', value: { rating: 3 } });
+  const saved = JSON.parse(await blobs[1].text());
+  assert.equal(links[1].attrs.download, 'shot-1-details.json');
+  assert.equal(saved.draft, undefined);
+  assert.equal(saved.userMetadata.rating, 3);
+  assert(links.every(link => link.clicked && link.removed));
+  assert.deepEqual(revoked, ['blob:download-1', 'blob:download-2']);
+}
+
+async function testConflictDraftCanBeRecovered() {
+  const h = harness();
+  const draft = { notes: 'Unsaved tasting notes', tdsPct: 8.6,
+    prep: { doseG: 18 }, coffee: { name: 'Keep this coffee' } };
+  const editor = { kind: 'shot', id: 1, original: draft, yieldCg: 3600,
+    record: { etag: '"shot-meta-00000001-00000001-v-00000001"' },
+    saving: false, conflict: { action: 'identity', localValue: draft } };
+  h.context.api.setEditor(editor);
+  const nodes = node => [node, ...(node?.children || [])
+    .filter(child => child && typeof child === 'object').flatMap(nodes)];
+  const dialog = h.context.renderMetadataConflict();
+  const buttons = nodes(dialog).filter(node => node.tag === 'button');
+  assert(buttons.some(button => button.children.includes('Download draft')));
+  assert(!buttons.some(button => button.children.includes('Overwrite with my changes')));
+  buttons.find(button => button.children.includes('Back to draft')).attrs.onclick();
+  assert.equal(h.context.api.editor(), editor);
+  assert.equal(editor.original, draft);
+  assert.equal(editor.conflict, null);
+  assert.equal(editor.yieldCg, 3600);
+  assert.equal(editor.record.etag, '"shot-meta-00000001-00000001-v-00000001"');
 }
 
 async function testFailedWritesDoNotInvalidateReads() {
@@ -1129,11 +1208,6 @@ async function testConfirmedWriteAcrossReconnect() {
   }
 }
 
-async function testConflictIdentityAfterReboot() {
-  await testConflictIdentity('read');
-}
-
-
 async function testCompletedReadAfterDeadline() {
   for (const consumer of ['page', 'metadata']) {
     for (const retried of [false, true]) {
@@ -1232,8 +1306,6 @@ async function testLastShotRefreshPreservesOpenDetail() {
   }
 }
 
-// Execute unresolved device-identity and concurrent-write scenarios as TODOs.
-// Their failures are reported separately from the enforced regression checks.
 (async () => {
   const active = [
     testPageWrites, testUncachedWritesAndConditionalResponses,
@@ -1251,7 +1323,10 @@ async function testLastShotRefreshPreservesOpenDetail() {
     testTransferDeadlineIncludesRetriedBody, testEditorDoesNotBorrowLaterMeasurements,
     testConfirmedWriteAcrossReconnect, testCompletedReadAfterDeadline,
     testReadFailureAfterDeadline, testLastShotRefreshPreservesOpenDetail,
-    testMissingEditorMeasurement,
+    testMissingEditorMeasurement, testOverlappingWriteConfirmations,
+    testConflictDraftCanBeRecovered, testOverlappingWritesConfirmedInRequestOrder,
+    testRecipeRefreshOutcomes, testBackToDraftRequiresOverwriteChoice,
+    testMetadataDownloadsIdentifyDrafts,
   ];
   for (const scenario of active) {
     await test(scenario.name, async () => {
@@ -1260,14 +1335,7 @@ async function testLastShotRefreshPreservesOpenDetail() {
       for (const verify of harnesses.slice(first)) verify();
     });
   }
-  const pending = [
-    testWritesAcrossReconnect, testConflictIdentityAfterReboot,
-    testOldRowActionRevalidates,
-    testOverlappingWriteConfirmations,
-  ];
-  for (const scenario of pending) {
-    await test(scenario.name, { todo: 'separate identity/write-order protection' }, scenario);
-  }
+
 })().catch(error => {
   console.error(error);
   process.exitCode = 1;

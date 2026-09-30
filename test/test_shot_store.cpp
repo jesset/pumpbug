@@ -1015,9 +1015,90 @@ void testFailedRotationKeepsNewestHistoryReadable() {
   assert(LittleFS.hasFile(shotPath(251)));
 }
 
+void testStorageIdentitySurvivesRestart() {
+  resetStorage();
+  testNvs.setU32("shots", "store_nonce", 0x87654321);
+  ShotStore beforeSleep;
+  assert(beforeSleep.shotStoreNonce() == 0x87654321);
+  const uint32_t id = beforeSleep.save(encodableShot());
+  assert(id != 0);
+  pump_scale::ShotUserMetadata before;
+  assert(beforeSleep.readUserMetadata(id, before) ==
+         pump_scale::ShotStoreReadResult::Ok);
+
+  ShotStore afterWake;
+  assert(afterWake.shotStoreNonce() == beforeSleep.shotStoreNonce());
+  pump_scale::ShotUserMetadata after;
+  assert(afterWake.readUserMetadata(id, after) ==
+         pump_scale::ShotStoreReadResult::Ok);
+  assert(after.state == before.state && after.crc32 == before.crc32);
+
+  LittleFS.reset();
+  ShotStore afterHistoryFormat;
+  assert(afterHistoryFormat.shotStoreNonce() == beforeSleep.shotStoreNonce());
+  assert(afterHistoryFormat.save(encodableShot()) == id + 1);
+
+  resetStorage();
+  ShotStore afterErase;
+  assert(afterErase.shotStoreNonce() != beforeSleep.shotStoreNonce());
+  assert(afterErase.save(encodableShot()) == id);
+}
+
+void testStorageIdentityFallbackStaysFixed() {
+  for (auto error : {&testNvs.nextOpenError, &testNvs.nextReadError,
+                     &testNvs.nextWriteError, &testNvs.nextCommitError}) {
+    resetStorage();
+    ShotStore store;
+    *error = ESP_FAIL;
+    const uint32_t fallback = store.shotStoreNonce();
+    assert(fallback != 0 && fallback == store.bootNonce());
+
+    testNvs.setU32("shots", "store_nonce", 0x87654321);
+    assert(store.shotStoreNonce() == fallback);
+    ShotStore afterRestart;
+    assert(afterRestart.shotStoreNonce() == 0x87654321);
+  }
+  resetStorage();
+  testNvs.setU64("shots", "store_nonce", 42);
+  ShotStore store;
+  assert(store.shotStoreNonce() == store.bootNonce());
+}
+
+void testZeroStorageIdentityRecovery() {
+  resetStorage();
+  testNvs.setU32("shots", "store_nonce", 0);
+  testNvs.setU32("shots", "last_id", 57);
+  ShotStore store;
+  const uint32_t repaired = store.shotStoreNonce();
+  assert(repaired != 0);
+  assert(testNvs.value("shots", "store_nonce") == repaired);
+  assert(testNvs.value("shots", "last_id") == 57);
+  ShotStore afterRestart;
+  assert(afterRestart.shotStoreNonce() == repaired);
+  assert(afterRestart.save(encodableShot()) == 58);
+
+  for (auto error : {&testNvs.nextWriteError, &testNvs.nextCommitError}) {
+    resetStorage();
+    testNvs.setU32("shots", "store_nonce", 0);
+    ShotStore failedRepair;
+    *error = ESP_FAIL;
+    const uint32_t fallback = failedRepair.shotStoreNonce();
+    assert(fallback != 0 && fallback == failedRepair.bootNonce());
+    assert(testNvs.value("shots", "store_nonce") == 0);
+    assert(failedRepair.shotStoreNonce() == fallback);
+    assert(testNvs.value("shots", "store_nonce") == 0);
+    ShotStore retryAfterRestart;
+    assert(retryAfterRestart.shotStoreNonce() != 0);
+    assert(testNvs.value("shots", "store_nonce") != 0);
+  }
+}
+
 }  // namespace
 
 int main() {
+  testStorageIdentitySurvivesRestart();
+  testStorageIdentityFallbackStaysFixed();
+  testZeroStorageIdentityRecovery();
   testLazyBuildAndWarmPagination();
   testUnreadableRecordsRemainPageMembers();
   testBinaryReadDistinguishesMissingAndInvalidRecords();

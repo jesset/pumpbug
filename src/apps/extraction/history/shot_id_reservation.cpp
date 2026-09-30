@@ -4,6 +4,7 @@
 #include "shot_id_reservation.h"
 
 #include <M5Unified.h>
+#include <esp_random.h>
 #include <nvs.h>
 
 #include <algorithm>
@@ -12,11 +13,41 @@ namespace pump_scale::shot_store_detail {
 namespace {
 constexpr char kNvsNamespace[] = "shots";
 constexpr char kLastIdKey[] = "last_id";
+constexpr char kShotStoreNonceKey[] = "store_nonce";
 constexpr size_t kNvsNameMaxBytes = 16;
 
 static_assert(sizeof(kNvsNamespace) <= kNvsNameMaxBytes);
 static_assert(sizeof(kLastIdKey) <= kNvsNameMaxBytes);
+static_assert(sizeof(kShotStoreNonceKey) <= kNvsNameMaxBytes);
 }  // namespace
+
+uint32_t loadShotStoreNonce() {
+  nvs_handle_t handle = 0;
+  esp_err_t error = nvs_open(kNvsNamespace, NVS_READWRITE, &handle);
+  if (error != ESP_OK) {
+    M5_LOGE("ShotStore: NVS open failed while loading the nonce: %d",
+            static_cast<int>(error));
+    return 0;
+  }
+  uint32_t nonce = 0;
+  error = nvs_get_u32(handle, kShotStoreNonceKey, &nonce);
+  if (error == ESP_ERR_NVS_NOT_FOUND || (error == ESP_OK && nonce == 0)) {
+    do {
+      nonce = esp_random();
+    } while (nonce == 0);
+    error = nvs_set_u32(handle, kShotStoreNonceKey, nonce);
+    if (error == ESP_OK) error = nvs_commit(handle);
+    if (error != ESP_OK) {
+      M5_LOGE("ShotStore: NVS write failed while creating the nonce: %d",
+              static_cast<int>(error));
+    }
+  } else if (error != ESP_OK) {
+    M5_LOGE("ShotStore: NVS read failed while loading the nonce: %d",
+            static_cast<int>(error));
+  }
+  nvs_close(handle);
+  return error == ESP_OK ? nonce : 0;
+}
 
 uint32_t reserveNextShotId(uint32_t greatestExistingShotId) {
   nvs_handle_t handle = 0;

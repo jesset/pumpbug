@@ -11,7 +11,6 @@
 #include <string>
 #include <vector>
 
-#include "net/HttpServer.h"
 #include "net/JsonStream.h"
 #include "net/http_request_validation.h"
 #include "net/http_response_util.h"
@@ -156,14 +155,27 @@ void handleShotDetail(WebServer& server, ShotStore& store) {
     return;
   }
 
-  // IDs are stable within one storage lifetime. The boot nonce prevents a
-  // browser from reusing shot #N after the on-device erase resets the NVS id
-  // counter and a later shot receives the same number.
+  // The extraction body is immutable for each nonce and shot ID; metadata
+  // updates change only the file's tail.
   char detailEtag[40];
   std::snprintf(detailEtag, sizeof(detailEtag), "\"shot-%08lx-%lu\"",
-                static_cast<unsigned long>(store.bootNonce()),
+                static_cast<unsigned long>(store.shotStoreNonce()),
                 static_cast<unsigned long>(id));
-  if (httpEtagOr304(server, detailEtag)) return;
+  if (server.hasHeader("If-None-Match")) {
+    // Check file access before returning 304: a matching cached ETag does not
+    // establish that the file still exists or can be opened.
+    switch (store.checkFileAccess(id)) {
+      case storage::FileOpenResult::Missing:
+        http::sendJsonError(server, 404, "not found");
+        return;
+      case storage::FileOpenResult::Error:
+        http::sendJsonError(server, 500, "record read failed");
+        return;
+      case storage::FileOpenResult::Opened:
+        break;
+    }
+    if (http::etagOr304(server, detailEtag)) return;
+  }
 
   EncodedExtraction record;
   switch (store.readEncodedExtraction(id, record)) {
@@ -258,11 +270,11 @@ void handleShotList(WebServer& server, ShotStore& store) {
     return;
   }
 
-  const uint32_t nonce = store.bootNonce();
+  const uint32_t nonce = store.shotStoreNonce();
   char etag[80];
-  makeShotListEtag(etag, sizeof(etag), nonce, rev, before, limit,
+  makeShotListEtag(etag, sizeof(etag), store.bootNonce(), rev, before, limit,
                    includeMetadata);
-  if (httpEtagOr304(server, etag)) return;
+  if (http::etagOr304(server, etag)) return;
   server.sendHeader("ETag", etag);
 
   // Send each row as it is read so memory use does not grow with the page. The
@@ -332,7 +344,7 @@ bool requireMetadataPrecondition(WebServer& server, const ShotStore& store,
     http::sendJsonError(server, 400, "invalid If-Match");
     return false;
   }
-  if (nonce != store.bootNonce() || etagId != id) {
+  if (nonce != store.shotStoreNonce() || etagId != id) {
     server.sendHeader("X-Shot-Metadata-Conflict", "shot-identity");
     http::sendJsonError(server, 412,
                         "shot identity changed; reopen before saving");
@@ -357,7 +369,7 @@ bool sendReadableMetadata(WebServer& server, uint32_t id,
                           const ShotStore& store,
                           const ShotUserMetadata& metadata, bool allow304) {
   char etag[64];
-  makeMetadataEtag(etag, sizeof(etag), store.bootNonce(), id, metadata);
+  makeMetadataEtag(etag, sizeof(etag), store.shotStoreNonce(), id, metadata);
 
   if (metadata.state == ShotUserMetadataState::Corrupt) {
     setMetadataResponseHeaders(server, metadata, etag);
@@ -370,7 +382,7 @@ bool sendReadableMetadata(WebServer& server, uint32_t id,
     return false;
   }
 
-  if (allow304 && httpEtagOr304(server, etag)) return true;
+  if (allow304 && http::etagOr304(server, etag)) return true;
   setMetadataResponseHeaders(server, metadata, etag);
   if (metadata.state == ShotUserMetadataState::Active) {
     server.send(200, "application/json", metadata.json.c_str());

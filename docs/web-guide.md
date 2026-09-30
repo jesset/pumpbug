@@ -226,11 +226,19 @@ shows the final yield Pump Bug predicted at that moment. Otherwise the row
 reads `armed · didn’t fire` when the alert was on but never reached its cue, or
 `off` when the target alert was not enabled for the shot.
 
+An open draft remains editable when the device sleeps. Wake it and reconnect
+before saving. If another browser changes the details meanwhile, Pump Bug shows
+the saved version and your local edits. Choose `Keep saved version`, `Overwrite
+with my changes`, or `Back to draft` to continue editing. Returning to the draft
+does not accept the saved version; saving again asks you to resolve the
+conflict.
+
+If you `Delete all data` on the device while editing a shot in the browser,
+trying to save the changes to the older shot will normally be rejected. In that
+case, you can select `Download draft` to keep a local JSON copy of your changes.
+
 `Clear saved details` clears the editable details without deleting the shot
 record.
-
-If another browser changes the same details while the editor is open, Pump Bug
-shows the saved version and the local edits before asking which one to keep.
 
 ![Pump Bug browser shot detail with replay and download actions](images/web-guide/shot-detail.png)
 

@@ -48,6 +48,25 @@ target_include_directories(
   "${CMAKE_CURRENT_SOURCE_DIR}/stubs"
 )
 add_host_test(
+  test_shot_history_routes
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/ShotHistoryRoutes.cpp"
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/ShotStore.cpp"
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/shot_metadata_codec.cpp"
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/shot_id_reservation.cpp"
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/ExtractionWire.cpp"
+  "${PROJECT_SOURCE_DIR}/src/apps/extraction/extraction_encoding.cpp"
+  "${PROJECT_SOURCE_DIR}/src/util/crc32.cpp"
+  "${PROJECT_SOURCE_DIR}/src/util/json_validate.cpp"
+  "${PROJECT_SOURCE_DIR}/src/net/ChunkedResponse.cpp"
+  "${PROJECT_SOURCE_DIR}/src/net/JsonStream.cpp"
+  "${PROJECT_SOURCE_DIR}/src/net/http_request_validation.cpp"
+  "${PROJECT_SOURCE_DIR}/src/net/http_response_util.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/stubs/storage_file_access.cpp"
+)
+target_include_directories(
+  test_shot_history_routes BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/stubs"
+)
+add_host_test(
   test_shot_metadata_codec
   "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/shot_metadata_codec.cpp"
   "${PROJECT_SOURCE_DIR}/src/apps/extraction/extraction_encoding.cpp"

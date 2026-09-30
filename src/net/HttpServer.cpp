@@ -18,15 +18,6 @@
 
 HttpServer httpServer;
 
-bool httpEtagOr304(WebServer& s, const char* etag) {
-  if (s.hasHeader("If-None-Match") && s.header("If-None-Match") == etag) {
-    s.sendHeader("ETag", etag);
-    s.send(304, "application/json", "");
-    return true;
-  }
-  return false;
-}
-
 namespace {
 constexpr const char* kAppPrefix = "/app/";
 constexpr const char* kCookieHeader = "Cookie";
@@ -409,7 +400,7 @@ bool HttpServer::_serveEmbeddedAsset(WebServer& server, const String& uri) {
       // of letting browsers serve day-old pages across a flash.
       static String etag;
       if (etag.isEmpty()) etag = "\"" + ESP.getSketchMD5() + "\"";
-      if (httpEtagOr304(server, etag.c_str())) return true;
+      if (http::etagOr304(server, etag.c_str())) return true;
       server.sendHeader("ETag", etag.c_str());
       server.sendHeader("Cache-Control", "no-cache");
       server.sendHeader("Content-Encoding", "gzip");

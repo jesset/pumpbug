@@ -146,6 +146,9 @@ class ShotStore {
   // read error; discard `out` in that case.
   bool readHistoryEntry(uint32_t id, ShotHistoryEntry& out);
 
+  // Checks whether a stored record can be opened, without reading its contents.
+  storage::FileOpenResult checkFileAccess(uint32_t id);
+
   // Reads the complete EXTR record—header, events, samples, and target block.
   // Performs structural and CRC validation (if the record includes a CRC).
   // Metadata state does not affect the result and is not returned.
@@ -195,17 +198,21 @@ class ShotStore {
   uint32_t newestId();
 
   // Mutations advance the O(1) revision without requiring a directory scan.
-  // List ETags combine it with bootNonce so a browser cannot confuse records
-  // from different storage lifetimes.
+  // List ETags include bootNonce because the revision resets on boot.
   uint32_t revision();
   // Random for each boot and immutable after construction.
   uint32_t bootNonce() const { return _bootNonce; }
+  // Returns a cached nonce for shot identity, loaded or created in NVS on
+  // first use. Erasing NVS removes the persisted nonce. If NVS access fails,
+  // bootNonce is cached instead for this store instance.
+  uint32_t shotStoreNonce() const;
 
  private:
   enum class MetadataMatch : uint8_t { StateAndCrc, StateOnly };
 
   mutable SemaphoreHandle_t _mutex;
   uint32_t _bootNonce = 0;
+  mutable uint32_t _shotStoreNonce = 0;
   uint32_t _revision = 0;
   // Cache correctness assumes /shots changes only through ShotStore. Data-
   // erasure flows stop shot-history consumers before formatting and reboot.

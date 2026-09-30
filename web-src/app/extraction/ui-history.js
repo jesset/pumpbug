@@ -514,6 +514,7 @@ const historyStore = (() => {
     refreshPreservingRows,
     retry,
     loadMore,
+    get metadataRevision() { return metadataWriteRevision; },
     metadataWritten,
     readWithMetadataRevalidation,
     metadataChanged,

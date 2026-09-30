@@ -25,4 +25,10 @@ inline constexpr uint32_t kMaxShotId = maxIdForDigits(kShotIdDigits);
 // means allocation or persistence failed and is never a valid shot ID.
 uint32_t reserveNextShotId(uint32_t greatestExistingShotId);
 
+// The shot store nonce is set on first use or after a data erase. It has the
+// same lifetime as the NVS ID counter, allowing to separate IDs created across
+// a data erase (e.g. shot #1 created, data wipe, shot #1 created again).
+// Zero means the nonce could not be read or persisted.
+uint32_t loadShotStoreNonce();
+
 }  // namespace pump_scale::shot_store_detail

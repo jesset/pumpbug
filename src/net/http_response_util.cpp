@@ -11,6 +11,15 @@
 
 namespace http {
 
+bool etagOr304(WebServer& s, const char* etag) {
+  if (s.hasHeader("If-None-Match") && s.header("If-None-Match") == etag) {
+    s.sendHeader("ETag", etag);
+    s.send(304, "application/json", "");
+    return true;
+  }
+  return false;
+}
+
 void sendJsonError(WebServer& server, int status, const char* message,
                    const char* reason) {
   std::string body = "{\"error\":\"";

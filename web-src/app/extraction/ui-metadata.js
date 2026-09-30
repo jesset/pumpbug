@@ -155,9 +155,8 @@ function saveMetadataBrowserState() {
 }
 
 function metadataStreamSessionStarted() {
-  // A reconnect may be the same running device or a reboot with a new storage
-  // lifetime. Keep the prepared recipe, but stop attributing it to a numeric
-  // shot ID that may now identify another record.
+  // A reconnect can follow a data erase that reuses numeric shot IDs. Keep
+  // the prepared recipe without attributing it to a potentially different shot.
   let changed = false;
   if (nextShotRecipeSourceId !== null) {
     nextShotRecipeSourceId = null;
@@ -200,6 +199,31 @@ function metadataRecordFromRow(row) {
     loading: row.userMetadataState === 'loading',
     needsResult: !!row.userMetadataNeedsResult,
   };
+}
+
+function publishSavedMetadata(record, revision) {
+  const needsRefresh = revision !== historyStore.metadataRevision;
+  historyStore.metadataWritten();
+  if (!needsRefresh) {
+    publishMetadataRecord(record);
+    return;
+  }
+  const pending = lastShotMetadata;
+  readCurrentShotMetadata(record.id, current => {
+    if (record.needsResult) current.needsResult = true;
+    publishMetadataRecord(current);
+  }, err => {
+    if (lastShotMetadata === pending && pending?.id === record.id &&
+        pending.loading) {
+      lastShotMetadata = {
+        id: record.id, state: 'unavailable', error: err.message,
+        needsResult: record.needsResult,
+      };
+      scheduleRender();
+    }
+    flashBanner('Shot details were saved, but the current version ' +
+      'could not be refreshed. Reload History.', 'bad');
+  });
 }
 
 function metadataStateFromResponse(response) {
@@ -288,12 +312,12 @@ async function setLastShotMetadataId(id, completedShotRecipe = null) {
   scheduleRender();
   if (!id) return;
   if (completedShotRecipe) {
+    const revision = historyStore.metadataRevision;
     try {
       const initialized =
         await initializeRecentShotMetadata(id, completedShotRecipe);
       if (initialized) {
-        historyStore.metadataWritten();
-        publishMetadataRecord(initialized);
+        publishSavedMetadata(initialized, revision);
         historyStore.shotSaved();
         return;
       }
@@ -560,17 +584,19 @@ async function loadShotMetadataForDetail(id) {
   }
 }
 
-function downloadShotDetailsJson(id, record) {
+function downloadShotDetailsJson(id, record, { draft = false } = {}) {
   if (!record || record.state !== 'active') return;
   const body = JSON.stringify({
     id,
+    ...(draft ? { draft: true } : {}),
     userMetadataState: record.state,
     userMetadata: record.value,
   }, null, 2);
   const url = URL.createObjectURL(
     new Blob([body], { type: 'application/json' }));
   const link = el('a', {
-    href: url, download: 'shot-' + id + '-details.json',
+    href: url,
+    download: 'shot-' + id + (draft ? '-draft.json' : '-details.json'),
   });
   document.body.append(link);
   link.click();
@@ -1634,6 +1660,7 @@ async function writeShotMetadata(editor, value) {
   editor.error = null;
   editor.conflict = null;
   renderMetadataOverlay();
+  const revision = historyStore.metadataRevision;
   try {
     const result = await fetchWithTimeout(
       '/app/extraction/shot-metadata?id=' + editor.id,
@@ -1674,8 +1701,7 @@ async function writeShotMetadata(editor, value) {
     if (editor.returnToHistory && view === 'list') {
       revealHistoryShotAfterRender(editor.id);
     }
-    historyStore.metadataWritten();
-    publishMetadataRecord(saved);
+    publishSavedMetadata(saved, revision);
     if (metadataEditor === editor) metadataEditor = null;
     renderMetadataOverlay();
     flashBanner('Shot details saved.', 'live');
@@ -1733,6 +1759,7 @@ async function clearShotMetadata(editor) {
   editor.error = null;
   editor.conflict = null;
   renderMetadataOverlay();
+  const revision = historyStore.metadataRevision;
   try {
     const result = await fetchWithTimeout(
       '/app/extraction/shot-metadata?id=' + editor.id,
@@ -1766,8 +1793,7 @@ async function clearShotMetadata(editor) {
     if (editor.returnToHistory && view === 'list') {
       revealHistoryShotAfterRender(editor.id);
     }
-    historyStore.metadataWritten();
-    publishMetadataRecord(saved);
+    publishSavedMetadata(saved, revision);
     if (metadataEditor === editor) metadataEditor = null;
     renderMetadataOverlay();
     flashBanner('Shot details cleared.', 'idle');
@@ -1849,6 +1875,12 @@ function tagInputField(value) {
     el('div', { class: 'tag-editor' }, chips, input));
 }
 
+function returnToMetadataDraft() {
+  if (!metadataEditor || metadataEditor.saving) return;
+  metadataEditor.conflict = null;
+  renderMetadataOverlay();
+}
+
 function metadataConflictText(record) {
   if (record.state === 'active') return JSON.stringify(record.value, null, 2);
   if (record.state === 'cleared') return 'Saved details were cleared.';
@@ -1868,14 +1900,22 @@ function renderMetadataConflict() {
         'aria-label': 'Shot is no longer the same record' },
       el('div', { class: 'modal-head' },
         el('h1', {}, 'Shot changed')),
-      el('p', {}, 'The device restarted or its storage changed. This shot ID ' +
-        'can no longer be assumed to identify the record you opened.'),
+      el('p', {}, 'This shot is no longer the record you opened. Your changes ' +
+        'cannot be saved to it. Reopen the shot to check its details.'),
       localChanges ? el('h2', {}, 'Your unsaved changes') : null,
       localChanges ? el('pre', {}, localChanges) : null,
-      el('p', {}, 'Close this dialog and reopen the shot before editing it.'),
+      el('p', {}, localChanges
+        ? 'Your draft is still available. Return to it or download it ' +
+          'before reopening the shot.'
+        : 'Your draft is still available. Return to it before reopening ' +
+          'the shot.'),
       el('div', { class: 'editor-actions' },
         el('button', { type: 'button', class: 'secondary',
-          onclick: () => closeMetadataEditor() }, 'Close'))));
+          onclick: returnToMetadataDraft }, 'Back to draft'),
+        localChanges ? el('button', { type: 'button', class: 'secondary',
+          onclick: () => downloadShotDetailsJson(metadataEditor.id,
+            { state: 'active', value: conflict.localValue },
+            { draft: true }) }, 'Download draft') : null)));
   }
   const localText = conflict.action === 'save'
     ? JSON.stringify(conflict.localValue, null, 2)
@@ -1893,6 +1933,8 @@ function renderMetadataConflict() {
     el('h2', {}, conflict.action === 'save' ? 'Your changes' : 'Your action'),
     el('pre', {}, localText),
     el('div', { class: 'editor-actions' },
+      el('button', { type: 'button', class: 'secondary',
+        onclick: returnToMetadataDraft }, 'Back to draft'),
       el('button', { type: 'button', class: 'secondary',
         onclick: () => keepSavedMetadataConflict() }, 'Keep saved version'),
       el('button', { type: 'button', class: 'destructive-secondary',

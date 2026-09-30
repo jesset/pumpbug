@@ -380,7 +380,23 @@ bool verifyStoredMetadata(const char* path, size_t rawLength,
 }  // namespace
 
 ShotStore::ShotStore() : _mutex(xSemaphoreCreateMutex()) {
-  _bootNonce = esp_random();
+  do {
+    _bootNonce = esp_random();
+  } while (_bootNonce == 0);
+}
+
+uint32_t ShotStore::shotStoreNonce() const {
+  Lock lock(_mutex);
+  if (!_shotStoreNonce) {
+    _shotStoreNonce = shot_store_detail::loadShotStoreNonce();
+    if (!_shotStoreNonce) {
+      _shotStoreNonce = _bootNonce;
+      M5_LOGW(
+          "ShotStore: using boot-scoped identity; metadata versions will "
+          "change after restart");
+    }
+  }
+  return _shotStoreNonce;
 }
 
 ShotStore::~ShotStore() {
@@ -666,6 +682,14 @@ bool ShotStore::readHistoryEntry(uint32_t id, ShotHistoryEntry& out) {
   Lock lock(_mutex);
   out = ShotHistoryEntry{};
   return _readHistoryEntryUnlocked(id, out.summary, &out.userMetadata);
+}
+
+storage::FileOpenResult ShotStore::checkFileAccess(uint32_t id) {
+  Lock lock(_mutex);
+  char path[32];
+  _pathFor(id, path, sizeof(path));
+  storage::FileReader file;
+  return file.open(path);
 }
 
 ShotStoreReadResult ShotStore::readEncodedExtraction(uint32_t id,

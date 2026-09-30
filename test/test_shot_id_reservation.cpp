@@ -17,6 +17,7 @@ constexpr char kNamespace[] = "shots";
 constexpr char kLastIdKey[] = "last_id";
 
 using pump_scale::shot_store_detail::kMaxShotId;
+using pump_scale::shot_store_detail::loadShotStoreNonce;
 using pump_scale::shot_store_detail::reserveNextShotId;
 
 void expectStored(uint32_t expected) {
@@ -71,6 +72,52 @@ int main() {
   expectStored(kMaxShotId);
   assert(reserveNextShotId(0) == 0);
   expectStored(kMaxShotId);
+
+  testNvs.reset();
+  const uint32_t identity = loadShotStoreNonce();
+  assert(identity != 0);
+  assert(testNvs.value(kNamespace, "store_nonce") == identity);
+  assert(reserveNextShotId(0) == 1);
+  assert(loadShotStoreNonce() == identity);
+  assert(reserveNextShotId(0) == 2);
+  assert(loadShotStoreNonce() == identity);
+
+  // A new store instance uses persisted identity, not fresh boot randomness.
+  testNvs.setU32(kNamespace, "store_nonce", 0x87654321);
+  assert(loadShotStoreNonce() == 0x87654321);
+  testNvs.reset();
+  assert(loadShotStoreNonce() != 0x87654321);
+
+  for (auto error : {&testNvs.nextOpenError, &testNvs.nextReadError,
+                     &testNvs.nextWriteError, &testNvs.nextCommitError}) {
+    testNvs.reset();
+    *error = ESP_FAIL;
+    assert(loadShotStoreNonce() == 0);
+    assert(loadShotStoreNonce() != 0);
+  }
+  testNvs.setU64(kNamespace, "store_nonce", 42);
+  assert(loadShotStoreNonce() == 0);
+  testNvs.setU32(kNamespace, "store_nonce", 0);
+  testNvs.setU32(kNamespace, kLastIdKey, 57);
+  const uint32_t repaired = loadShotStoreNonce();
+  assert(repaired != 0);
+  assert(testNvs.value(kNamespace, "store_nonce") == repaired);
+  assert(loadShotStoreNonce() == repaired);
+  expectStored(57);
+  assert(reserveNextShotId(0) == 58);
+  assert(loadShotStoreNonce() == repaired);
+
+  for (auto error : {&testNvs.nextOpenError, &testNvs.nextReadError,
+                     &testNvs.nextWriteError, &testNvs.nextCommitError}) {
+    testNvs.reset();
+    testNvs.setU32(kNamespace, "store_nonce", 0);
+    *error = ESP_FAIL;
+    assert(loadShotStoreNonce() == 0);
+    assert(testNvs.value(kNamespace, "store_nonce") == 0);
+    const uint32_t retry = loadShotStoreNonce();
+    assert(retry != 0);
+    assert(testNvs.value(kNamespace, "store_nonce") == retry);
+  }
 
   std::puts("OK: shot ID reservation NVS contracts");
   return 0;
