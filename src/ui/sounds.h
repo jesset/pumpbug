@@ -28,6 +28,9 @@ void targetApproach(uint16_t freqHz);
 void targetCut();
 void targetSilence();
 
+// Short cue marking the end of a valid shot or of a replay.
+void shotComplete();
+
 // Cues for the backflush cleaning routine: a countdown toward the end of a
 // timed period, the two pump commands, and completion. They play on their own
 // channel so backflushSilence() can stop one without cutting off other sounds.

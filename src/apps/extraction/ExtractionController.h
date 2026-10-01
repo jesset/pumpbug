@@ -37,8 +37,8 @@ namespace pump_scale {
 // Responsibility split:
 //   * ExtractionScreen (the on-device view) gathers inputs (vibration trigger,
 //     BLE scale), calls tick() once per frame, reacts to the returned
-//     TickOutcome to drive the display and the target-weight alert, and
-//     forwards button commands here.
+//     TickOutcome to drive the display, target-weight alert, and completion
+//     cue, and forwards button commands here.
 //   * ExtractionController (this) advances the recorder under the mutex,
 //     decides which finished records graduate to history (isLikelyRealShot),
 //     persists them to flash, and serves the HTTP/SSE readers.
@@ -113,6 +113,9 @@ class ExtractionController {
     // pour evidence. UI may use this to focus Live without treating every
     // vibration window as a real shot.
     bool meaningfulPourStarted = false;
+
+    // True on the tick a live shot graduates, independent of storage success.
+    bool shotCompleted = false;
 
     // The alert decision is made inside the engine:
     // alertState carries the target-alert level and flow/projection diagnostics

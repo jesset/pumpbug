@@ -483,6 +483,7 @@ ScreenResult ExtractionScreen::tick() {
   }
 
   driveAlert(outcome.alertState, millis());
+  if (outcome.shotCompleted) sounds::shotComplete();
 
   // Keep the in-gauge BLE icon animation ticking when searching.
   if (_bleIcon.poll(bleStatus())) requestDraw();
@@ -744,6 +745,7 @@ void ExtractionScreen::tickReplay() {
   pump_scale::ScaleSnapshot snap{};
   if (!_replayer.tick(now, pumpOn, snap, newSample)) {
     stopReplay();  // played to the end
+    sounds::shotComplete();
     return;
   }
   _replaySnap = snap;

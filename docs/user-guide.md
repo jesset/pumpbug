@@ -163,6 +163,9 @@ an extraction only after detecting sustained flow and meaningful weight gain.
 This keeps brief flushes, scale bumps, grinder doses, and other incidental
 activity out of the counter and history.
 
+For valid shots, a completion tone signals that the end of the shot was detected
+and the cup can be removed.
+
 ## Predictive yield alert
 
 The predictive alert tells you when to stop the pump so the final yield lands
@@ -205,7 +208,7 @@ your edits.
 - At the predicted stopping point, the screen turns blue and a sustained tone
   tells you to stop the pump.
 - Tap A to silence the sustained tone. The visual stop cue remains until the
-  extraction finishes.
+  extraction finishes. The completion tone still plays.
 
 The target and alert settings used for a shot are stored with that shot. A
 later replay therefore reproduces the target behavior that applied when the
@@ -257,6 +260,9 @@ During replay:
 - Tap A to pause or resume.
 - Hold A to switch between the recorded target display and the flow band.
 - Tap B to return to `LAST SHOT`.
+
+When replay finishes, the completion tone plays and the device returns to
+`LAST SHOT`.
 
 Do not pull a real shot during replay; live extraction recording is suspended
 until you return to `LIVE`.

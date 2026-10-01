@@ -15,8 +15,12 @@ namespace {
 constexpr int kUiChannel = 6;
 constexpr int kTargetChannel = 7;
 constexpr int kBackflushChannel = 5;
+constexpr int kShotCompleteChannel = 4;
 constexpr uint16_t kCountdownFrequencies[] = {2100, 2181, 2264, 2351, 2440};
 constexpr uint16_t kCountdownFreqEndHz = kCountdownFrequencies[4];
+constexpr uint16_t kShotCompleteFrequenciesHz[] = {1400, 1867};
+constexpr uint32_t kShotCompleteNoteDurationMs = 90;
+constexpr uint8_t kShotCompleteVolume = 200;
 
 // Keep the amplifier active across a normal cluster of interactions. Hardware
 // tests have occasionally produced a distorted cue when the StickS3 amplifier
@@ -29,27 +33,22 @@ bool ensurePowered() {
   return power::speakerCodec.keepUntil(millis() + kCueKeepAliveMs);
 }
 
+void playCue(int channel, uint8_t volume, uint16_t freqHz,
+             uint32_t durationMs) {
+  if (!ensurePowered()) return;
+  M5.Speaker.setChannelVolume(channel, volume);
+  M5.Speaker.tone(freqHz, durationMs, channel, true);
+}
+
 }  // namespace
 
 void warmUpSpeaker() { ensurePowered(); }
 
-void buttonPress() {
-  if (!ensurePowered()) return;
-  M5.Speaker.setChannelVolume(kUiChannel, 64);
-  M5.Speaker.tone(1200, 25, kUiChannel, true);
-}
+void buttonPress() { playCue(kUiChannel, 64, 1200, 25); }
 
-void buttonHold() {
-  if (!ensurePowered()) return;
-  M5.Speaker.setChannelVolume(kUiChannel, 128);
-  M5.Speaker.tone(1500, 100, kUiChannel, true);
-}
+void buttonHold() { playCue(kUiChannel, 128, 1500, 100); }
 
-void buttonDoublePress() {
-  if (!ensurePowered()) return;
-  M5.Speaker.setChannelVolume(kUiChannel, 128);
-  M5.Speaker.tone(1800, 100, kUiChannel, true);
-}
+void buttonDoublePress() { playCue(kUiChannel, 128, 1800, 100); }
 
 uint16_t countdownBeepFreq(int bucket) {
   // bucket 1..5 maps to array index 0..4 (bucket 1 -> final pitch).
@@ -67,48 +66,38 @@ void prepareTargetAlert() { ensurePowered(); }
 // channel each call). Perceptually spaced countdown pitches (5 s -> 1 s) give a
 // gentle ~65 cent rise per step; cadence remains the primary cue.
 void targetApproach(uint16_t freqHz) {
-  if (!ensurePowered()) return;
-  M5.Speaker.setChannelVolume(kTargetChannel, 200);
-  M5.Speaker.tone(freqHz, 50, kTargetChannel, true);
+  playCue(kTargetChannel, 200, freqHz, 50);
 }
 
 // Sustained cut-now tone. Reuses the final countdown pitch so the cut never
 // drifts from the end of the countdown sequence.
-void targetCut() {
-  if (!ensurePowered()) return;
-  M5.Speaker.setChannelVolume(kTargetChannel, 220);
-  M5.Speaker.tone(kCountdownFreqEndHz, 500, kTargetChannel, true);
-}
+void targetCut() { playCue(kTargetChannel, 220, kCountdownFreqEndHz, 500); }
 
 void targetSilence() {
   if (power::speakerCodec.isSpeakerRunning()) M5.Speaker.stop(kTargetChannel);
 }
 
+void shotComplete() {
+  if (!ensurePowered()) return;
+  M5.Speaker.setChannelVolume(kShotCompleteChannel, kShotCompleteVolume);
+  M5.Speaker.tone(kShotCompleteFrequenciesHz[0], kShotCompleteNoteDurationMs,
+                  kShotCompleteChannel, true);
+  // Queue the second note on the same channel so it follows without a gap.
+  M5.Speaker.tone(kShotCompleteFrequenciesHz[1], kShotCompleteNoteDurationMs,
+                  kShotCompleteChannel, false);
+}
+
 // Uses a short, quiet cue on the backflush channel. The caller chooses the
 // pitch so the countdown schedule remains with the routine that owns it.
 void backflushCountdown(uint16_t freqHz) {
-  if (!ensurePowered()) return;
-  M5.Speaker.setChannelVolume(kBackflushChannel, 180);
-  M5.Speaker.tone(freqHz, 60, kBackflushChannel, true);
+  playCue(kBackflushChannel, 180, freqHz, 60);
 }
 
-void backflushStartPump() {
-  if (!ensurePowered()) return;
-  M5.Speaker.setChannelVolume(kBackflushChannel, 200);
-  M5.Speaker.tone(1900, 220, kBackflushChannel, true);
-}
+void backflushStartPump() { playCue(kBackflushChannel, 200, 1900, 220); }
 
-void backflushStopPump() {
-  if (!ensurePowered()) return;
-  M5.Speaker.setChannelVolume(kBackflushChannel, 220);
-  M5.Speaker.tone(1100, 400, kBackflushChannel, true);
-}
+void backflushStopPump() { playCue(kBackflushChannel, 220, 1100, 400); }
 
-void backflushComplete() {
-  if (!ensurePowered()) return;
-  M5.Speaker.setChannelVolume(kBackflushChannel, 220);
-  M5.Speaker.tone(2300, 600, kBackflushChannel, true);
-}
+void backflushComplete() { playCue(kBackflushChannel, 220, 2300, 600); }
 
 void backflushSilence() {
   if (power::speakerCodec.isSpeakerRunning())

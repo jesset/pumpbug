@@ -168,6 +168,7 @@ ExtractionController::TickOutcome ExtractionController::tick(
   // just "we're mid-shot and the timer/curve should keep animating."
   out.active = out.phase == Phase::RUNNING || out.phase == Phase::POST_PUMP;
   out.meaningfulPourStarted = !hadMeaningfulYield && hasMeaningfulYield;
+  out.shotCompleted = finalizeOutcome == FinalizeOutcome::Accepted;
   out.frameNeeded = out.active || out.phase != out.prevPhase ||
                     curSampleCount != prevSampleCount ||
                     curFinishedSeq != prevFinishedSeq || newScaleSample ||

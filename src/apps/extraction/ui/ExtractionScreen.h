@@ -39,8 +39,8 @@ class HttpServer;
 //   2. calls _controller.tick(...), which advances the recorder under its mutex
 //      and returns a TickOutcome describing what changed;
 //   3. reacts on the UI side: refocus the screen when the controller reports
-//      meaningful pour evidence, run the target-weight alert, request a redraw,
-//      and keep the device awake.
+//      meaningful pour evidence, run the target-weight alert, play the
+//      completion cue, request a redraw, and keep the device awake.
 // The controller resolves button commands through contextAction(); the view
 // sends requested tare commands to the scale. Session start/stop
 // (onEnter/onExit) start and stop the vibration sensor, request the scale
