@@ -41,11 +41,12 @@ class HttpServer;
 //   3. reacts on the UI side: refocus the screen when the controller reports
 //      meaningful pour evidence, run the target-weight alert, request a redraw,
 //      and keep the device awake.
-// Button commands (tare / clear) are forwarded to the controller via
-// contextAction(); session start/stop (onEnter/onExit) start and stop the
-// vibration sensor, request the scale service, and call the controller's
-// session methods. Pump starts are reported as generic activity to the power
-// manager; active extraction keeps the display awake.
+// The controller resolves button commands through contextAction(); the view
+// sends requested tare commands to the scale. Session start/stop
+// (onEnter/onExit) start and stop the vibration sensor, request the scale
+// service, and call the controller's session methods. Pump starts are reported
+// as generic activity to the power manager; active extraction keeps the
+// display awake.
 //
 // Everything here runs on the main UI loop. ExtractionScreen holds no mutex;
 // the controller owns all cross-task synchronization. drawLayout() and the
@@ -62,8 +63,8 @@ class HttpServer;
 //   LastShot  — the controller-selected display shot summary.
 //   LastShotChart — the controller-selected display shot chart.
 //
-//   A-tap cycles Live -> LastShot -> LastShotChart -> Live. A-hold is the
-//   contextual recorder action for the current phase (IDLE: tare; DONE: clear).
+//   A-tap cycles Live -> LastShot -> LastShotChart -> Live. In Live, A-hold
+//   requests tare while idle. In LastShot and LastShotChart, it starts replay.
 //
 // =============================================================================
 //   Target-weight stop alert (UI-only)
@@ -191,9 +192,6 @@ class ExtractionScreen : public Screen {
     // on the scale). Suppressed otherwise so the two numbers don't duplicate.
     float scaleGrams;
     bool showScaleSecondary;
-    // Draw the scrolling live trace only while actively pouring,
-    // so flushes/grinder doses/failed shots are never painted.
-    bool showLiveSamples;
     uint32_t timerMs;
     // True only while vibration detection keeps the recorder in RUNNING.
     bool pumpDetected = false;
@@ -205,14 +203,13 @@ class ExtractionScreen : public Screen {
     int16_t flowCgPerS = 0;  // smoothed live flow for the inactive target band
     bool flowValid = false;
 
-    // Idle Live summary panel (ready / after a shot finishes). Uses the
-    // controller-selected display shot when one exists.
+    // LastShot summary panel, using the controller-selected display shot.
     const pump_scale::Extraction* summaryShot = nullptr;
     pump_scale::FlowSeriesStats summaryFlow;
     uint32_t summaryShotId = 0;
   };
   ScreenModel modelFor() const;
-  // Fill the gauge/chart fields of an evolving extraction (Live or Replay).
+  // Fill the gauge and timer fields for Live or Replay.
   // Parameters carry only what differs between the two callers: the scale
   // frame (`haveYield`/`yieldCg`, `rawGrams`/`haveRawWeight` — live BLE vs
   // the replay's synthesized frame) and `nowMs`, the clock the elapsed timer

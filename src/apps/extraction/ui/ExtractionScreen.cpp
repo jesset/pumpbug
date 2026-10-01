@@ -539,14 +539,12 @@ ScreenResult ExtractionScreen::onEvent(button::Gesture event) {
       using CA = pump_scale::ExtractionController::ContextAction;
       switch (_controller.contextAction()) {
         case CA::RequestTare:
-          bleScale.requestTare();
-          return stay();
-        case CA::Cleared:
-          // Clear any alert output along with the finished live view.
+          // Silence any alert output before taring the scale.
           sounds::targetSilence();
           _alertState = {};
           _cutAudioSilenced = false;
           _lastCountdownBucket = 0;
+          bleScale.requestTare();
           requestDraw();
           return stay();
         case CA::None:
@@ -613,12 +611,6 @@ ExtractionScreen::ScreenModel ExtractionScreen::modelFor() const {
     m.cutState = _controller.currentCutState();
     m.flowCgPerS = _alertState.flowCgPerS;
     m.flowValid = _alertState.flowValid;
-
-    const pump_scale::ExtractionController::LastShotSelection selection =
-        _controller.effectiveLastShotSelection();
-    m.summaryShot = selection.shot;
-    if (selection.flowStats) m.summaryFlow = *selection.flowStats;
-    m.summaryShotId = selection.shotId;
   }
   return m;
 }
@@ -628,7 +620,6 @@ void ExtractionScreen::fillLiveModel(ScreenModel& m, bool haveYield,
                                      bool haveRawWeight, uint32_t nowMs) const {
   const pump_scale::Extraction& cur = _controller.current();
   m.empty = false;
-  m.chart = &cur;
   m.pumpDetected = cur.phase == pump_scale::Phase::RUNNING;
   m.pumpDecayCandidate = m.viewMode == ViewMode::Live && m.pumpDetected &&
                          _lastSensorData.pumpSignal.isDecayCandidate();
@@ -641,14 +632,10 @@ void ExtractionScreen::fillLiveModel(ScreenModel& m, bool haveYield,
     m.liveState = ScreenModel::LiveState::Ready;
   }
 
-  const bool showShotTarget = _controller.currentInPumpWindow();
-  m.bandTargetCoeffs = showShotTarget && cur.hasTargetSnapshot
+  const bool inPumpWindow = _controller.currentInPumpWindow();
+  m.bandTargetCoeffs = inPumpWindow && cur.hasTargetSnapshot
                            ? cur.target
                            : _configuredTargetCoeffs;
-
-  // The live scrolling trace is shown only while actively pouring. Finished
-  // real shots render a static chart; everything else shows a blank baseline.
-  m.showLiveSamples = (m.liveState == ScreenModel::LiveState::Pouring);
 
   // Self-tared yield appears for an in-flight pour; otherwise the gauge shows
   // the current scale weight.
@@ -668,17 +655,19 @@ void ExtractionScreen::fillLiveModel(ScreenModel& m, bool haveYield,
     m.showScaleSecondary = false;
   }
 
-  // Start the timer when vibration first indicates pump operation, even before
-  // enough yield exists to identify a pour. If detection ends without a
-  // confirmed pour, return to 0:00 with the Ready state. Confirmed pours keep
-  // showing elapsed time from the record start.
-  if (m.liveState == ScreenModel::LiveState::Pouring ||
-      m.liveState == ScreenModel::LiveState::FinishedRealShot ||
-      m.pumpDetected) {
-    m.timerMs = pump_scale::extractionElapsedMs(cur, nowMs);
-  } else {
-    m.timerMs = 0;
+  // The current timer spans pump pauses and settling, even before a pour is
+  // confirmed. Inactive Live uses the selected last shot; replay retains its
+  // own finished duration. With no record to display, the timer shows zero.
+  const pump_scale::Extraction* timerShot = nullptr;
+  if (inPumpWindow) {
+    timerShot = &cur;
+  } else if (m.viewMode == ViewMode::Live) {
+    timerShot = _controller.effectiveLastShot();
+  } else if (m.liveState == ScreenModel::LiveState::FinishedRealShot) {
+    timerShot = &cur;
   }
+  m.timerMs =
+      timerShot ? pump_scale::extractionElapsedMs(*timerShot, nowMs) : 0;
 }
 
 void ExtractionScreen::fillLastShotModel(ScreenModel& m) const {
@@ -691,7 +680,6 @@ void ExtractionScreen::fillLastShotModel(ScreenModel& m) const {
   m.gaugeValid = !m.empty && last->yieldCg != pump_scale::Extraction::NO_WEIGHT;
   m.gaugeActive = false;
   m.showScaleSecondary = false;
-  m.showLiveSamples = true;  // static chart; the pouring-only rule is live-only
   m.timerMs = m.empty ? 0 : pump_scale::extractionElapsedMs(*last, millis());
   m.pumpDetected = false;
   m.pumpDecayCandidate = false;
@@ -1057,7 +1045,7 @@ void ExtractionScreen::drawLastShotChartView(LGFX_Sprite* c,
   }
 
   pump_scale::ExtractionView::draw(c, *m.chart, chartNow, body.x, body.y,
-                                   body.w, body.h, m.showLiveSamples);
+                                   body.w, body.h, /*showLiveSamples=*/true);
 }
 
 void ExtractionScreen::drawTargetBand(LGFX_Sprite* c, const ScreenModel& m,

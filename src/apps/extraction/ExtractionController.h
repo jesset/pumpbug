@@ -150,9 +150,9 @@ class ExtractionController {
                          const TargetCoeffs& targetCoeffs);
 
   // ---- Button-driven recorder commands (main task) ------------------------
-  enum class ContextAction { None, RequestTare, Cleared };
-  // Apply the contextual A-hold action for the current phase: IDLE asks for a
-  // tare and DONE clears. Returns what the view should do.
+  enum class ContextAction { None, RequestTare };
+  // Return a tare request when no extraction is running or settling. Clear
+  // any finished working record first; preserve the last accepted shot.
   ContextAction contextAction();
 
   // ---- Main-task lock-free reads for the view -----------------------------

@@ -102,7 +102,7 @@ You do not have to tare the cup manually. Pump Bug treats the stable weight
 immediately before the pour as zero for that extraction. If the scale is not
 tared, the large number is the beverage weight (net yield) and a smaller
 number appears to show the raw weight reported by the scale. To tare the scale
-itself, hold A while `LIVE` is idle.
+itself, hold A while `LIVE` is idle. Holding A has no effect during recording.
 
 ## Controls
 
@@ -153,7 +153,10 @@ joined to the same extraction.
 When Pump Bug detects pump vibration, a blue outline appears around the target
 progress band (or the flow band, if the target alert has not been enabled). The
 alert stop cue only triggers while vibration is detected. The timer starts dim
-and brightens once scale readings confirm a pour.
+and brightens once scale readings confirm a pour. It continues through brief
+pump pauses and settling. While idle, the dim timer shows the duration selected
+for `LAST SHOT`, or `0:00.0` if no shot exists. After a flush or other activity
+that does not qualify as a shot, the timer returns to that duration.
 
 Pump Bug does not save every period of detected activity as a shot. It records
 an extraction only after detecting sustained flow and meaningful weight gain.
@@ -350,10 +353,8 @@ currently using its Bluetooth connection.
   `LIVE`.
 - **No manual cup tare required:** Put the cup in place before the pour and Pump
   Bug measures yield relative to its starting weight.
-- **Scale tare shortcut:** Hold A while `LIVE` is idle to send a tare command to
-  the scale.
-- **Clear the finished live shot:** After a shot finishes, hold A on `LIVE` to
-  clear the current finished display. The saved history record remains.
+- **Scale tare shortcut:** Hold A while `LIVE` is idle to tare the scale.
+  The last shot's duration and saved history are retained.
 - **Rotate to fit:** The screen follows device orientation, so portrait and
   landscape mounting both work.
 - **Save battery when offline:** Turn Wi-Fi off when you do not need the browser

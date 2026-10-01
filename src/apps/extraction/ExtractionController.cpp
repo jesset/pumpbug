@@ -218,6 +218,7 @@ ExtractionController::ContextAction ExtractionController::contextAction() {
       case Phase::DONE:
         _recorder.clear();
         cleared = true;
+        tareNeeded = true;
         break;
     }
   }
@@ -225,7 +226,6 @@ ExtractionController::ContextAction ExtractionController::contextAction() {
     // The clear changes DONE to IDLE between tick calls, so the next tick sees
     // IDLE both before and after its update. Wake SSE readers here.
     _liveSeq.fetch_add(1, std::memory_order_release);
-    return ContextAction::Cleared;
   }
   return tareNeeded ? ContextAction::RequestTare : ContextAction::None;
 }
