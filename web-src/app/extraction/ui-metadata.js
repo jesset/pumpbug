@@ -252,7 +252,8 @@ async function fetchShotMetadata(id, timeoutMs) {
         etag: response.headers.get('ETag'),
       };
       if (response.ok) {
-        record.value = state === 'active' ? await response.json() : null;
+        record.value = state === 'active'
+          ? await readResponseBody(response, 'json') : null;
         return record;
       }
       if (response.status === 404) throw new Error('not found');
@@ -280,7 +281,7 @@ async function initializeRecentShotMetadata(id, value) {
       ok: response.ok,
       state: metadataStateFromResponse(response),
       body: response.status === 200 || response.status === 409
-        ? await response.json() : null,
+        ? await readResponseBody(response, 'json') : null,
       crc: Number(response.headers.get('X-Shot-Metadata-Crc')) || 0,
       etag: response.headers.get('ETag'),
     }));
@@ -688,8 +689,8 @@ function inputField(label, options) {
     ...(options.list ? { list: options.list } : {}),
   });
   if (options.disabled) input.disabled = true;
-  return el('label', { class: options.wide ? 'field wide' : 'field' },
-    el('span', {}, label), input);
+  return el('div', { class: options.wide ? 'field wide' : 'field' },
+    el('label', {}, el('span', {}, label), input));
 }
 
 // Search feedback belongs to the open coffee dialog. Closing or replacing the
@@ -861,20 +862,27 @@ function chooseCoffee(coffee) {
 
 function confirmCoffeeChoice(form) {
   if (!coffeePicker || !coffeePicker.recipe) return;
+  clearEditorFieldErrors(form);
+  coffeePicker.recipe.coffee = readCoffeeFields(form, coffeePicker.recipe.coffee);
   const recipe = cloneJson(coffeePicker.recipe);
   recipe.coffee = readCoffeeFields(form, recipe.coffee, { trim: true });
   if (!nonemptyString(recipe.coffee.name)) {
     const nameInput = form.elements['coffee.name'];
     const canEditName = !nameInput.disabled;
-    coffeePicker.error = canEditName ? 'Enter a coffee name.'
-      : "This coffee's name cannot be edited here. Choose another coffee.";
-    showEditorFormError(form, coffeePicker.error);
-    if (canEditName) nameInput.focus();
+    if (canEditName) {
+      coffeePicker.error = { field: 'coffee.name', message: 'Enter a coffee name.' };
+      showEditorFieldError(form, nameInput, coffeePicker.error.message);
+    } else {
+      coffeePicker.error = {
+        message: "This coffee's name cannot be edited here. Choose another coffee.",
+      };
+      showEditorFormError(form, coffeePicker.error.message);
+    }
     return;
   }
   if (!coffeePicker.onChoose && encodeShotMetadata(recipe).tooLarge) {
-    coffeePicker.error = metadataTooLargeMessage();
-    showEditorFormError(form, coffeePicker.error);
+    coffeePicker.error = { message: metadataTooLargeMessage() };
+    showEditorFormError(form, coffeePicker.error.message);
     return;
   }
   const sourceId = coffeeIdentity(recipe.coffee) === coffeePicker.sourceCoffeeIdentity
@@ -1286,6 +1294,8 @@ function renderMetadataOverlay() {
   const overlay = document.getElementById('overlay');
   const active = document.activeElement;
   const wasOpen = !!overlay.firstElementChild;
+  const previousError = overlay.querySelector('.editor-error');
+  const previousErrorText = previousError && previousError.textContent;
   const hadOverlayFocus = !!active && overlay.contains(active);
   const overlayFocusKey = hadOverlayFocus && active.getAttribute
     ? active.getAttribute('data-overlay-focus-key') : null;
@@ -1312,7 +1322,10 @@ function renderMetadataOverlay() {
     overlay.dataset.modalKeyboard = 'true';
     overlay.addEventListener('keydown', handleMetadataOverlayKeydown);
   }
-  if (pickerFocus) {
+  const error = overlay.querySelector('.editor-error');
+  if (error && (!previousError || error.textContent !== previousErrorText)) {
+    error.focus();
+  } else if (pickerFocus) {
     const form = overlay.querySelector('form.new-coffee');
     const input = form && form.elements[pickerFocus.name];
     if (input) {
@@ -1462,7 +1475,7 @@ function metadataNumericInputError(form) {
     const input = form.elements[name];
     if (!input || input.disabled || input.value.trim() === '') continue;
     const value = Number(input.value);
-    if (!Number.isFinite(value) || !inRange(value)) return message;
+    if (!Number.isFinite(value) || !inRange(value)) return { message, input };
   }
   return null;
 }
@@ -1472,16 +1485,67 @@ function showMetadataEditorError(form, message) {
   showEditorFormError(form, message);
 }
 
+function renderEditorFormError(message) {
+  const error = el('p', { id: 'editor-error', class: 'err editor-error',
+    tabindex: '-1' });
+  error.textContent = message;
+  return error;
+}
+
+function clearEditorFieldErrors(form, input = null) {
+  if (!form.querySelectorAll) return;
+  for (const error of form.querySelectorAll('.field-error')) {
+    const field = form.elements[error.dataset.fieldName];
+    if (input && field !== input) continue;
+    const descriptions = (field.getAttribute('aria-describedby') || '')
+      .split(/\s+/).filter(id => id && id !== error.id);
+    if (descriptions.length) {
+      field.setAttribute('aria-describedby', descriptions.join(' '));
+    } else {
+      field.removeAttribute('aria-describedby');
+    }
+    field.removeAttribute('aria-invalid');
+    error.remove();
+  }
+}
+
+function appendEditorFieldError(input, message) {
+  const id = 'editor-field-error-' + input.name;
+  const error = el('span', { id, class: 'err field-error' });
+  error.textContent = message;
+  error.dataset.fieldName = input.name;
+  const field = input.closest('.field-with-action') || input.closest('.field');
+  field.append(error);
+  const descriptions = new Set((input.getAttribute('aria-describedby') || '')
+    .split(/\s+/).filter(Boolean));
+  descriptions.add(id);
+  input.setAttribute('aria-describedby', [...descriptions].join(' '));
+  input.setAttribute('aria-invalid', 'true');
+  return field;
+}
+
+function showEditorFieldError(form, input, message) {
+  clearEditorFieldErrors(form);
+  const formError = form.querySelector('.editor-error');
+  if (formError) formError.remove();
+  const field = appendEditorFieldError(input, message);
+  const section = input.closest('details');
+  if (section) section.open = true;
+  input.focus({ preventScroll: true });
+  field.scrollIntoView({ block: 'center' });
+}
+
 function showEditorFormError(form, message) {
   if (!form.querySelector) return;
+  clearEditorFieldErrors(form);
   let error = form.querySelector('.editor-error');
   if (!error) {
-    error = el('p', { class: 'err editor-error', role: 'alert' });
-    const actions = form.querySelector('.editor-actions');
-    if (actions) form.insertBefore(error, actions);
-    else form.append(error);
+    error = renderEditorFormError(message);
+    form.prepend(error);
+  } else {
+    error.textContent = message;
   }
-  error.textContent = message;
+  error.focus();
 }
 
 function editorFieldCompatible(root, group, name, kind) {
@@ -1639,13 +1703,21 @@ async function loadMetadataConflict(editor, action, localValue = null) {
     editor.error = null;
   }, err => {
     if (metadataEditor !== editor) return;
-    editor.error = 'Shot details changed, but the current version could not be '
-      + 'loaded: ' + err.message;
+    editor.error = 'Shot details changed. ' +
+      metadataRequestErrorText(err, 'load the saved version');
   });
   if (metadataEditor === editor) {
     editor.saving = false;
     renderMetadataOverlay();
   }
+}
+
+function metadataRequestErrorText(error, action) {
+  if (error.kind === 'timeout' || error.kind === 'network') {
+    return "Couldn't " + action + '. Wake the device or check the ' +
+      'connection, then try again.';
+  }
+  return error.message;
 }
 
 async function writeShotMetadata(editor, value) {
@@ -1654,6 +1726,7 @@ async function writeShotMetadata(editor, value) {
   if (encoded.tooLarge) {
     editor.error = metadataTooLargeMessage();
     renderMetadataOverlay();
+    document.getElementById('editor-error')?.focus();
     return;
   }
   editor.saving = true;
@@ -1676,7 +1749,7 @@ async function writeShotMetadata(editor, value) {
         ok: response.ok,
         conflict: response.headers.get('X-Shot-Metadata-Conflict'),
         state: metadataStateFromResponse(response),
-        value: response.ok ? await response.json() : null,
+        value: response.ok ? await readResponseBody(response, 'json') : null,
         crc: Number(response.headers.get('X-Shot-Metadata-Crc')) || 0,
         etag: response.headers.get('ETag'),
       }));
@@ -1690,7 +1763,7 @@ async function writeShotMetadata(editor, value) {
       await loadMetadataConflict(editor, 'save', value);
       return;
     }
-    if (!result.ok) throw new Error('save failed (HTTP ' + result.status + ')');
+    if (!result.ok) throw new Error("Couldn't save (HTTP " + result.status + ').');
     const saved = {
       id: editor.id,
       state: result.state,
@@ -1708,7 +1781,7 @@ async function writeShotMetadata(editor, value) {
   } catch (err) {
     if (metadataEditor === editor) {
       editor.saving = false;
-      editor.error = err.message;
+      editor.error = metadataRequestErrorText(err, 'save');
       renderMetadataOverlay();
     }
   }
@@ -1717,9 +1790,11 @@ async function writeShotMetadata(editor, value) {
 async function saveMetadataEditor(form) {
   if (!metadataEditor || metadataEditor.saving) return;
   const editor = metadataEditor;
+  clearEditorFieldErrors(form);
   const numericError = metadataNumericInputError(form);
   if (numericError) {
-    showMetadataEditorError(form, numericError);
+    editor.error = null;
+    showEditorFieldError(form, numericError.input, numericError.message);
     return;
   }
   const value = readEditorValue(form, editor.original);
@@ -1731,14 +1806,13 @@ async function saveMetadataEditor(form) {
     editor.original = value;
     const identity = coffeeIdentity(value.coffee);
     if (!identity) {
-      editor.error = 'Coffee is required for the next-shot recipe.';
-      renderMetadataOverlay();
+      showMetadataEditorError(form,
+        'Coffee is required for the next-shot recipe.');
       return;
     }
     const encoded = encodeShotMetadata(value);
     if (encoded.tooLarge) {
-      editor.error = metadataTooLargeMessage();
-      renderMetadataOverlay();
+      showMetadataEditorError(form, metadataTooLargeMessage());
       return;
     }
     nextShotRecipe = value;
@@ -1782,7 +1856,9 @@ async function clearShotMetadata(editor) {
       await loadMetadataConflict(editor, 'clear');
       return;
     }
-    if (!result.ok) throw new Error('clear failed (HTTP ' + result.status + ')');
+    if (!result.ok) {
+      throw new Error("Couldn't clear details (HTTP " + result.status + ').');
+    }
     const saved = {
       id: editor.id,
       state: result.state,
@@ -1800,15 +1876,16 @@ async function clearShotMetadata(editor) {
   } catch (err) {
     if (metadataEditor === editor) {
       editor.saving = false;
-      editor.error = err.message;
+      editor.error = metadataRequestErrorText(err, 'clear details');
       renderMetadataOverlay();
     }
   }
 }
 
-async function clearSavedMetadata() {
+async function clearSavedMetadata(form) {
   if (!metadataEditor || metadataEditor.saving) return;
   if (!confirm('Clear saved shot details? This cannot be undone.')) return;
+  metadataEditor.original = readEditorValue(form, metadataEditor.original);
   await clearShotMetadata(metadataEditor);
 }
 
@@ -2010,16 +2087,22 @@ function renderCoffeeDetails(picker) {
       ? [...new Set(['light', 'medium-light', 'medium', 'medium-dark', 'dark', ...values])]
       : values));
   }
-  form.addEventListener('input', () => {
+  form.addEventListener('input', event => {
+    clearEditorFieldErrors(form, event?.target);
     picker.recipe.coffee = readCoffeeFields(form, picker.recipe.coffee);
-    if (picker.error) {
+    if (picker.error && (!picker.error.field ||
+        picker.error.field === event?.target?.name)) {
       picker.error = null;
       const error = form.querySelector('.editor-error');
       if (error) error.remove();
     }
   });
   if (picker.error) {
-    form.append(el('p', { class: 'err editor-error', role: 'alert' }, picker.error));
+    if (picker.error.field) {
+      appendEditorFieldError(form.elements[picker.error.field], picker.error.message);
+    } else {
+      form.prepend(renderEditorFormError(picker.error.message));
+    }
   }
   const cancel = () => { coffeePicker = null; renderMetadataOverlay(); };
   form.append(el('div', { class: 'editor-actions' },
@@ -2260,7 +2343,8 @@ function renderMetadataEditor() {
       : -remaining + ' bytes over limit';
     size.classList.toggle('err', encodedBytes > SHOT_METADATA_MAX_BYTES);
   };
-  form.addEventListener('input', () => {
+  form.addEventListener('input', event => {
+    clearEditorFieldErrors(form, event?.target);
     updateSize();
     if (metadataEditor.error) {
       metadataEditor.error = null;
@@ -2271,7 +2355,7 @@ function renderMetadataEditor() {
   updateSize();
   form.append(size);
   if (metadataEditor.error) {
-    form.append(el('p', { class: 'err editor-error', role: 'alert' }, metadataEditor.error));
+    form.prepend(renderEditorFormError(metadataEditor.error));
   }
   const actions = el('div', { class: 'editor-actions' });
   if (metadataEditor.kind === 'shot' &&
@@ -2285,7 +2369,7 @@ function renderMetadataEditor() {
       metadataEditor.record.state !== 'absent') {
     const clear = el('button', {
       type: 'button', class: 'destructive-secondary',
-      onclick: () => clearSavedMetadata() }, 'Clear saved details');
+      onclick: () => clearSavedMetadata(form) }, 'Clear saved details');
     clear.disabled = metadataEditor.saving;
     actions.append(clear);
   }

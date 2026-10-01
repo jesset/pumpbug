@@ -264,7 +264,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .field.wide, .field-with-action.wide, .field-warning { grid-column: 1 / -1; }
-.field > span { color: var(--dim); font-size: 0.75rem; }
+.field > label { display: flex; flex-direction: column; gap: 5px; }
+.field > span, .field > label > span {
+  color: var(--dim); font-size: 0.75rem;
+}
+.field > .field-error, .field-with-action > .field-error {
+  color: var(--bad); font-size: 0.8125rem;
+}
+.field [aria-invalid="true"] { border-color: var(--bad); }
 .field input, .field textarea {
   width: 100%; min-width: 0; padding: 9px 10px;
   border: 1px solid var(--border); border-radius: 4px;
@@ -299,6 +306,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 .extraction-yield { color: var(--dim); font-size: 0.8125rem; }
 .metadata-size { color: var(--dim); font-size: 0.75rem; text-align: right; }
 .editor-error { font-size: 0.8125rem; }
+form > .editor-error {
+  margin: 0 0 16px; padding: 12px;
+  border: 1px solid var(--bad); border-radius: 4px;
+  background: var(--surface);
+}
+form > .editor-error:focus {
+  outline: 2px solid var(--bad); outline-offset: 2px;
+}
 .editor-actions {
   display: flex; gap: 8px; align-items: center; margin-top: 16px;
 }
@@ -309,6 +324,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .field-with-action .field { grid-column: auto; margin: 0; }
 .field-with-action button { margin-bottom: 1px; }
+.field-with-action > .field-error { grid-column: 1 / -1; }
 .metadata-actions, .coffee-actions {
   display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
 }

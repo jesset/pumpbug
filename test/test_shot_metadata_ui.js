@@ -40,6 +40,7 @@ const context = {
     children,
     childNodes: children,
     dataset: {},
+    get id() { return this.attrs.id; },
     append(...more) {
       this.children.push(...more);
       this.childNodes = this.children;
@@ -49,6 +50,7 @@ const context = {
     },
     listeners: {},
     addEventListener(type, listener) { this.listeners[type] = listener; },
+    focus() {},
   }),
   setBanner: (message, kind) => banners.push({ message, kind }),
   flashBanner: (message, kind) => banners.push({ message, kind }),
@@ -207,6 +209,46 @@ context.api.focusFirstMetadataOverlayControl({
 });
 check(focused.join(',') === 'choice',
   'explicit modal focus did not take priority over a later form input');
+
+const errorPanel = context.renderEditorFormError('Test error');
+check(errorPanel.attrs.tabindex === '-1' && !errorPanel.attrs.role &&
+  errorPanel.textContent === 'Test error',
+  'focused error presentation also used a live announcement');
+
+for (const hadFocus of [false, true]) {
+  const oldDocument = context.document;
+  const oldPicker = context.renderCoffeePicker;
+  const oldEditor = context.renderMetadataEditor;
+  const active = { getAttribute: () => 'old-control', focus() {} };
+  let focusCount = 0;
+  let mounted = false;
+  let previous = null;
+  const error = { textContent: 'Request failed', focus: () => { ++focusCount; } };
+  const overlay = {
+    firstElementChild: {}, dataset: { modalKeyboard: 'true' },
+    contains: () => hadFocus,
+    replaceChildren() { mounted = false; }, append() { mounted = true; },
+    querySelector: selector => selector === '.editor-error'
+      ? mounted ? error : previous : null,
+    querySelectorAll: () => [active],
+  };
+  context.document = {
+    activeElement: active, getElementById: () => overlay,
+    querySelectorAll: () => [],
+  };
+  context.renderCoffeePicker = () => null;
+  context.renderMetadataEditor = () => ({});
+  context.api.renderMetadataOverlay();
+  check(focusCount === 1,
+    'a new error did not receive focus after focus ' +
+      (hadFocus ? 'stayed in the overlay' : 'left the disabled form'));
+  previous = error;
+  context.api.renderMetadataOverlay();
+  check(focusCount === 1, 'an unchanged error stole focus on another render');
+  context.document = oldDocument;
+  context.renderCoffeePicker = oldPicker;
+  context.renderMetadataEditor = oldEditor;
+}
 
 const row = {
   id: 7,
@@ -625,14 +667,14 @@ check(Object.keys(blankEditor.original).length === 0 &&
   });
   const caller = new AbortController();
   const bodyRead = context.api.fetchWithTimeout(
-    '/slow', { signal: caller.signal }, response => response.json());
+    '/slow', { signal: caller.signal }, response => context.readResponseBody(response, 'json'));
   await bodyStarted;
   caller.abort();
   let bodyWasCancelled = false;
   try {
     await bodyRead;
   } catch (err) {
-    bodyWasCancelled = err.name === 'AbortError';
+    bodyWasCancelled = err.kind === 'cancelled';
   }
   check(bodyWasCancelled,
     'request cancellation stopped at headers instead of cancelling the body');
@@ -1239,7 +1281,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   // when the next comparison uses the same coffee object.
   const closedOverlay = {
     firstElementChild: null, dataset: { modalKeyboard: 'true' },
-    replaceChildren() {},
+    replaceChildren() {}, querySelector: () => null,
   };
   context.document = {
     activeElement: null,
@@ -1781,37 +1823,145 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(context.api.editor().kind === 'recipe',
     'an abandoned metadata load replaced the current editor');
 
+  function validationForm(elements) {
+    let formError = null;
+    const fields = [];
+    const result = {
+      elements: {}, focused: null,
+      querySelector(selector) {
+        return selector === '.editor-error' ? formError
+          : this.querySelectorAll(selector)[0] || null;
+      },
+      querySelectorAll(selector) {
+        return selector === '.field-error'
+          ? fields.flatMap(field => field.children.filter(node =>
+            node.attrs && node.attrs.class.includes('field-error'))) : [];
+      },
+      prepend(node) {
+        formError = node;
+        node.remove = () => { formError = null; };
+        node.focus = () => { result.focused = node; };
+      },
+    };
+    for (const [name, source] of Object.entries(elements)) {
+      const field = { children: [], scrollIntoView(options) {
+        this.scrollBlock = options.block;
+      }, append(node) {
+        this.children.push(node);
+        node.remove = () => {
+          this.children = this.children.filter(child => child !== node);
+        };
+      } };
+      fields.push(field);
+      const actionRow = source.withAction
+        ? { ...field, children: [field, { tag: 'button' }] } : null;
+      if (actionRow) fields.push(actionRow);
+      const input = { ...source, name, actionRow, attrs: { ...source.attrs },
+        section: { open: false },
+        getAttribute(key) { return this.attrs[key] || null; },
+        setAttribute(key, value) { this.attrs[key] = value; },
+        removeAttribute(key) { delete this.attrs[key]; },
+        closest(selector) {
+          return selector === '.field' ? field
+            : selector === '.field-with-action' ? actionRow : this.section;
+        },
+        focus: () => { result.focused = input; },
+      };
+      result.elements[name] = input;
+    }
+    return result;
+  }
+  const renderBeforeSubmitValidation = context.renderMetadataOverlay;
+  context.renderMetadataOverlay = () => {
+    throw new Error('form validation rebuilt the overlay');
+  };
   context.api.setNextRecipe({ coffee: { name: 'Existing recipe' } });
-  const invalidNumericForm = { elements: {
+  for (const [name, raw] of [
+    ['prep.doseG', '0'], ['prep.tempC', '1e999'],
+    ['prep.targetYieldG', '36.1'], ['tdsPct', '101'],
+  ]) {
+    const invalidNumericForm = validationForm({
+      ...form.elements, [name]: element(raw),
+    });
+    const input = invalidNumericForm.elements[name];
+    const section = input.section;
+    context.api.setEditor({
+      kind: 'recipe', original: { coffee: { name: 'Existing recipe' } },
+      rating: 0, tags: [], saving: false, error: null,
+    });
+    for (let attempt = 1; attempt <= 2; ++attempt) {
+      invalidNumericForm.focused = null;
+      section.open = false;
+      await context.api.saveMetadataEditor(invalidNumericForm);
+      const fieldError = invalidNumericForm.querySelector('.field-error');
+      check(context.api.editor().error === null && fieldError &&
+            !invalidNumericForm.querySelector('.editor-error') &&
+            invalidNumericForm.focused === input && section.open &&
+            input.attrs['aria-describedby'] === fieldError.id &&
+            input.attrs['aria-invalid'] === 'true' &&
+            input.closest('.field').scrollBlock === 'center' &&
+            context.api.browserState().nextShotRecipe.coffee.name ===
+              'Existing recipe',
+        name + ' validation did not focus its field or preserve the recipe, attempt ' + attempt);
+    }
+  }
+
+  const movingErrorForm = validationForm({
     ...form.elements,
-    'prep.doseG': element('1e999'),
-  } };
+    'prep.doseG': { ...element('0'), attrs: { 'aria-describedby': 'dose-help' } },
+    tdsPct: element('101'),
+  });
   context.api.setEditor({
-    kind: 'recipe', original: { coffee: { name: 'Existing recipe' } },
+    kind: 'shot', id: 8, original: { coffee: { name: 'Coffee' } },
     rating: 0, tags: [], saving: false, error: null,
   });
-  await context.api.saveMetadataEditor(invalidNumericForm);
-  check(context.api.editor().error &&
-        context.api.browserState().nextShotRecipe.coffee.name ===
-          'Existing recipe',
-    'a non-finite numeric value was serialized into shot metadata');
+  await context.api.saveMetadataEditor(movingErrorForm);
+  const doseInput = movingErrorForm.elements['prep.doseG'];
+  const tdsInput = movingErrorForm.elements.tdsPct;
+  const doseError = movingErrorForm.querySelector('.field-error');
+  context.clearEditorFieldErrors(movingErrorForm, tdsInput);
+  check(movingErrorForm.querySelector('.field-error') === doseError &&
+        doseInput.attrs['aria-describedby'] === 'dose-help ' + doseError.id,
+    'editing an unrelated field cleared the dose error or its existing description');
+  doseInput.value = '18';
+  await context.api.saveMetadataEditor(movingErrorForm);
+  const tdsError = movingErrorForm.querySelector('.field-error');
+  check(movingErrorForm.focused === tdsInput && tdsError.id !== doseError.id &&
+        doseInput.attrs['aria-describedby'] === 'dose-help' &&
+        !doseInput.attrs['aria-invalid'] &&
+        tdsInput.attrs['aria-describedby'] === tdsError.id,
+    'moving validation from dose to TDS left a stale description or invalid marker');
+  context.clearEditorFieldErrors(movingErrorForm, tdsInput);
+  check(!movingErrorForm.querySelector('.field-error') &&
+        !tdsInput.attrs['aria-describedby'] && !tdsInput.attrs['aria-invalid'] &&
+        doseInput.attrs['aria-describedby'] === 'dose-help',
+    'clearing the field error left its accessibility state or removed unrelated help');
+  const doseField = context.api.inputField('Dose', { name: 'prep.doseG' });
+  check(doseField.tag === 'div' && doseField.children[0].tag === 'label' &&
+        doseField.children[0].children[0].children[0] === 'Dose',
+    'field markup did not leave space for an explanation outside its label');
 
-  const oversizedRecipeForm = { elements: {
+  const oversizedRecipeForm = validationForm({
     ...form.elements,
     'coffee.name': element('x'.repeat(context.api.maxBytes + 1)),
-  } };
+  });
   context.api.setEditor({
     kind: 'recipe',
     original: { coffee: { name: 'Existing recipe' } },
     rating: 0, tags: [], saving: false, error: null,
   });
-  await context.api.saveMetadataEditor(oversizedRecipeForm);
-  check(context.api.editor().kind === 'recipe' &&
-        context.api.editor().original.coffee.name.length > context.api.maxBytes &&
-        context.api.editor().error &&
-        context.api.browserState().nextShotRecipe.coffee.name ===
-          'Existing recipe',
-    'over-limit recipe replaced the valid template or discarded its edits');
+  for (let attempt = 1; attempt <= 2; ++attempt) {
+    oversizedRecipeForm.focused = null;
+    await context.api.saveMetadataEditor(oversizedRecipeForm);
+    check(context.api.editor().kind === 'recipe' &&
+          context.api.editor().original.coffee.name.length > context.api.maxBytes &&
+          oversizedRecipeForm.focused ===
+            oversizedRecipeForm.querySelector('.editor-error') &&
+          context.api.browserState().nextShotRecipe.coffee.name ===
+            'Existing recipe',
+      'over-limit recipe lost its edits or error focus, attempt ' + attempt);
+  }
+  context.renderMetadataOverlay = renderBeforeSubmitValidation;
 
   const overLimitForm = { elements: {
     ...form.elements,
@@ -1823,10 +1973,21 @@ check(Object.keys(blankEditor.original).length === 0 &&
     original: { coffee: { name: 'Before' } },
     rating: 4, tags: [], saving: false, error: null,
   });
-  await context.api.saveMetadataEditor(overLimitForm);
-  check(context.api.editor().original.notes.length > context.api.maxBytes &&
-        context.api.editor().error,
-    'over-limit validation discarded the current editor values');
+  const documentBeforeSubmitValidation = context.document;
+  let validationFocus = null;
+  const mountedError = { focus: () => { validationFocus = mountedError; } };
+  context.document = {
+    getElementById: id => id === 'editor-error' ? mountedError : null,
+  };
+  context.renderMetadataOverlay = () => { validationFocus = 'first input'; };
+  for (let attempt = 1; attempt <= 2; ++attempt) {
+    await context.api.saveMetadataEditor(overLimitForm);
+    check(context.api.editor().original.notes.length > context.api.maxBytes &&
+          context.api.editor().error && validationFocus === mountedError,
+      'over-limit shot lost its edits or error focus, attempt ' + attempt);
+  }
+  context.document = documentBeforeSubmitValidation;
+  context.renderMetadataOverlay = renderBeforeSubmitValidation;
 
   const conflictForm = { elements: {
     ...form.elements,
@@ -1953,34 +2114,81 @@ check(Object.keys(blankEditor.original).length === 0 &&
   context.api.confirmCoffeeChoice({ elements: { 'coffee.name': {
     disabled: true, focus: () => { throw new Error('focused disabled coffee name'); },
   } } });
-  check(invalidPicker.error ===
+  check(invalidPicker.error.message ===
         "This coffee's name cannot be edited here. Choose another coffee.",
     'an incompatible coffee name offered an unavailable editing action');
 
   const blankNamePicker = { stage: 'details', recipe: { coffee: { name: 'Coffee' } } };
   context.api.setCoffeePicker(blankNamePicker);
-  let focusedName = false;
-  let inlineError = null;
-  const nameForm = {
-    elements: { 'coffee.name': { value: '', disabled: false,
-      focus: () => { focusedName = true; } } },
-    querySelector: selector => selector === '.editor-error' ? inlineError : null,
-    append: node => { inlineError = node; },
-  };
+  const nameForm = validationForm({
+    'coffee.name': { ...element(''), withAction: true },
+  });
+  const nameInput = nameForm.elements['coffee.name'];
   const renderBeforeValidation = context.renderMetadataOverlay;
   context.renderMetadataOverlay = () => { throw new Error('validation rebuilt the overlay'); };
   context.api.confirmCoffeeChoice(nameForm);
-  check(focusedName && blankNamePicker.error === 'Enter a coffee name.' &&
-        inlineError.textContent === blankNamePicker.error && inlineError.attrs.role === 'alert',
-    'empty coffee name did not show an inline alert and focus the editable field');
-  focusedName = false;
-  nameForm.elements['coffee.name'].disabled = true;
+  const inlineError = nameForm.querySelector('.field-error');
+  check(nameForm.focused === nameInput &&
+        blankNamePicker.error.field === 'coffee.name' &&
+        blankNamePicker.error.message === 'Enter a coffee name.' &&
+        inlineError.textContent === 'Enter a coffee name.' &&
+        nameInput.attrs['aria-describedby'] === inlineError.id &&
+        !nameForm.querySelector('.editor-error'),
+    'empty coffee name did not show an inline error and focus its field');
+  check(nameInput.actionRow.children[2] === inlineError &&
+        !nameInput.closest('.field').children.includes(inlineError) &&
+        nameInput.actionRow.scrollBlock === 'center',
+    'coffee-name error did not follow the input and button or scroll with their row');
+  const elBeforeCoffeeRender = context.el;
+  const appendBeforeCoffeeRender = context.appendEditorFieldError;
+  const restoredFieldErrors = [];
+  context.el = (tag, ...args) => {
+    const node = elBeforeCoffeeRender(tag, ...args);
+    if (tag === 'form') {
+      Object.defineProperty(node, 'elements', { configurable: true,
+        get() {
+          return Object.fromEntries(descendants(node).filter(child =>
+            child.attrs && child.attrs.name).map(child => [child.attrs.name, child]));
+        },
+      });
+    }
+    return node;
+  };
+  context.appendEditorFieldError = (input, message) => {
+    restoredFieldErrors.push({ input, message });
+  };
+  const coffeeEditorForm = descendants(context.api.renderCoffeePicker())
+    .find(node => node.tag === 'form');
+  check(restoredFieldErrors.length === 1 &&
+        restoredFieldErrors[0].input.attrs.name === 'coffee.name' &&
+        restoredFieldErrors[0].input.attrs.value === '' &&
+        restoredFieldErrors[0].message === 'Enter a coffee name.' &&
+        blankNamePicker.error.field === 'coffee.name',
+    'rebuilding coffee details lost the submitted draft or its field validation');
+  context.el = elBeforeCoffeeRender;
+  context.appendEditorFieldError = appendBeforeCoffeeRender;
+  Object.defineProperty(coffeeEditorForm, 'elements', { value: nameForm.elements });
+  coffeeEditorForm.querySelector = selector => nameForm.querySelector(selector);
+  coffeeEditorForm.querySelectorAll = selector => nameForm.querySelectorAll(selector);
+  coffeeEditorForm.listeners.input({ target: { name: 'coffee.roaster' } });
+  check(blankNamePicker.error.field === 'coffee.name' &&
+        nameForm.querySelector('.field-error') === inlineError &&
+        nameInput.attrs['aria-invalid'] === 'true',
+    'editing another coffee field cleared the name validation');
+  nameInput.value = 'Coffee';
+  coffeeEditorForm.listeners.input({ target: nameInput });
+  check(blankNamePicker.error === null && !nameForm.querySelector('.field-error') &&
+        !nameInput.attrs['aria-describedby'] && !nameInput.attrs['aria-invalid'],
+    'editing the coffee name left its error or accessibility link');
+  nameForm.focused = null;
+  nameInput.disabled = true;
   blankNamePicker.recipe.coffee.name = 42;
-  const firstErrorNode = inlineError;
   context.api.confirmCoffeeChoice(nameForm);
-  check(!focusedName && inlineError === firstErrorNode &&
-        inlineError.textContent.includes('Choose another coffee.'),
-    'disabled coffee name moved focus or replaced the existing error node');
+  const formError = nameForm.querySelector('.editor-error');
+  check(nameForm.focused === formError &&
+        formError.textContent.includes('Choose another coffee.') &&
+        !nameForm.querySelector('.field-error'),
+    'an uneditable coffee name did not show and focus a form error');
   context.renderMetadataOverlay = renderBeforeValidation;
 
   const largeCoffee = { name: 'Large coffee', origin: 'x'.repeat(context.api.maxBytes) };
@@ -2146,8 +2354,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
     'damaged shot editor borrowed measurements from another view');
   check(detailMetadataReads === 3,
     'detail and Last Shot edit actions did not refresh metadata before opening');
-  if (checkCount !== 204) {
-    throw new Error(`expected 204 assertions, ran ${checkCount}`);
+  if (checkCount !== 226) {
+    throw new Error(`expected 226 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

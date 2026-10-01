@@ -20,19 +20,54 @@ function revealHistoryShotAfterRender(id) {
   historyRevealShotId = id;
 }
 
+function requestError(kind, message, cause) {
+  return Object.assign(new Error(message), { kind, cause });
+}
+
+async function readResponseBody(response, method) {
+  if (response.bodyUsed || response.body?.locked) {
+    throw new TypeError('Response body is already in use.');
+  }
+  const reading = response[method]();
+  try {
+    return await reading;
+  } catch (error) {
+    if (error.name === 'AbortError' || error.name === 'TypeError') {
+      throw requestError('network', 'Device response was interrupted.', error);
+    }
+    throw error;
+  }
+}
+
 async function fetchWithTimeout(path, opts, consume, timeoutMs) {
   const ctrl = new AbortController();
   const callerSignal = opts && opts.signal;
-  const abortForCaller = () => ctrl.abort();
+  let abortError = null;
+  const abort = (kind, message) => {
+    if (ctrl.signal.aborted) return;
+    abortError = requestError(kind, message);
+    ctrl.abort();
+  };
+  const abortForCaller = () => abort('cancelled', 'Request cancelled.');
   if (callerSignal) {
-    if (callerSignal.aborted) ctrl.abort();
+    if (callerSignal.aborted) abortForCaller();
     else callerSignal.addEventListener('abort', abortForCaller, { once: true });
   }
-  const timer = setTimeout(() => ctrl.abort(),
+  const timer = setTimeout(() => abort('timeout', 'Device did not respond.'),
                            timeoutMs != null ? timeoutMs : SHOTS_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(path, { ...(opts || {}), signal: ctrl.signal });
-    return await consume(response);
+    let response;
+    try {
+      response = await fetch(path, { ...(opts || {}), signal: ctrl.signal });
+    } catch (error) {
+      throw abortError || requestError('network', 'Could not reach the device.', error);
+    }
+    try {
+      return await consume(response);
+    } catch (error) {
+      if (abortError && error.kind === 'network') throw abortError;
+      throw error;
+    }
   } finally {
     clearTimeout(timer);
     if (callerSignal) {
@@ -48,7 +83,7 @@ async function fetchBinary(path) {
     if (r.status === 404) return { status: 'missing' };
     if (r.status === 422) return { status: 'invalid' };
     if (!r.ok) throw new Error(path + ' ' + r.status);
-    const bytes = await r.arrayBuffer();
+    const bytes = await readResponseBody(r, 'arrayBuffer');
     try {
       return { status: 'ok', shot: parseExtraction(bytes) };
     } catch (err) {
@@ -74,7 +109,7 @@ async function fetchShotsPage(before, signal, timeoutMs) {
     url, { cache: 'no-store', headers, signal }, async r => {
       if (r.status === 304) return { status: 304 };
       if (!r.ok) throw new Error('shots ' + r.status);
-      const j = await r.json();
+      const j = await readResponseBody(r, 'json');
       return {
         status: 200,
         url,

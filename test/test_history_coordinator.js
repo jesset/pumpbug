@@ -587,12 +587,13 @@ async function testCancelledConflictRead() {
   await flush();
   const conflictRead = h.take(h.reads);
   h.store.sessionStarted();
-  conflictRead.reject(new Error('aborted'));
+  conflictRead.reject(h.context.requestError('network', 'fetch is aborted'));
   await pending;
   assert(!editor.saving);
   assert.equal(editor.conflict, null);
   assert.equal(editor.original.notes, 'My draft');
-  assert.match(editor.error, /current version could not be loaded/);
+  assert.equal(editor.error, "Shot details changed. Couldn't load the saved version. " +
+    'Wake the device or check the connection, then try again.');
 }
 
 async function testConflictIdentity() {
@@ -625,6 +626,165 @@ async function testConflictIdentity() {
   }
 }
 
+async function testWriteConnectionFailures() {
+  for (const action of ['save', 'clear details']) {
+    for (const kind of ['timeout', 'network']) {
+      const h = harness({ deferredWrites: true });
+      await h.load([row(1)]);
+      const editor = { kind: 'shot', id: 1, record: { etag: 'original' },
+        original: { notes: 'Keep this draft', prep: { doseG: 18 }, tdsPct: 8.6 },
+        yieldCg: 3900, tags: [], rating: 4, conflict: null };
+      h.context.api.setEditor(editor);
+      const write = () => action === 'save'
+        ? h.context.writeShotMetadata(editor, editor.original)
+        : h.context.clearShotMetadata(editor);
+      const pending = write();
+      const error = h.context.requestError(kind, 'fetch is aborted');
+      h.take(h.writes).reject(error);
+      await pending;
+      assert.equal(editor.error, "Couldn't " + action +
+        '. Wake the device or check the connection, then try again.');
+      assert.equal(h.context.api.editor(), editor);
+      assert(!editor.saving);
+      assert.equal(editor.original.notes, 'Keep this draft');
+      assert.equal(editor.original.prep.doseG, 18);
+      assert.equal(editor.original.tdsPct, 8.6);
+      assert.equal(editor.yieldCg, 3900);
+      assert.equal(h.writes.length, 0, 'a failed write retried automatically');
+      const retry = write();
+      const request = h.take(h.writes);
+      assert.equal(request.options.headers['If-Match'], 'original');
+      const responseBody = action === 'save' ? editor.original : {};
+      const retryResponse = response(responseBody, 200, {
+        ETag: 'retried', 'X-Shot-Metadata-State': action === 'save' ? 'active' : 'cleared',
+      });
+      request.resolve(retryResponse);
+      await retry;
+      assert.equal(h.context.api.editor(), null);
+      assert.equal(h.store.rows[0].userMetadataEtag, 'retried');
+    }
+  }
+}
+
+async function testFailedClearPreservesUnsavedFields() {
+  for (const outcome of ['network', 'conflict']) {
+    const h = harness({ deferredWrites: true });
+    const editor = { kind: 'shot', id: 1, record: { etag: 'original' },
+      original: { notes: 'Saved notes', prep: { doseG: 18 }, future: { kept: true } },
+      tags: ['saved-tag'], rating: 4, conflict: null };
+    h.context.api.setEditor(editor);
+    h.context.confirm = () => true;
+    const form = { elements: {
+      tdsPct: { value: '8.6' }, tags: { value: 'draft-tag' },
+      notes: { value: 'Unsaved notes' },
+      'prep.doseG': { value: '20' }, 'prep.tempC': { value: '94' },
+      'prep.grind': { value: '1.8' }, 'prep.pressure': { value: '6 bar' },
+    } };
+    const pending = h.context.clearSavedMetadata(form);
+    const request = h.take(h.writes);
+    if (outcome === 'network') {
+      request.reject(h.context.requestError('network', 'offline'));
+    } else {
+      request.resolve(response(null, 412));
+      await flush();
+      h.replyMetadata(h.take(h.reads), 3, 'current');
+    }
+    await pending;
+    if (outcome === 'conflict') {
+      assert.equal(editor.conflict.action, 'clear');
+      h.context.returnToMetadataDraft();
+      assert.equal(editor.conflict, null);
+    }
+    assert.equal(editor.original.notes, 'Unsaved notes');
+    assert.equal(editor.original.tdsPct, 8.6);
+    assert.equal(editor.original.rating, 4);
+    assert.equal(editor.original.prep.doseG, 20);
+    assert.equal(editor.original.prep.tempC, 94);
+    assert.equal(editor.original.prep.grind, '1.8');
+    assert.equal(editor.original.prep.pressure, '6 bar');
+    assert.equal(editor.original.tags.join(','), 'saved-tag,draft-tag');
+    assert.equal(editor.original.future.kept, true);
+    assert.equal(editor.record.etag, 'original');
+    assert(!editor.saving);
+  }
+}
+
+async function testApplicationWriteFailuresStayIdentifiable() {
+  for (const clear of [false, true]) {
+    const h = harness();
+    await h.load([row(1)]);
+    const editor = { kind: 'shot', id: 1, record: { etag: 'original' },
+      original: { notes: 'Draft' }, conflict: null };
+    h.context.api.setEditor(editor);
+    h.context.publishSavedMetadata = () => {
+      throw new TypeError('Publication bug after HTTP 200');
+    };
+    if (clear) await h.context.clearShotMetadata(editor);
+    else await h.context.writeShotMetadata(editor, editor.original);
+    assert.equal(editor.error, 'Publication bug after HTTP 200');
+    assert(!editor.saving);
+  }
+}
+
+async function testRequestFailureClassification() {
+  const h = harness();
+  let timeout;
+  let cleared = 0;
+  h.context.setTimeout = callback => { timeout = callback; return 1; };
+  h.context.clearTimeout = () => { ++cleared; };
+  const fetch = consume => h.context.api.fetchWithTimeout('/test', {}, consume);
+  h.context.fetch = async () => { throw new TypeError('native fetch failed'); };
+  await assert.rejects(fetch(() => {}), error =>
+    error.kind === 'network' && error.cause.message === 'native fetch failed');
+
+  h.context.fetch = (_path, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => {
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+    });
+  });
+  const pending = fetch(() => {});
+  timeout();
+  await assert.rejects(pending, error => error.kind === 'timeout');
+  const caller = new AbortController();
+  const cancelled = h.context.api.fetchWithTimeout('/test', { signal: caller.signal }, () => {});
+  caller.abort();
+  await assert.rejects(cancelled, error => error.kind === 'cancelled');
+
+  h.context.fetch = async (_path, options) => ({
+    json: () => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        const error = new Error('body aborted');
+        error.name = 'AbortError';
+        reject(error);
+      });
+    }),
+  });
+  const bodyTimeout = fetch(r => h.context.readResponseBody(r, 'json'));
+  await flush();
+  timeout();
+  await assert.rejects(bodyTimeout, error => error.kind === 'timeout');
+
+  h.context.fetch = async () => response({}, 200);
+  await assert.rejects(fetch(() => { throw new TypeError('callback bug'); }),
+    error => error.message === 'callback bug' && !error.kind);
+  h.context.fetch = async () => ({
+    json: async () => { throw new TypeError('body interrupted'); },
+  });
+  await assert.rejects(fetch(r => h.context.readResponseBody(r, 'json')),
+    error => error.kind === 'network' && error.cause.message === 'body interrupted');
+  h.context.fetch = async () => ({
+    json: async () => { throw new SyntaxError('invalid JSON'); },
+  });
+  await assert.rejects(fetch(r => h.context.readResponseBody(r, 'json')),
+    error => error.message === 'invalid JSON' && !error.kind);
+  h.context.fetch = async () => ({ bodyUsed: true });
+  await assert.rejects(fetch(r => h.context.readResponseBody(r, 'json')),
+    error => error.message === 'Response body is already in use.' && !error.kind);
+  assert.equal(cleared, 8);
+}
+
 async function testRejectedWrites() {
   for (const clearing of [false, true]) {
     for (const status of [400, 404, 409, 413, 422, 500]) {
@@ -640,7 +800,7 @@ async function testRejectedWrites() {
       await pending;
       assert.equal(h.context.api.editor(), editor);
       assert(!editor.saving);
-      assert.match(editor.error, clearing ? /clear failed/ : /save failed/);
+      assert.match(editor.error, clearing ? /Couldn't clear details/ : /Couldn't save/);
       assert.match(editor.error, new RegExp('HTTP ' + status));
       assert(!editor.error.includes('Could not confirm'));
       assert.equal(editor.original.notes, 'Keep this');
@@ -1315,7 +1475,9 @@ async function testLastShotRefreshPreservesOpenDetail() {
     testDemandAndEventContracts, testRecipeDemandLifecycle,
     testIndividualMetadataFreshness, testConflictFreshnessAndAcceptance,
     testDraftAndUncertainWrite, testCancelledConflictRead, testConflictIdentity,
-    testRejectedWrites, testRecipeFailureOutcomes,
+    testRejectedWrites, testWriteConnectionFailures,
+    testFailedClearPreservesUnsavedFields, testApplicationWriteFailuresStayIdentifiable,
+    testRequestFailureClassification, testRecipeFailureOutcomes,
     testFailedWritesDoNotInvalidateReads, testStreamDefersNewBackgroundReads,
     testRepeatedWritesDuringRefresh, testCancellationDuringMetadataRevalidation,
     testMetadataRevalidationFailure, testMetadataReadDoesNotRestartPage,
