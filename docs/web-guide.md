@@ -181,9 +181,9 @@ Choose `History` on the dashboard to list saved shots, newest first. Each row
 normally shows its date and time, shot ID, duration, final yield, and pump-on
 time. Recipe coffee, preparation, rating, TDS, tags, and notes appear beneath
 that summary. When TDS, dose, and measured beverage weight are available, the
-summary also shows extraction yield as a percentage. If for some reason the
-record's data cannot be read, it's listed as `Record unavailable`, and opening
-it shows a message about the issue.
+summary also shows extraction yield (`EY`) as a percentage. If for some reason
+the record's data cannot be read, it's listed as `Record unavailable`, and
+opening it shows a message about the issue.
 
 Use `Edit details` on a row to change its saved details without opening the
 full shot view.

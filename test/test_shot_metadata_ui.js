@@ -292,10 +292,10 @@ const extractionSummary = context.el('div');
 context.api.appendShotSummary(extractionSummary,
   summary(extractionMetadata, { yieldCg: 3900 }));
 check(descendants(extractionSummary).some(node =>
-  node.children.includes('8.6% TDS · Extraction yield: 18.6%')),
+  node.children.includes('8.6% TDS · EY 18.6%')),
   'shot summary did not show extraction calculated from measured yield');
 check(context.api.shotSummaryLines(summary({ tdsPct: 0, prep: { doseG: 18 } },
-  { yieldCg: 3900 })).includes('0% TDS · Extraction yield: 0.0%'),
+  { yieldCg: 3900 })).includes('0% TDS · EY 0.0%'),
   'zero TDS was treated as missing');
 for (const [name, value, measurements] of [
   ['missing yield', extractionMetadata, {}],
@@ -308,7 +308,7 @@ for (const [name, value, measurements] of [
   ['TDS over 100', { tdsPct: 101, prep: { doseG: 18 } }, { yieldCg: 3900 }],
 ]) {
   check(!context.api.shotSummaryLines(summary(value, measurements))
-    .join(' ').includes('Extraction yield'),
+    .join(' ').includes('EY'),
     'shot summary calculated extraction for ' + name);
 }
 for (const coffee of [undefined, { name: 'Coffee', roastDate: '2026-08-12' }]) {
@@ -316,7 +316,7 @@ for (const coffee of [undefined, { name: 'Coffee', roastDate: '2026-08-12' }]) {
     coffee, prep: { doseG: 18 }, tdsPct: 8.6,
   }, { yieldCg: 3900 }), { showCoffeeName: false });
   check(lines.includes('18 g') &&
-    lines.includes('8.6% TDS · Extraction yield: 18.6%') &&
+    lines.includes('8.6% TDS · EY 18.6%') &&
     !lines.includes('Coffee') &&
     (!coffee || lines.includes('Roasted 2026-08-12')),
     'hiding the coffee name removed preparation, results, or the shot roast date');
@@ -328,19 +328,19 @@ for (const [tdsPct, expected] of [
   const lines = context.api.shotSummaryLines(summary({
     tdsPct, prep: { doseG: 18 },
   }, { yieldCg: 3900 }));
-  check(lines.includes(tdsPct + '% TDS · Extraction yield: ' + expected),
+  check(lines.includes(tdsPct + '% TDS · EY ' + expected),
     'extraction feedback was incorrect for TDS ' + tdsPct);
 }
 check(context.api.shotSummaryLines(summary({
   tdsPct: 50, prep: { doseG: 18 },
-}, { yieldCg: 3600 })).includes('50% TDS · Extraction yield: 100.0%'),
+}, { yieldCg: 3600 })).includes('50% TDS · EY 100.0%'),
   'extraction feedback incorrectly flagged the 100% boundary');
 const summaryRecord = { id: 7, state: 'active', value: extractionMetadata, etag: 'shot-7' };
 context.lastRecord = { shotId: 7, yieldCg: 9000 };
 const detailSummary = context.el('div');
 context.api.appendShotMetadataDetails(detailSummary,
   context.api.shotSummaryFromRecord(7, { yieldCg: 3900 }, summaryRecord));
-check(JSON.stringify(detailSummary).includes('Extraction yield: 18.6%') &&
+check(JSON.stringify(detailSummary).includes('Extraction yield 18.6%') &&
   !JSON.stringify(detailSummary).includes('43.0%'),
   'detail summary used another displayed shot with the same ID');
 const damagedSummary = context.el('div');
@@ -2261,7 +2261,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   context.fmtSec = ms => String(ms / 1000);
   const historySummaryView = context.el('main');
   context.api.renderList(historySummaryView);
-  check(JSON.stringify(historySummaryView).includes('Extraction yield: 18.6%'),
+  check(JSON.stringify(historySummaryView).includes('EY 18.6%'),
     'History caller discarded measurements before rendering the summary');
 
   const views = {
@@ -2288,11 +2288,12 @@ check(Object.keys(blankEditor.original).length === 0 &&
   vm.runInContext('lastShotMetadata = record;', views);
   const selectedView = views.el('main');
   views.renderDetail(selectedView);
-  check(JSON.stringify(selectedView).includes('Extraction yield: 18.6%'),
+  check(JSON.stringify(selectedView).includes('Extraction yield 18.6%'),
     'History detail caller did not use its displayed measurements');
   const liveView = views.el('main');
   views.renderLastShot(liveView);
-  check(JSON.stringify(liveView).includes('Extraction yield: 43.0%'),
+  check(JSON.stringify(liveView).includes('EY 43.0%') &&
+        !JSON.stringify(liveView).includes('Extraction yield'),
     'Last Shot caller did not use its displayed measurements');
   views.selectedShotError = 'invalid';
   const invalidView = views.el('main');
@@ -2318,12 +2319,12 @@ check(Object.keys(blankEditor.original).length === 0 &&
   const extractionForm = views.el('form');
   extractionForm.elements = { tdsPct: element('8.6'), 'prep.doseG': element('18') };
   const ey = views.editorExtractionYield(extractionForm, detailEditor);
-  check(ey.textContent === 'Extraction yield: 18.6%',
+  check(ey.textContent === 'Extraction yield 18.6%',
     'editor extraction did not use its measurement snapshot');
   extractionForm.elements.tdsPct.value = '86';
   extractionForm.listeners.input();
   check(ey.textContent ===
-    'Extraction yield: 186.3% — check TDS, dose, and beverage weight.' &&
+    'Extraction yield 186.3% — check TDS, dose, and beverage weight.' &&
     extractionForm.elements.tdsPct.value === '86',
     'editor failed to flag impossible extraction or changed the entered TDS');
   extractionForm.elements.tdsPct.value = '';
@@ -2331,13 +2332,13 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(ey.textContent === '', 'blank editor TDS produced an extraction percentage');
   extractionForm.elements.tdsPct.value = '0';
   extractionForm.listeners.input();
-  check(ey.textContent === 'Extraction yield: 0.0%', 'zero editor TDS was hidden');
+  check(ey.textContent === 'Extraction yield 0.0%', 'zero editor TDS was hidden');
   extractionForm.elements.tdsPct.value = '9';
   extractionForm.elements['prep.doseG'].value = '20';
   views.lastRecord = { shotId: 7, yieldCg: 10000 };
   views.selectedShot = { yieldCg: 10000 };
   extractionForm.listeners.input();
-  check(ey.textContent === 'Extraction yield: 17.6%' &&
+  check(ey.textContent === 'Extraction yield 17.6%' &&
     extractionForm.elements.tdsPct.value === '9' && extractionForm.elements['prep.doseG'].value === '20',
     'changing displayed records replaced editor measurements or draft inputs');
   views.closeMetadataEditor();

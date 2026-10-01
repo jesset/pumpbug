@@ -392,14 +392,17 @@ function extractionYieldPct(tdsPct, doseG, yieldCg) {
   return Number.isFinite(result) ? result : null;
 }
 
-function extractionYieldText(value) {
+function extractionYieldText(value, shortLabel = false) {
   if (value === null) return '';
-  const text = 'Extraction yield: ' + value.toFixed(1) + '%';
+  const label = shortLabel ? 'EY' : 'Extraction yield';
+  const text = label + ' ' + value.toFixed(1) + '%';
   return value > 100
     ? text + ' — check TDS, dose, and beverage weight.' : text;
 }
 
-function shotSummaryEntries(summary, { showCoffeeName = true } = {}) {
+function shotSummaryEntries(summary, {
+  showCoffeeName = true, shortExtractionLabel = true,
+} = {}) {
   const value = metadataValue(metadataRecordFromRow(summary));
   const entries = [];
   const coffee = value.coffee && typeof value.coffee === 'object'
@@ -422,7 +425,7 @@ function shotSummaryEntries(summary, { showCoffeeName = true } = {}) {
   if (Number.isFinite(value.tdsPct)) result.push(value.tdsPct + '% TDS');
   const extraction = extractionYieldPct(value.tdsPct, prep.doseG, summary.yieldCg);
   if (extraction !== null) {
-    result.push(extractionYieldText(extraction));
+    result.push(extractionYieldText(extraction, shortExtractionLabel));
   }
   if (Array.isArray(value.tags)) {
     const tags = value.tags.filter(v => typeof v === 'string');
@@ -606,6 +609,7 @@ function downloadShotDetailsJson(id, record, { draft = false } = {}) {
 }
 
 function appendShotMetadataDetails(parent, summary, options = {}) {
+  const { shortExtractionLabel = false } = options;
   const { id } = summary;
   const record = metadataRecordFromRow(summary);
   const section = el('section', { class: 'shot-metadata' },
@@ -627,7 +631,7 @@ function appendShotMetadataDetails(parent, summary, options = {}) {
   } else if (record.loading) {
     section.append(el('p', { class: 'empty compact' }, 'Loading shot details…'));
   } else {
-    appendShotSummary(section, summary);
+    appendShotSummary(section, summary, { shortExtractionLabel });
     if (record.state !== 'unsupported' && record.etag) {
       actions.append(el('button', {
         class: 'secondary', 'data-overlay-return-key': 'shot-details-' + id,

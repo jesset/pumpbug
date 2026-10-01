@@ -257,6 +257,7 @@ function renderLastShot(app) {
     title: 'Last shot · ' + (fmtDate(lastRecord.startUtcSec) || 'time unknown'),
     fresh,
     openInHistory: true,
+    shortExtractionLabel: true,
   });
 }
 
