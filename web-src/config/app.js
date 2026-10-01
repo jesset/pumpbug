@@ -83,8 +83,9 @@ function renderUnauth() {
   return el('section', {},
     el('h2', {}, 'Pair'),
     el('p', { class: 'muted' },
-      'On the device, open Wi-Fi and tap A (VISIT). Enter the 4-digit PIN ' +
-      'shown, or scan the QR code.'),
+      'On the device, open Wi-Fi and tap A (VISIT). If A shows RETRY, ' +
+      'hold A for SETTINGS, choose Network, and follow setup to the pairing ' +
+      'step. Use TEXT to find the 4-digit PIN, or scan the pairing QR code.'),
     el('form', { onsubmit: onSubmit },
       el('input', {
         class: 'pin',

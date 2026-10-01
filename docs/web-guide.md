@@ -26,9 +26,19 @@ This guide applies to Pump Bug firmware 0.2.x.
 5. After Pump Bug connects, reconnect the phone or computer to that same normal
    network.
 
-If Pump Bug cannot join the selected network, it returns to its temporary setup
-network and displays the failure reason. Repeat the setup and check the network
-name and password.
+If an attempt to join your network fails, Pump Bug switches to its temporary
+setup network and displays the failure reason. Check that your normal Wi-Fi
+network is available, then tap A for `RETRY` to reconnect using the saved
+credentials. Do this on the failed setup screen or from the `Wi-Fi` option in
+the main menu.
+
+If retry still fails, check the failure reason. If the network name or password
+has changed or was entered incorrectly, repeat setup with the correct details.
+Hold A for `SETUP` on the failed setup screen, or hold A for `SETTINGS` on the
+`WI-FI` status screen and choose `Network`.
+
+When an established connection drops temporarily, Pump Bug keeps trying to
+reconnect automatically.
 
 ## Pair a browser
 

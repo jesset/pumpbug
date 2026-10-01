@@ -124,8 +124,10 @@ ScreenResult WifiSetupWizard::onEvent(button::Gesture event) {
       break;
     case Step::Failed:
       if (event == button::Gesture::A_SHORT) {
-        // The failed STA attempt already fell back to AP, so retry re-enters
-        // at the join step with the same AP credentials.
+        wifiManager.requestRetrySta(/*persist=*/false);
+        return stay();
+      }
+      if (event == button::Gesture::A_LONG) {
         _setStep(Step::JoinQr);
         return stay();
       }
@@ -302,9 +304,8 @@ void WifiSetupWizard::_drawSuccess(LGFX_Sprite* c) {
 
 void WifiSetupWizard::_drawFailed(LGFX_Sprite* c) {
   const StepInfo info = _stepInfo();
-  const char* reason = wifiManager.lastDisconnectReason();
   ui::drawGuideCard(c, info.title, info.titleColor, nullptr,
-                    (reason && *reason) ? reason : "no response from network");
+                    wifi_ui::connectionFailureText());
 }
 
 bool WifiSetupWizard::onDraw(LGFX_Sprite* c) {
@@ -352,7 +353,8 @@ ButtonHints WifiSetupWizard::buttonHints() const {
     case Step::Success:
       return {{Hint{HintGlyph::Ok, "DONE"}}, {}};
     case Step::Failed:
-      return {{Hint{HintGlyph::None, "RETRY"}}, {Hint{HintGlyph::Back}}};
+      return {{Hint{HintGlyph::None, "RETRY"}, Hint{HintGlyph::None, "SETUP"}},
+              {Hint{HintGlyph::Back}}};
   }
   return {};
 }

@@ -17,7 +17,8 @@
 // Steady-state Wi-Fi screen with connection info.
 // A VISIT affordance displays a QR with an associated pairing window, so it
 // opens the dashboard for paired clients or pairs new ones. A URL and PIN
-// provide the no-camera fallback.
+// provide the no-camera fallback. After a connection failure, a RETRY
+// affordance attempts to reconnect using the saved network.
 //
 // A SETTINGS affordance opens the configuration actions: change network
 // (WifiSetupWizard), unpair clients, and turn Wi-Fi on or off. Unconfigured
@@ -37,7 +38,8 @@ class WifiStatusScreen : public Screen {
     Idle,
     StaConnecting,
     StaConnected,
-    ApUp,   // covers post-fallback AP too; banner reflects which
+    ApFallback,
+    ApUp,
     Visit,  // the visit/pair QR, shown while a pairing window is open
   };
   // Modal layers over the current view.
@@ -55,7 +57,7 @@ class WifiStatusScreen : public Screen {
   ScreenResult _configConfirmed();
 
   void _drawIdle(LGFX_Sprite* c);
-  void _drawApUp(LGFX_Sprite* c);
+  void _drawApUp(LGFX_Sprite* c, bool fallback);
   void _drawStaConnecting(LGFX_Sprite* c);
   void _drawStaConnected(LGFX_Sprite* c);
   void _drawVisit(LGFX_Sprite* c);

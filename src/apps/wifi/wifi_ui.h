@@ -69,4 +69,9 @@ inline void drawPairDetails(LGFX_Sprite* c, int headerH, const char* host,
                      kLabelSizeRef);
 }
 
+inline const char* connectionFailureText() {
+  const char* reason = wifiManager.lastDisconnectReason();
+  return (reason && *reason) ? reason : "no response";
+}
+
 }  // namespace wifi_ui

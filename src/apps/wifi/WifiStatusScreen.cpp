@@ -51,7 +51,7 @@ WifiStatusScreen::View WifiStatusScreen::_computeView() const {
     case WifiManager::State::StaConnected:
       return View::StaConnected;
     case WifiManager::State::ApUp:
-      return View::ApUp;
+      return wifiManager.apIsFallback() ? View::ApFallback : View::ApUp;
   }
   return View::Idle;
 }
@@ -133,8 +133,7 @@ ScreenResult WifiStatusScreen::onEvent(button::Gesture event) {
     return ignored();
   }
 
-  const View v = _computeView();
-  switch (v) {
+  switch (_lastView) {
     case View::Idle:
       switch (event) {
         case button::Gesture::A_LONG:
@@ -149,6 +148,21 @@ ScreenResult WifiStatusScreen::onEvent(button::Gesture event) {
 
     case View::StaConnecting:
       if (event == button::Gesture::B_SHORT) return exit();
+      break;
+
+    case View::ApFallback:
+      switch (event) {
+        case button::Gesture::A_SHORT:
+          wifiManager.requestRetrySta(/*persist=*/false);
+          return stay();
+        case button::Gesture::A_LONG:
+          _openConfigMenu();
+          return stay();
+        case button::Gesture::B_SHORT:
+          return exit();
+        default:
+          break;
+      }
       break;
 
     case View::StaConnected:
@@ -231,6 +245,7 @@ ScreenResult WifiStatusScreen::tick() {
       break;
     }
     case View::StaConnected:
+    case View::ApFallback:
     case View::ApUp: {
       const size_t paired = auth.pairedCount();
       if (paired != _lastPairedCount) {
@@ -274,8 +289,9 @@ bool WifiStatusScreen::onDraw(LGFX_Sprite* c) {
     case View::StaConnected:
       _drawStaConnected(c);
       break;
+    case View::ApFallback:
     case View::ApUp:
-      _drawApUp(c);
+      _drawApUp(c, _lastView == View::ApFallback);
       break;
     case View::Visit:
       _drawVisit(c);
@@ -300,6 +316,10 @@ ButtonHints WifiStatusScreen::buttonHints() const {
       return {{{}, Hint{HintGlyph::None, "SETTINGS"}}, {Hint{HintGlyph::Back}}};
     case View::StaConnecting:
       return {{}, {Hint{HintGlyph::Back}}};
+    case View::ApFallback:
+      return {
+          {Hint{HintGlyph::None, "RETRY"}, Hint{HintGlyph::None, "SETTINGS"}},
+          {Hint{HintGlyph::Back}}};
     case View::StaConnected:
     case View::ApUp:
       return {
@@ -326,12 +346,9 @@ void WifiStatusScreen::_drawIdle(LGFX_Sprite* c) {
                               font::textFamily());
 }
 
-void WifiStatusScreen::_drawApUp(LGFX_Sprite* c) {
-  // After a terminal STA failure, the header glyph shows the slash and the
-  // LAST ERROR block below names the failure, so the user sees why the
-  // device fell back without opening the web UI.
-  const char* reason = wifiManager.lastDisconnectReason();
-  const bool fallback = wifiManager.apIsFallback();
+void WifiStatusScreen::_drawApUp(LGFX_Sprite* c, bool fallback) {
+  // A failed connection keeps its error visible alongside setup-network
+  // details, so the user can choose whether to retry or change the network.
   const int headerH =
       drawWifiHeader(c, fallback ? NetworkStatus::Failed : NetworkStatus::Ap);
 
@@ -341,8 +358,9 @@ void WifiStatusScreen::_drawApUp(LGFX_Sprite* c) {
 
   ui::InfoBlock blocks[5];
   int count = 0;
-  if (fallback && reason && *reason) {
-    blocks[count++] = {"ERROR", reason, theme::critical(), 22};
+  if (fallback) {
+    blocks[count++] = {"ERROR", wifi_ui::connectionFailureText(),
+                       theme::critical(), 22};
   }
   blocks[count++] = {"NET", wifiManager.deviceId(), theme::fg(), 30};
   blocks[count++] = {"PWD", wifiManager.apPassword(), theme::fg(), 30};
