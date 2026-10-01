@@ -26,6 +26,10 @@ This guide applies to Pump Bug firmware 0.2.x.
 5. After Pump Bug connects, reconnect the phone or computer to that same normal
    network.
 
+The setup wizard beeps as it advances to the next step and when the connection
+attempt succeeds or fails. Check the device for the next instruction when it
+beeps.
+
 If an attempt to join your network fails, Pump Bug switches to its temporary
 setup network and displays the failure reason. Check that your normal Wi-Fi
 network is available, then tap A for `RETRY` to reconnect using the saved

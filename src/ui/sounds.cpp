@@ -16,6 +16,7 @@ constexpr int kUiChannel = 6;
 constexpr int kTargetChannel = 7;
 constexpr int kBackflushChannel = 5;
 constexpr int kShotCompleteChannel = 4;
+constexpr int kWifiSetupChannel = 3;
 constexpr uint16_t kCountdownFrequencies[] = {2100, 2181, 2264, 2351, 2440};
 constexpr uint16_t kCountdownFreqEndHz = kCountdownFrequencies[4];
 constexpr uint16_t kShotCompleteFrequenciesHz[] = {1400, 1867};
@@ -49,6 +50,8 @@ void buttonPress() { playCue(kUiChannel, 64, 1200, 25); }
 void buttonHold() { playCue(kUiChannel, 128, 1500, 100); }
 
 void buttonDoublePress() { playCue(kUiChannel, 128, 1800, 100); }
+
+void wifiSetupStep() { playCue(kWifiSetupChannel, 200, 1800, 180); }
 
 uint16_t countdownBeepFreq(int bucket) {
   // bucket 1..5 maps to array index 0..4 (bucket 1 -> final pitch).

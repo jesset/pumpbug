@@ -10,6 +10,7 @@
 #include "net/PairRedirectPolicy.h"
 #include "net/WifiManager.h"
 #include "power/PowerManager.h"
+#include "ui/sounds.h"
 #include "ui/theme.h"
 #include "wifi_ui.h"
 
@@ -51,6 +52,12 @@ void WifiSetupWizard::_setStep(Step s) {
   if (s == Step::OpenQr) {
     _pairBaseline = auth.redeemCount();
     auth.startPairing();
+  }
+  // Prompt for the next instruction or a connection outcome. Connecting is
+  // silent because the user should wait.
+  if (s == Step::OpenQr || s == Step::InBrowser || s == Step::Success ||
+      s == Step::Failed) {
+    sounds::wifiSetupStep();
   }
   requestDraw();
 }

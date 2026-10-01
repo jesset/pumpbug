@@ -16,6 +16,9 @@ void buttonPress();
 void buttonHold();
 void buttonDoublePress();
 
+// Prompt the user to check the Wi-Fi setup wizard.
+void wifiSetupStep();
+
 uint16_t countdownBeepFreq(int bucket);
 
 // Audio cues for the target-weight countdown. Call prepareTargetAlert() before
