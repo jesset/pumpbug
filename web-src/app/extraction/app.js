@@ -209,7 +209,7 @@ function scheduleLiveRender() {
 
 historyStore.subscribe(() => {
   scheduleRender();
-  if (coffeePicker || coffeeComparisonOpen) renderMetadataOverlay();
+  refreshCoffeeHistoryOverlay();
 });
 
 connect();

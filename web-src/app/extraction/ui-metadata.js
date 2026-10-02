@@ -749,7 +749,7 @@ function appendOlderCoffeeHistorySearch(parent, options) {
       return loadMoreHistory(message => {
         if (coffeeHistoryFeedbackForDialog() !== feedback) return;
         feedback.message = message;
-        renderMetadataOverlay();
+        refreshCoffeeHistoryOverlay();
       });
     },
   }, label);
@@ -943,13 +943,13 @@ function updateCoffeeContextHistoryForState(currentState) {
 async function loadCoffeePickerHistory(picker) {
   if (coffeePicker !== picker || picker.loadingHistory) return;
   picker.loadingHistory = true;
-  renderMetadataOverlay();
+  refreshCoffeeHistoryOverlay();
   try {
     await historyStore.ensureLoaded();
   } finally {
     if (coffeePicker === picker) {
       picker.loadingHistory = false;
-      renderMetadataOverlay();
+      refreshCoffeeHistoryOverlay();
     }
   }
 }
@@ -1293,6 +1293,14 @@ function synchronizeMetadataOverlayState() {
   setMetadataBackgroundInert(expected && !!overlay.firstElementChild);
 }
 
+// History updates refresh coffee choices and comparisons without rebuilding
+// a details form that may contain unfinished native date input.
+function refreshCoffeeHistoryOverlay() {
+  if ((coffeePicker && coffeePicker.stage !== 'details') || coffeeComparisonOpen) {
+    renderMetadataOverlay();
+  }
+}
+
 function renderMetadataOverlay() {
   coffeeHistoryFeedbackForDialog();
   const overlay = document.getElementById('overlay');
@@ -1334,7 +1342,8 @@ function renderMetadataOverlay() {
     const input = form && form.elements[pickerFocus.name];
     if (input) {
       input.focus();
-      if (pickerFocus.start !== null && input.setSelectionRange) {
+      if (typeof pickerFocus.start === 'number' &&
+          typeof input.selectionStart === 'number' && input.setSelectionRange) {
         input.setSelectionRange(pickerFocus.start, pickerFocus.end);
       }
     }
@@ -2038,7 +2047,15 @@ function readCoffeeFields(form, original, { trim = false } = {}) {
   return value;
 }
 
+function roastDateInputType(value) {
+  // Date inputs discard text they cannot represent. Keep it editable as text.
+  const input = el('input', { type: 'date', value });
+  return input.type === 'date' && input.value === value ? 'date' : 'text';
+}
+
 function coffeeEditorFields(value, onChoose) {
+  const roastDate = fieldValue(value, 'coffee', 'roastDate');
+  const roastDateType = roastDateInputType(roastDate);
   const coffeeOk = editorSectionCompatible(value, 'coffee', COFFEE_EDITOR_FIELDS);
   const coffeeName = inputField('Coffee', { name: 'coffee.name',
     value: fieldValue(value, 'coffee', 'name'),
@@ -2053,9 +2070,9 @@ function coffeeEditorFields(value, onChoose) {
     inputField('Origin', { name: 'coffee.origin',
       value: fieldValue(value, 'coffee', 'origin'), list: 'coffee-origins',
       disabled: !editorFieldCompatible(value, 'coffee', 'origin') }),
-    inputField('Roast date', { name: 'coffee.roastDate',
-      value: fieldValue(value, 'coffee', 'roastDate'),
-      placeholder: 'YYYY-MM-DD',
+    inputField('Roast date', { name: 'coffee.roastDate', type: roastDateType,
+      value: roastDate,
+      ...(roastDateType === 'text' ? { placeholder: 'YYYY-MM-DD' } : {}),
       disabled: !editorFieldCompatible(value, 'coffee', 'roastDate') }),
     inputField('Roast', { name: 'coffee.roast',
       value: fieldValue(value, 'coffee', 'roast'), list: 'coffee-roasts',

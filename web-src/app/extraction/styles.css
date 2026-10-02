@@ -277,6 +277,11 @@ button:disabled { opacity: 0.5; cursor: default; }
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--surface); color: var(--fg); font: inherit;
 }
+.field > label > input { height: 2.5em; }
+.field input[type="date"] {
+  -webkit-appearance: none; appearance: none;
+  max-width: 100%; color-scheme: dark;
+}
 .field textarea { resize: vertical; }
 .field input:focus, .field textarea:focus {
   outline: 1px solid var(--accent); border-color: var(--accent);
@@ -413,7 +418,7 @@ form > .editor-error:focus {
   .shot-details-label-compact { display: inline; }
   .modal-backdrop { padding: 0; }
   .modal { min-height: 100%; border: 0; border-radius: 0; }
-  .field-grid { grid-template-columns: 1fr; }
+  .field-grid { grid-template-columns: minmax(0, 1fr); }
   .field.wide, .field-with-action.wide, .field-warning { grid-column: auto; }
   .editor-actions { flex-wrap: wrap; }
   .editor-actions .destructive-secondary { width: 100%; }

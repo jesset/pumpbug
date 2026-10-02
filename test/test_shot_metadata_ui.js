@@ -41,6 +41,9 @@ const context = {
     childNodes: children,
     dataset: {},
     get id() { return this.attrs.id; },
+    get type() { return this.attrs.type || 'text'; },
+    get value() { return String(this.attrs.value ?? ''); },
+    set value(value) { this.attrs.value = value; },
     append(...more) {
       this.children.push(...more);
       this.childNodes = this.children;
@@ -67,7 +70,7 @@ vm.runInContext(
   'globalThis.api = { maxBytes: SHOT_METADATA_MAX_BYTES, fetchWithTimeout,' +
     'metadataRecordFromRow, metadataValue, shotSummaryLines, appendShotSummary, shotSummaryFromRecord, appendShotMetadataDetails,' +
     'coffeeIdentity, recipeFromMetadata, nextShotCoffee,' +
-    'fieldValue, editorSectionCompatible, renderEditorCoffee, renderEditorPreparation, inputField,' +
+    'fieldValue, editorSectionCompatible, renderEditorCoffee, renderEditorPreparation, inputField, coffeeEditorFields,' +
     'readEditorValue, metadataNumericInputError, openMetadataEditor, editorExtractionYield,' +
     'snapshotNextShotRecipe, initializeRecentShotMetadata,' +
     'setLastShotMetadataId,' +
@@ -206,6 +209,79 @@ const grindInput = descendants(context.api.inputField('Grind', { name: 'prep.gri
 check(grindInput.attrs.type === 'text' && !grindInput.attrs.inputmode,
   'grind input restricts access to the text keyboard');
 
+for (const roastDate of [undefined, '', '2026-09-17', '2024-02-29']) {
+  const coffee = { name: 'Coffee', ...(roastDate == null ? {} : { roastDate }) };
+  const input = descendants(context.api.coffeeEditorFields({ coffee }, () => {}))
+    .find(node => node.attrs.name === 'coffee.roastDate');
+  check(input.attrs.type === 'date' && input.value === (roastDate || '') &&
+        !input.disabled && !input.attrs.placeholder,
+    'roast date did not use the native picker for ' + JSON.stringify(roastDate));
+  const edited = context.api.readCoffeeFields({ elements: {
+    'coffee.roastDate': { value: '2026-10-02', disabled: false },
+  } }, coffee);
+  check(edited.roastDate === '2026-10-02',
+    'date picker value was not retained as a date-only string');
+}
+
+const dateFieldEl = context.el;
+for (const roastDate of ['September 2026', '17/09/2026', '2026-09', '2026-02-30']) {
+  // Model the browser clearing a value that a date input cannot represent.
+  context.el = (tag, attrs, ...children) => {
+    const node = dateFieldEl(tag, attrs, ...children);
+    if (tag === 'input' && attrs.type === 'date' && attrs.value === roastDate) {
+      Object.defineProperty(node, 'value', { value: '' });
+    }
+    return node;
+  };
+  try {
+    const coffee = { name: 'Coffee', roastDate };
+    const input = descendants(context.api.coffeeEditorFields({ coffee }, () => {}))
+      .find(node => node.attrs.name === 'coffee.roastDate');
+    check(input.attrs.type === 'text' && input.value === roastDate && !input.disabled,
+      'unrepresentable roast date did not remain editable: ' + roastDate);
+    const edited = context.api.readCoffeeFields({ elements: {
+      'coffee.roastDate': input,
+    } }, coffee, { trim: true });
+    check(edited.roastDate === roastDate,
+      'saving coffee details lost the existing text roast date: ' + roastDate);
+  } finally {
+    context.el = dateFieldEl;
+  }
+}
+
+for (const roastDate of ['', '2026-09-17']) {
+  context.el = (tag, attrs, ...children) => {
+    const node = dateFieldEl(tag, attrs, ...children);
+    if (tag === 'input' && attrs.type === 'date') {
+      Object.defineProperty(node, 'type', { value: 'text' });
+    }
+    return node;
+  };
+  try {
+    const input = descendants(context.api.coffeeEditorFields({
+      coffee: { name: 'Coffee', roastDate },
+    }, () => {})).find(node => node.attrs.name === 'coffee.roastDate');
+    check(input.type === 'text' && input.attrs.placeholder === 'YYYY-MM-DD' &&
+          input.value === roastDate,
+      'unsupported date input lost its format hint or value: ' + roastDate);
+  } finally {
+    context.el = dateFieldEl;
+  }
+}
+
+const incompatibleDate = descendants(context.api.coffeeEditorFields({
+  coffee: { name: 'Coffee', roastDate: 42 },
+}, () => {})).find(node => node.attrs.name === 'coffee.roastDate');
+const incompatibleCoffee = context.api.readCoffeeFields({ elements: {
+  'coffee.roastDate': incompatibleDate,
+} }, { name: 'Coffee', roastDate: 42 });
+check(incompatibleDate.disabled && incompatibleCoffee.roastDate === 42,
+  'date picker changed a roast date the editor cannot represent');
+const clearedDate = context.api.readCoffeeFields({ elements: {
+  'coffee.roastDate': { value: '', disabled: false },
+} }, { name: 'Coffee', roastDate: '2026-09-17' });
+check(!('roastDate' in clearedDate), 'clearing a roast date retained the old date');
+
 const prepSummary = descendants(context.api.renderEditorPreparation({ prep: {
   grinder: 'Lagom O1', grind: '1.6', doseG: 16, targetYieldG: 40,
   tempC: 93, pressure: '6 bar', water: 'Filtered',
@@ -277,6 +353,76 @@ for (const hadFocus of [false, true]) {
   context.document = oldDocument;
   context.renderCoffeePicker = oldPicker;
   context.renderMetadataEditor = oldEditor;
+}
+
+for (const [oldType, newType] of [['text', 'date'], ['date', 'date'], ['text', 'text']]) {
+  const oldDocument = context.document;
+  const oldPicker = context.renderCoffeePicker;
+  const savedPicker = context.api.coffeePickerState();
+  let focused = false;
+  let selection = null;
+  const input = {
+    selectionStart: newType === 'text' ? 0 : null,
+    focus() { focused = true; },
+    setSelectionRange(start, end) {
+      if (newType === 'date') throw new Error('date inputs cannot restore selection');
+      selection = [start, end];
+    },
+  };
+  const overlay = {
+    firstElementChild: {}, dataset: { modalKeyboard: 'true' },
+    contains: () => true, replaceChildren() {}, append() {},
+    querySelector: selector => selector === 'form.new-coffee'
+      ? { elements: { 'coffee.roastDate': input } } : null,
+  };
+  context.document = {
+    activeElement: {
+      name: 'coffee.roastDate',
+      form: { classList: { contains: () => true } },
+      selectionStart: oldType === 'text' ? 2 : null,
+      selectionEnd: oldType === 'text' ? 6 : null,
+    },
+    getElementById: () => overlay, querySelectorAll: () => [],
+  };
+  context.api.setCoffeePicker({ stage: 'details' });
+  context.renderCoffeePicker = () => ({});
+  try {
+    context.api.renderMetadataOverlay();
+    check(focused && (newType === 'text'
+        ? selection?.join(',') === '2,6' : selection === null),
+      'coffee focus restoration mishandled ' + oldType + ' to ' + newType);
+  } finally {
+    context.document = oldDocument;
+    context.renderCoffeePicker = oldPicker;
+    context.api.setCoffeePicker(savedPicker);
+  }
+}
+
+const historyApp = {
+  console, TextEncoder,
+  localStorage: { getItem: () => null },
+  connect() {},
+};
+vm.createContext(historyApp);
+vm.runInContext([
+  constantsPath, historyPath, sourcePath,
+  require('path').join(require('path').dirname(sourcePath), 'app.js'),
+].map(path => fs.readFileSync(path, 'utf8')).join('\n') + `
+  scheduleRender = () => {};
+  globalThis.overlayRenders = 0;
+  renderMetadataOverlay = () => { ++globalThis.overlayRenders; };
+`, historyApp);
+for (const [picker, comparison, expected] of [
+  [null, false, 0], [{ stage: 'select' }, false, 1],
+  [{ stage: 'details' }, false, 0], [null, true, 1],
+]) {
+  historyApp.picker = picker;
+  historyApp.comparison = comparison;
+  historyApp.overlayRenders = 0;
+  vm.runInContext(`coffeePicker = picker; coffeeComparisonOpen = comparison;
+    historyStore.sessionStarted();`, historyApp);
+  check(historyApp.overlayRenders === expected,
+    'history subscription remounted details or failed to refresh coffee choices/comparison');
 }
 
 const row = {
@@ -732,6 +878,19 @@ check(Object.keys(blankEditor.original).length === 0 &&
         interruptedPicker.includes('Coffee history was not loaded.') &&
         interruptedPicker.includes('Retry history'),
     'a superseded picker history request left the picker loading');
+  let backgroundPickerRenders = 0;
+  const renderBeforeHistoryCompletion = context.renderMetadataOverlay;
+  context.renderMetadataOverlay = () => { ++backgroundPickerRenders; };
+  const pendingPicker = context.api.openCoffeePicker();
+  context.api.chooseCoffee({ name: 'Coffee' });
+  const detailsRenderCount = backgroundPickerRenders;
+  finishPickerHistory({ status: 'ready' });
+  await pendingPicker;
+  check(context.api.coffeePickerState().stage === 'details' &&
+        !context.api.coffeePickerState().loadingHistory &&
+        backgroundPickerRenders === detailsRenderCount,
+    'completing an earlier picker load remounted the coffee details form');
+  context.renderMetadataOverlay = renderBeforeHistoryCompletion;
   context.api.historyStore.ensureLoaded = realEnsureLoaded;
   context.api.setCoffeePicker(null);
 
@@ -2430,8 +2589,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
     'damaged shot editor borrowed measurements from another view');
   check(detailMetadataReads === 3,
     'detail and Last Shot edit actions did not refresh metadata before opening');
-  if (checkCount !== 233) {
-    throw new Error(`expected 233 assertions, ran ${checkCount}`);
+  if (checkCount !== 261) {
+    throw new Error(`expected 261 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;
