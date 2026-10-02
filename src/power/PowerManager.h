@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "power/LowBatteryShutdownPolicy.h"
@@ -15,6 +16,8 @@ class BleScaleService;
 namespace power {
 
 // Applies the device-wide power policy from activity and resource requirements.
+// The main task owns policy state and hardware updates. Methods must run on
+// that task unless explicitly documented as safe from other tasks.
 class PowerManager {
  public:
   struct PerformanceStatus {
@@ -28,10 +31,18 @@ class PowerManager {
 
   PowerEventLog& eventLog() { return _eventLog; }
 
-  // Reports one activity event and permits one retry of a failed radio wake.
-  void notifyActivity();
-  // Extends the idle timers without permitting a radio-wake retry.
-  void keepAwake();
+  // User and app activity restore a dimmed display and postpone display dimming
+  // and automatic sleep.
+  //
+  // Reports interaction with the physical device and permits retries of failed
+  // Bluetooth-controller operations and CPU-frequency changes.
+  void notifyUserActivity();
+  // Reports application work that needs the device awake without permitting
+  // those retries.
+  void notifyAppActivity();
+  // Postpones automatic sleep without affecting the display or radio-wake
+  // retries. Safe from any task; update() applies the request on the main task.
+  void notifyWebActivity();
   // Reports whether the foreground workload needs full CPU and loop speed.
   void setForegroundFullPerformanceRequired(bool required);
   // Reports an application-level requirement independent of foreground work.
@@ -87,6 +98,7 @@ class PowerManager {
   BleScaleService& _scaleService;
   PowerEventLog _eventLog;
   PowerSavingPolicy _savingPolicy;
+  std::atomic<bool> _webActivityPending{false};
   LowBatteryShutdownPolicy _lowBatteryShutdown;
   ScaleRadioStateMachine _scaleRadio;
 

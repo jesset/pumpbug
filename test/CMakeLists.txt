@@ -112,6 +112,15 @@ target_include_directories(
 )
 
 add_host_test(
+  test_power_saving_policy
+  "${PROJECT_SOURCE_DIR}/src/power/PowerSavingPolicy.cpp"
+)
+# Keep src before stubs to use the actual policy and event-log declarations.
+target_include_directories(
+  test_power_saving_policy PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/stubs"
+)
+
+add_host_test(
   test_power_manager
   "${PROJECT_SOURCE_DIR}/src/power/LowBatteryShutdownPolicy.cpp"
   "${PROJECT_SOURCE_DIR}/src/power/PowerManager.cpp"

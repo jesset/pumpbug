@@ -14,6 +14,7 @@
 #include "net/JsonStream.h"
 #include "net/http_request_validation.h"
 #include "net/http_response_util.h"
+#include "power/PowerManager.h"
 #include "util/json_validate.h"
 
 namespace pump_scale {
@@ -43,6 +44,7 @@ void registerTargetRoutes(HttpServer& http, TargetStore& store) {
           body.finish();
         }},
        {"/target", HTTP_POST, [&store](WebServer& s) {
+          power::powerManager.notifyWebActivity();
           s.sendHeader("Cache-Control", "no-store");
           String body;
           if (!http::requireJsonRequestBody(s, kMaxTargetJsonBytes, body))

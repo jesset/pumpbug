@@ -25,7 +25,11 @@ class PowerSavingPolicy {
   }
   void disableAutoPowerOff() { _autoPowerOffTimeout = -1; }
 
-  void registerActivity();
+  // Postpones display dimming and automatic sleep; restores a dimmed display.
+  void resetIdleTimers();
+  // Postpones automatic sleep without changing display dimming or brightness.
+  void resetSleepTimer();
+
   void update();
 
   // Runs the product shutdown sequence in response to an explicit user
@@ -46,7 +50,8 @@ class PowerSavingPolicy {
   long _screenDimTimeout = 60 * 1000;
   long _autoPowerOffTimeout = 5 * 60 * 1000;
   bool _wakeOnMotion = true;
-  unsigned long _lastActivityMs;
+  unsigned long _lastDisplayActivityMs;
+  unsigned long _lastSleepActivityMs;
   unsigned short _lastBrightness = 0;
   bool _screenDimmed = false;
   void (*_preSleepCallback)() = nullptr;

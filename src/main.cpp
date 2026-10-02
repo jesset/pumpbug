@@ -165,7 +165,7 @@ void loop() {
 
   const bool orientationChanged = orientation.update();
   if (orientationChanged) {
-    power::powerManager.notifyActivity();
+    power::powerManager.notifyUserActivity();
     orientation.rotateDisplay();
   }
 

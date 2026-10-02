@@ -10,6 +10,8 @@ extern unsigned powerSavingShutdownRequests;
 extern unsigned powerSavingExplicitShutdownRequests;
 extern unsigned powerSavingConditionalShutdownRequests;
 extern bool powerSavingShutdownSucceeds;
+extern unsigned powerSavingSleepTimerResets;
+extern unsigned powerSavingSleepTimerResetsAtUpdate;
 
 namespace power {
 
@@ -39,12 +41,15 @@ class PowerSavingPolicy {
     return powerSavingShutdownSucceeds;
   }
 
-  void registerActivity() {
+  void resetIdleTimers() {
     _lastActivityMs = millis();
     _screenDimmed = false;
   }
 
+  void resetSleepTimer() { ++powerSavingSleepTimerResets; }
+
   void update() {
+    powerSavingSleepTimerResetsAtUpdate = powerSavingSleepTimerResets;
     if (_screenDimTimeoutMs >= 0 &&
         millis() - _lastActivityMs >
             static_cast<unsigned long>(_screenDimTimeoutMs)) {

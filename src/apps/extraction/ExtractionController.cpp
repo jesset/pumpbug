@@ -13,6 +13,7 @@
 #include "net/HttpServer.h"
 #include "net/JsonStream.h"
 #include "net/http_response_util.h"
+#include "power/PowerManager.h"
 #include "scale_snapshot_util.h"
 #include "util/scoped_lock.h"
 #include "util/storage.h"
@@ -308,6 +309,9 @@ void ExtractionController::registerWith(HttpServer& server) {
                     [this](WebServer& s) { _handleCurrent(s); }},
           HttpRoute{"/shots", HTTP_GET,
                     [this](WebServer& s) {
+                      if (s.hasArg("id")) {
+                        power::powerManager.notifyWebActivity();
+                      }
                       pump_scale::handleShotHistory(s, _shotStore);
                     }},
           HttpRoute{"/shot-metadata", HTTP_GET,
@@ -321,14 +325,19 @@ void ExtractionController::registerWith(HttpServer& server) {
                     }},
           HttpRoute{"/shot-metadata", HTTP_PUT,
                     [this](WebServer& s) {
+                      power::powerManager.notifyWebActivity();
                       pump_scale::handleShotMetadataPut(s, _shotStore);
                     }},
           HttpRoute{"/shot-metadata", HTTP_DELETE,
                     [this](WebServer& s) {
+                      power::powerManager.notifyWebActivity();
                       pump_scale::handleShotMetadataDelete(s, _shotStore);
                     }},
           HttpRoute{"/loaded", HTTP_POST,
-                    [this](WebServer& s) { _handleSetLoaded(s); }},
+                    [this](WebServer& s) {
+                      power::powerManager.notifyWebActivity();
+                      _handleSetLoaded(s);
+                    }},
       });
 }
 

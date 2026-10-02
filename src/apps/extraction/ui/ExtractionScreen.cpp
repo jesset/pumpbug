@@ -416,7 +416,7 @@ ScreenResult ExtractionScreen::tick() {
     // The trigger is a level. Short windows still produce records, and the
     // controller rejects records without enough pour evidence.
     const bool pumpStarted = _lastSensorData.pumpSignal.isOn() && !pumpWasOn;
-    if (pumpStarted) power::powerManager.notifyActivity();
+    if (pumpStarted) power::powerManager.notifyUserActivity();
   }
 
   // One coherent read of {state, weight, battery, epoch} for this tick;
@@ -493,7 +493,7 @@ ScreenResult ExtractionScreen::tick() {
   if (outcome.frameNeeded) requestDraw();
 
   if (outcome.active) {
-    power::powerManager.keepAwake();
+    power::powerManager.notifyAppActivity();
   }
   return stay();
 }
@@ -735,7 +735,7 @@ void ExtractionScreen::tickReplay() {
   // In particular, driveAlert() schedules countdown beeps from wall time, so
   // feeding it a frozen APPROACHING state would keep the cadence sounding.
   if (_replayer.paused()) {
-    power::powerManager.keepAwake();
+    power::powerManager.notifyAppActivity();
     return;
   }
 
@@ -763,7 +763,7 @@ void ExtractionScreen::tickReplay() {
 
   driveAlert(outcome.alertState, millis());
 
-  power::powerManager.keepAwake();
+  power::powerManager.notifyAppActivity();
   requestDraw();
 }
 

@@ -18,6 +18,7 @@
 #include "SseServer.h"
 #include "diagnostics/RuntimeEventLog.h"
 #include "http_response_util.h"
+#include "power/PowerManager.h"
 #include "product.h"
 
 WifiManager wifiManager;
@@ -510,19 +511,27 @@ void WifiManager::setOnReset(std::function<void()> cb) {
 
 void WifiManager::registerWith(HttpServer& server) {
   server.registerRoutes(
-      "/sys/wifi",
-      {
-          HttpRoute{"/status", HTTP_GET,
-                    [this](WebServer& s) { _handleStatus(s); }},
-          HttpRoute{"/sta", HTTP_POST,
-                    [this](WebServer& s) { _handleSetSta(s); }},
-          HttpRoute{"/scan", HTTP_GET,
-                    [this](WebServer& s) { _handleScan(s); }},
-          HttpRoute{"/forget", HTTP_POST,
-                    [this](WebServer& s) { _handleForget(s); }},
-          HttpRoute{"/hostname", HTTP_POST,
-                    [this](WebServer& s) { _handleSetHostname(s); }},
-      });
+      "/sys/wifi", {
+                       HttpRoute{"/status", HTTP_GET,
+                                 [this](WebServer& s) { _handleStatus(s); }},
+                       HttpRoute{"/sta", HTTP_POST,
+                                 [this](WebServer& s) {
+                                   power::powerManager.notifyWebActivity();
+                                   _handleSetSta(s);
+                                 }},
+                       HttpRoute{"/scan", HTTP_GET,
+                                 [this](WebServer& s) { _handleScan(s); }},
+                       HttpRoute{"/forget", HTTP_POST,
+                                 [this](WebServer& s) {
+                                   power::powerManager.notifyWebActivity();
+                                   _handleForget(s);
+                                 }},
+                       HttpRoute{"/hostname", HTTP_POST,
+                                 [this](WebServer& s) {
+                                   power::powerManager.notifyWebActivity();
+                                   _handleSetHostname(s);
+                                 }},
+                   });
 }
 
 void WifiManager::markConfigured() {

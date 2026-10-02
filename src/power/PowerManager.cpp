@@ -53,15 +53,19 @@ ServiceState serviceState(const BleScaleService::Snapshot& scale) {
 PowerManager::PowerManager(BleScaleService& scaleService)
     : _scaleService(scaleService), _savingPolicy(_eventLog) {}
 
-void PowerManager::notifyActivity() {
-  _savingPolicy.registerActivity();
+void PowerManager::notifyUserActivity() {
+  _savingPolicy.resetIdleTimers();
   _scaleRadio.notifyActivity();
   retryCpuPolicy();
 }
 
-void PowerManager::keepAwake() {
-  _savingPolicy.registerActivity();
+void PowerManager::notifyAppActivity() {
+  _savingPolicy.resetIdleTimers();
   applyCpuPolicy();
+}
+
+void PowerManager::notifyWebActivity() {
+  _webActivityPending.store(true, std::memory_order_relaxed);
 }
 
 void PowerManager::setForegroundFullPerformanceRequired(bool required) {
@@ -390,6 +394,9 @@ void PowerManager::update() {
   // An accepted shutdown command should not start more policy work while PM1
   // is removing power.
   if (updatePowerButton(nowMs)) return;
+  if (_webActivityPending.exchange(false, std::memory_order_relaxed)) {
+    _savingPolicy.resetSleepTimer();
+  }
   _savingPolicy.update();
   applyCpuPolicy();
   updateBatteryPolicies(nowMs);

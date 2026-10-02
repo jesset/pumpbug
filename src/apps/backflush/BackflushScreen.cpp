@@ -209,7 +209,7 @@ void BackflushScreen::startSession() {
   if (_sensorRunning) {
     _sensorSequence = _sensor.seq();
     _lastProgressMs = millis();
-    power::powerManager.keepAwake();
+    power::powerManager.notifyAppActivity();
   }
 }
 
@@ -310,7 +310,7 @@ ScreenResult BackflushScreen::tick() {
   const uint32_t nowMs = millis();
   if (!_sensorRunning) {
     if (hasResults() && nowMs - _resultsShownMs < kSummaryAwakeMs)
-      power::powerManager.keepAwake();
+      power::powerManager.notifyAppActivity();
     return stay();
   }
 
@@ -331,7 +331,7 @@ ScreenResult BackflushScreen::tick() {
     return stay();
   }
 
-  power::powerManager.keepAwake();
+  power::powerManager.notifyAppActivity();
 
   if (_hasSensorFrame) {
     if (_cycle.update(nowMs, _pumpDetected)) _lastProgressMs = nowMs;

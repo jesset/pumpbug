@@ -23,6 +23,7 @@
 #include "net/WifiManager.h"
 #include "net/http_response_util.h"
 #include "power/PowerEventLog.h"
+#include "power/PowerManager.h"
 #include "util/power.h"  // power::getBatteryStatus() for the live block
 
 namespace {
@@ -608,6 +609,7 @@ void registerDiagnosticsRoutes(HttpServer& server,
                                       }},
                             HttpRoute{"/clear", HTTP_POST,
                                       [&powerEventLog](WebServer& s) {
+                                        power::powerManager.notifyWebActivity();
                                         handleClear(s, powerEventLog);
                                       }},
                         });

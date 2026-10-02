@@ -27,7 +27,7 @@ class ButtonInput {
         // any action.
         _consumeAShort = true;
       }
-      power::powerManager.notifyActivity();
+      power::powerManager.notifyUserActivity();
     }
 
     button::Gesture gesture = physical.gesture;
@@ -42,7 +42,7 @@ class ButtonInput {
 
     gesture = _debugRemote.poll();
     if (gesture != button::Gesture::NONE) {
-      power::powerManager.notifyActivity();
+      power::powerManager.notifyUserActivity();
     }
     return {gesture, false};
   }

@@ -341,16 +341,17 @@ firmware recognizes, but appearing in a scan—or even connecting—does not
 imply reliable shot recording.
 
 Pump Bug searches for a scale automatically while `LIVE` is open and reconnects
-if the link drops. For a predictable connection, keep only the intended scale
-awake nearby and disconnect it from the Acaia app or any other device that is
-currently using its Bluetooth connection.
+if the link drops. Leaving `LIVE` disconnects the scale. For a predictable
+connection, keep only the intended scale awake nearby and disconnect it from the
+Acaia app or any other device that is currently using its Bluetooth connection.
 
 ## Power management and useful tricks
 
 - **Automatic sleep:** On battery, Pump Bug sleeps after about five minutes
   without activity. Moving or rotating it wakes it.
-- **Display dimming:** The display dims after about one minute. The first button
-  press may wake the display without performing its normal action.
+- **Display dimming:** The display dims after about one minute without activity
+  on the device. The first button press may wake the display without performing
+  its normal action.
 - **External power:** USB power prevents the idle sleep timer, which is useful
   for a permanently installed device. The display can still dim.
 - **Low battery:** A sustained low-battery condition causes an orderly shutdown
@@ -402,7 +403,7 @@ M5Burner. Download anything you want to keep before either operation.
 
 ![Live screen searching for a scale](images/user-guide/live-no-scale.png)
 
-- Return to `LIVE`; the scale radio is not active on other device screens.
+- Return to `LIVE`; scale connection is active only while that screen is open.
 - Make sure the scale is on, awake, charged, and close to Pump Bug.
 - Disconnect the scale from the Acaia app or another Bluetooth client.
 - Power-cycle the scale, then wait for Pump Bug to search again.

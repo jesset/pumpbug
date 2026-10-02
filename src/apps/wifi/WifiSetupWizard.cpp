@@ -149,7 +149,7 @@ ScreenResult WifiSetupWizard::onEvent(button::Gesture event) {
 ScreenResult WifiSetupWizard::tick() {
   // A QR on a dimmed panel can't be scanned; hold the screen awake for the
   // wizard's whole lifetime.
-  power::powerManager.keepAwake();
+  power::powerManager.notifyAppActivity();
 
   if (_awaitingAp) {
     if (wifiManager.state() != WifiManager::State::ApUp) return stay();

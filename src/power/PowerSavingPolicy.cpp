@@ -12,10 +12,13 @@
 namespace power {
 
 PowerSavingPolicy::PowerSavingPolicy(PowerEventLog& eventLog)
-    : _eventLog(eventLog), _lastActivityMs(millis()) {}
+    : _eventLog(eventLog),
+      _lastDisplayActivityMs(millis()),
+      _lastSleepActivityMs(_lastDisplayActivityMs) {}
 
-void PowerSavingPolicy::registerActivity() {
-  _lastActivityMs = millis();
+void PowerSavingPolicy::resetIdleTimers() {
+  _lastDisplayActivityMs = millis();
+  _lastSleepActivityMs = _lastDisplayActivityMs;
   if (_screenDimmed) {
     M5_LOGD("Display dimming OFF");
     M5.Display.setBrightness(_lastBrightness);
@@ -23,16 +26,18 @@ void PowerSavingPolicy::registerActivity() {
   }
 }
 
+void PowerSavingPolicy::resetSleepTimer() { _lastSleepActivityMs = millis(); }
+
 void PowerSavingPolicy::update() {
-  if (millis() - _lastActivityMs >
+  if (millis() - _lastSleepActivityMs >
       static_cast<unsigned long>(_autoPowerOffTimeout)) {
     if (!shutdownIfOnBattery()) {
-      M5_LOGD("On external power, extending last activity.");
-      _lastActivityMs = millis();
+      M5_LOGD("On external power, resetting the sleep timer.");
+      resetSleepTimer();
     }
     return;
   }
-  if (!_screenDimmed && millis() - _lastActivityMs >
+  if (!_screenDimmed && millis() - _lastDisplayActivityMs >
                             static_cast<unsigned long>(_screenDimTimeout)) {
     M5_LOGD("Display dimming ON");
     _lastBrightness = M5.Display.getBrightness();

@@ -245,14 +245,16 @@ Start with [`src/net/Auth.h`](src/net/Auth.h) and
 ### Managing power
 
 One power manager coordinates the display, processor, status light, Bluetooth,
-speaker amplifier, and shutdown behavior. After a period without activity, the
-display dims and the processor speed is reduced to save energy. On battery power
-the device eventually switches off; while connected to external power it
-remains on.
+speaker amplifier, and shutdown behavior. After a period without activity on
+the device, the display dims and the processor speed is reduced to save energy.
+On battery power the device eventually switches off; while connected to external
+power it remains on. Some browser actions postpone automatic sleep without
+affecting display dimming.
 
-Bluetooth remains available while the display is dimmed, so a scale can connect
-without first waking the device. Other hardware is controlled separately: the
-speaker amplifier is powered only when a sound needs it, the unused external
+Bluetooth stays on while the device is awake, including when the display is
+dimmed. Opening `LIVE` enables scale scanning and connection; leaving it stops
+scanning and disconnects the scale. Other hardware is controlled separately:
+the speaker amplifier is powered only when a sound needs it, the unused external
 5 V output stays off, and Wi-Fi follows its own configuration and connection
 state.
 

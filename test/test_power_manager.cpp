@@ -11,6 +11,8 @@
 #include "power/PowerManager.h"
 #include "util/power.h"
 
+unsigned powerSavingSleepTimerResets = 0;
+unsigned powerSavingSleepTimerResetsAtUpdate = 0;
 unsigned powerSavingShutdownRequests = 0;
 unsigned powerSavingExplicitShutdownRequests = 0;
 unsigned powerSavingConditionalShutdownRequests = 0;
@@ -58,6 +60,8 @@ void resetObservations() {
   acceptStatusLedChange = true;
   statusLedRequests = 0;
   powerSavingShutdownRequests = 0;
+  powerSavingSleepTimerResets = 0;
+  powerSavingSleepTimerResetsAtUpdate = 0;
   powerSavingExplicitShutdownRequests = 0;
   powerSavingConditionalShutdownRequests = 0;
   powerSavingShutdownSucceeds = true;
@@ -96,7 +100,7 @@ void testWakeOnStopCompletionUsesTheDemandDecisionLoop() {
   power::PowerManager manager(scale);
   waitForControllerStop(manager, scale);
 
-  manager.notifyActivity();
+  manager.notifyUserActivity();
   scale.controller = ble::ControllerState::Stopped;
   nowMs = 3;
   manager.update();  // the stop lands
@@ -111,6 +115,45 @@ void testWakeOnStopCompletionUsesTheDemandDecisionLoop() {
   assert(runtimeEventLog.netWrites == 0);
 }
 
+void testWebActivityLeavesDisplayAndRadioIdle() {
+  resetObservations();
+  BleScaleService scale;
+  power::PowerManager manager(scale);
+  waitForControllerStop(manager, scale);
+  scale.controller = ble::ControllerState::Stopped;
+  nowMs = 3;
+  manager.update();
+  assert(manager.isScreenDimmed());
+  assert(cpuMhz == 80);
+
+  manager.notifyWebActivity();
+  manager.notifyWebActivity();
+  assert(powerSavingSleepTimerResets == 0);
+  nowMs = 4;
+  manager.update();
+  assert(powerSavingSleepTimerResets == 1);
+  assert(manager.isScreenDimmed());
+  assert(cpuMhz == 80);
+  assert(scale.startRequests == 0);
+
+  nowMs = 5;
+  manager.update();
+  assert(powerSavingSleepTimerResets == 1);
+}
+
+void testPendingWebActivityPrecedesPolicyUpdate() {
+  resetObservations();
+  BleScaleService scale;
+  power::PowerManager manager(scale);
+
+  nowMs = 300001;
+  manager.notifyWebActivity();
+  manager.update();
+  assert(powerSavingSleepTimerResets == 1);
+  assert(powerSavingSleepTimerResetsAtUpdate == 1);
+  assert(manager.isScreenDimmed());
+}
+
 void testDiagnosticScanDemandRestartsAStoppedController() {
   resetObservations();
   BleScaleService scale;
@@ -121,7 +164,7 @@ void testDiagnosticScanDemandRestartsAStoppedController() {
   scale.disable();
   scale.diagnosticScanWanted = true;
   scale.controller = ble::ControllerState::Stopped;
-  manager.notifyActivity();
+  manager.notifyUserActivity();
   nowMs = 3;
   manager.update();  // the stop lands
   nowMs = 4;
@@ -141,7 +184,7 @@ void testUnstartedServiceIsOutsideStandbyPolicy() {
   scale.enable();
   power::PowerManager manager(scale);
 
-  manager.notifyActivity();
+  manager.notifyUserActivity();
   manager.update();
 
   assert(scale.startRequests == 0);
@@ -156,7 +199,7 @@ void testRejectedWakeReportsOnceAndWaitsForNewActivity() {
 
   scale.controller = ble::ControllerState::Stopped;
   scale.acceptStart = false;
-  manager.notifyActivity();
+  manager.notifyUserActivity();
   nowMs = 3;
   manager.update();  // the stop lands
   nowMs = 4;
@@ -187,7 +230,7 @@ void testLongestDecisionChainAppliesItsTerminalResume() {
 
   scale.controller = ble::ControllerState::Stopped;
   scale.acceptStop = false;
-  manager.notifyActivity();
+  manager.notifyUserActivity();
   nowMs = 3;
   manager.update();  // the stop lands
   nowMs = 4;
@@ -216,7 +259,7 @@ void testWakeTimingReportsTheScaleArrivalOnce() {
   power::PowerManager manager(scale);
   waitForControllerStop(manager, scale);
 
-  manager.notifyActivity();
+  manager.notifyUserActivity();
   scale.controller = ble::ControllerState::Stopped;
   nowMs = 3;
   manager.update();  // the stop lands
@@ -243,7 +286,7 @@ void testReleasingTheRadioEndsAnUnfinishedWake() {
   power::PowerManager manager(scale);
   waitForControllerStop(manager, scale);
 
-  manager.notifyActivity();
+  manager.notifyUserActivity();
   scale.controller = ble::ControllerState::Stopped;
   nowMs = 3;
   manager.update();  // the stop lands
@@ -431,7 +474,7 @@ void testAdaptivePerformanceSeparatesIdleAndForegroundWork() {
   manager.setForegroundFullPerformanceRequired(false);
   assert(cpuMhz == 80);
 
-  manager.notifyActivity();
+  manager.notifyUserActivity();
   assert(manager.loopDelayMs() == 10);
   assert(cpuMhz == 240);
   assert(cpuRequests == 5);
@@ -515,7 +558,7 @@ void testFailedCpuChangeWaitsForDiscreteActivityBeforeRetrying() {
 
   nowMs = 1;
   manager.update();
-  manager.keepAwake();
+  manager.notifyAppActivity();
   assert(cpuRequests == 1);
   assert(cpuErrorLogs == 1);
 
@@ -524,7 +567,7 @@ void testFailedCpuChangeWaitsForDiscreteActivityBeforeRetrying() {
   manager.update();
   assert(cpuRequests == 1);
 
-  manager.notifyActivity();
+  manager.notifyUserActivity();
   assert(cpuRequests == 2);
   assert(cpuErrorLogs == 1);
 
@@ -819,6 +862,8 @@ void testM5LogError(const char* format, ...) {
 
 int main() {
   testWakeOnStopCompletionUsesTheDemandDecisionLoop();
+  testWebActivityLeavesDisplayAndRadioIdle();
+  testPendingWebActivityPrecedesPolicyUpdate();
   testRejectedWakeReportsOnceAndWaitsForNewActivity();
   testDiagnosticScanDemandRestartsAStoppedController();
   testUnstartedServiceIsOutsideStandbyPolicy();

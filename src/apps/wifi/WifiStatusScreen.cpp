@@ -232,7 +232,7 @@ ScreenResult WifiStatusScreen::tick() {
     case View::Visit: {
       // Keep screen lit while the PIN/QR is visible — dimming mid-scan
       // would confuse the user mid-entry.
-      power::powerManager.keepAwake();
+      power::powerManager.notifyAppActivity();
       const uint32_t sec = (auth.pairingMsRemaining() + 999) / 1000;
       if (sec != _lastPairingSec) {
         _lastPairingSec = sec;

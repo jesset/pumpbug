@@ -35,7 +35,7 @@ void PumpSignalScreen::startSession() {
   if (_running) {
     _sequence = _sensor.seq();
     _sessionStartedMs = millis();
-    power::powerManager.keepAwake();
+    power::powerManager.notifyAppActivity();
   }
 }
 
@@ -72,7 +72,7 @@ ScreenResult PumpSignalScreen::tick() {
   }
   // Placement testing needs a continuously visible signal. The session
   // timeout stops the IMU and FFT if the screen is left unattended.
-  power::powerManager.keepAwake();
+  power::powerManager.notifyAppActivity();
   const uint32_t sequence = _sensor.seq();
   if (sequence != _sequence) {
     _sequence = _sensor.snapshot(_data);
