@@ -226,14 +226,17 @@ extraction yield is calculated as TDS (%) × beverage weight (g) ÷ dose (g),
 rounded to one decimal place, and displayed in the editor and in History, Last
 Shot, and coffee summaries.
 
-Saved-shot preparation is shown read-only. `Edit preparation` (or `Add
-preparation` when empty) opens the fields in place. The editor's bottom `Save`
-and `Cancel` buttons apply to preparation and result edits together.
-
 In the shot details editor, you can select a coffee or edit its details. Review
-the details and choose `Use coffee` to update the shot draft. Selecting another
-coffee fills preparation fields that are still blank; existing preparation and
-result values are preserved. The shot's `Save` action stores the changes.
+the details and choose `Use coffee` to update the shot draft. Choosing a coffee
+fills preparation fields that are still blank; existing preparation and result
+values are preserved.
+
+Saved-shot preparation starts read-only. `Edit preparation` (or `Add
+preparation` when empty) opens the fields in place. Choosing a coffee or using
+`Copy next recipe` also opens preparation for review and editing. `More
+preparation details` expands automatically when it contains values.
+The editor's bottom `Save` and `Cancel` buttons apply to preparation and result
+edits together.
 
 If the cut alert fired, `fired at` shows the trigger time and yield; `projected`
 shows the final yield Pump Bug predicted at that moment. Otherwise the row

@@ -1654,6 +1654,7 @@ function openEditorCoffeePicker(form) {
     } else {
       editor.original.coffee = cloneJson(recipe.coffee);
       fillMissingPreparationFromRecipe(editor.original, recipe);
+      editor.editingPreparation = true;
     }
     editor.error = null;
   }, coffeeIdentity(editor.original.coffee) ? editor.original.coffee : null);
@@ -1695,6 +1696,7 @@ function useCurrentRecipeInMetadataEditor(form) {
   value.coffee = cloneJson(recipe.coffee);
   if (isPlainObject(recipe.prep)) value.prep = cloneJson(recipe.prep);
   metadataEditor.original = value;
+  metadataEditor.editingPreparation = true;
   metadataEditor.error = null;
   renderMetadataOverlay();
 }
@@ -2278,9 +2280,11 @@ function renderMetadataEditor() {
 
   const preparation = el('div', { class: 'editor-preparation' });
   const showPreparationFields = () => {
-    preparation.replaceChildren(el('h2', {}, 'Preparation'), prepFields,
-      el('details', { class: 'preparation-more' },
-        el('summary', {}, 'More preparation details'), morePrepFields));
+    const more = el('details', { class: 'preparation-more' },
+      el('summary', {}, 'More preparation details'), morePrepFields);
+    more.open = ['grinder', 'tempC', 'pressure', 'water'].some(name =>
+      value.prep?.[name] != null && value.prep[name] !== '');
+    preparation.replaceChildren(el('h2', {}, 'Preparation'), prepFields, more);
   };
   if (metadataEditor.kind === 'recipe' || metadataEditor.editingPreparation) {
     showPreparationFields();
