@@ -5,10 +5,10 @@
 const fs = require('fs');
 const vm = require('vm');
 
-const [sourcePath, historyPath, codecHeaderPath, constantsPath] = process.argv.slice(2);
-if (!sourcePath || !historyPath || !codecHeaderPath || !constantsPath) {
+const [sourcePath, historyPath, codecHeaderPath, constantsPath, iconsPath] = process.argv.slice(2);
+if (!sourcePath || !historyPath || !codecHeaderPath || !constantsPath || !iconsPath) {
   console.error(
-    'usage: test_shot_metadata_ui.js UI_METADATA_JS UI_HISTORY_JS CODEC_HEADER CONSTANTS_JS');
+    'usage: test_shot_metadata_ui.js UI_METADATA_JS UI_HISTORY_JS CODEC_HEADER CONSTANTS_JS UI_ICONS_JS');
   process.exit(2);
 }
 
@@ -55,6 +55,7 @@ const context = {
     addEventListener(type, listener) { this.listeners[type] = listener; },
     focus() {},
   }),
+  document: { createElementNS: svgElement },
   setBanner: (message, kind) => banners.push({ message, kind }),
   flashBanner: (message, kind) => banners.push({ message, kind }),
   localStorage: {
@@ -64,6 +65,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(
+  fs.readFileSync(iconsPath, 'utf8') + '\n' +
   fs.readFileSync(constantsPath, 'utf8') + '\n' +
   fs.readFileSync(historyPath, 'utf8') + '\n' +
   fs.readFileSync(sourcePath, 'utf8') + '\n' +
@@ -111,6 +113,19 @@ let checkCount = 0;
 function check(condition, message) {
   ++checkCount;
   if (!condition) throw new Error(message);
+}
+
+function svgElement(namespace, tag) {
+  const node = context.el(tag);
+  node.namespaceURI = namespace;
+  node.setAttribute = (name, value) => { node.attrs[name] = value; };
+  return node;
+}
+
+function renderedText(node) {
+  if (node == null) return '';
+  return typeof node === 'object'
+    ? (node.children || []).map(renderedText).join('') : String(node);
 }
 
 function descendants(root) {
@@ -1502,6 +1517,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
     replaceChildren() {}, querySelector: () => null,
   };
   context.document = {
+    createElementNS: svgElement,
     activeElement: null,
     getElementById: () => closedOverlay,
     querySelectorAll: () => [],
@@ -1990,6 +2006,16 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(context.api.selected().shot.id === 'current' &&
         context.api.selected().metadata.value.coffee.name === 'Current coffee',
     'shot details combined a current record with cached row metadata');
+  const fetchBinaryBeforeFailure = context.fetchBinary;
+  const setBannerBeforeFailure = context.setBanner;
+  context.fetchBinary = async () => { throw new Error('Device did not respond.'); };
+  context.setBanner = () => { throw new Error('Load errors must use a flash banner.'); };
+  await context.api.selectShot(1);
+  check(banners.at(-1).message === 'Error loading shot #1: Device did not respond.' &&
+        banners.at(-1).kind === 'bad',
+    'shot load failure did not preserve its reason as action feedback');
+  context.fetchBinary = fetchBinaryBeforeFailure;
+  context.setBanner = setBannerBeforeFailure;
 
   context.state = { storage: 'ready' };
   const damagedHistoryView = context.el('main');
@@ -2495,11 +2521,99 @@ check(Object.keys(blankEditor.original).length === 0 &&
   context.fmtSec = ms => String(ms / 1000);
   const historySummaryView = context.el('main');
   context.api.renderList(historySummaryView);
-  check(JSON.stringify(historySummaryView).includes('EY 18.6%'),
+  check(descendants(historySummaryView).find(node => node.tag === 'h2')
+    .children.includes('1 shot'), 'History heading did not use the singular count');
+  check(renderedText(historySummaryView).includes('EY 18.6%'),
     'History caller discarded measurements before rendering the summary');
+  const historyMetrics = descendants(historySummaryView).filter(node =>
+    node.attrs?.class === 'shot-metric');
+  check(historyMetrics.length === 4 &&
+    historyMetrics.map(renderedText).join('|') ===
+      'Grind—|Dose18g|Yield39gTarget 36 g|Time30000',
+    'History did not distinguish recorded yield and duration from the recipe target');
+  const historyIcons = descendants(historySummaryView).filter(node => node.tag === 'svg');
+  check(historyIcons.length >= 4 && historyIcons.every(node =>
+    node.namespaceURI === 'http://www.w3.org/2000/svg' &&
+    node.attrs['aria-hidden'] === 'true' && node.attrs.focusable === 'false'),
+    'History icons were not inline decorative SVG elements');
+  const missingCard = context.renderHistoryShot({
+    id: 8, startUtcSec: 100, durationMs: 30000, yieldCg: 4000,
+    userMetadataState: 'absent',
+  });
+  check(renderedText(missingCard).includes('Coffee not set') &&
+    descendants(missingCard).filter(node => node.attrs?.class === 'shot-metric').length === 2,
+    'History reserved empty recipe columns instead of showing the available measurements');
+  const missingWeightCard = context.renderHistoryShot(summary(extractionMetadata, {
+    startUtcSec: 100, durationMs: 30000, yieldCg: -32768,
+  }));
+  check(renderedText(missingWeightCard).includes('Yield—Target 36 g') &&
+    !renderedText(missingWeightCard).includes('EY '),
+    'History treated a missing weight reading as a measured yield');
+  const corruptCard = context.renderHistoryShot({
+    id: 9, startUtcSec: 100, durationMs: 30000, yieldCg: 4000,
+    userMetadataState: 'corrupt',
+  });
+  check(renderedText(corruptCard).includes('Shot details damaged') &&
+    renderedText(corruptCard).includes('Shot #9') &&
+    !renderedText(corruptCard).includes('Coffee not set'),
+    'History card claimed damaged metadata had no coffee or hid its warning');
+  const unsupportedCard = context.renderHistoryShot({
+    id: 10, startUtcSec: 100, durationMs: 30000, yieldCg: 4000,
+    userMetadataState: 'unsupported',
+  });
+  check(renderedText(unsupportedCard).includes('Shot details need newer firmware') &&
+    renderedText(unsupportedCard).includes('Shot #10') &&
+    !renderedText(unsupportedCard).includes('Coffee not set'),
+    'History card claimed unsupported metadata had no coffee or hid its warning');
+  const cardMetadata = {
+    coffee: { name: ' Coffee ', roaster: ' Roaster ' },
+    prep: { grind: ' 1.8 ', doseG: 18 },
+    rating: 4, tdsPct: 8.6, tags: ['sweet', 42, 'balanced'],
+  };
+  const cardMetadataBefore = JSON.stringify(cardMetadata);
+  const namedSummary = summary(cardMetadata, {
+    startUtcSec: 100, durationMs: 30000, yieldCg: 3900,
+  });
+  const namedCard = context.renderHistoryShot(namedSummary);
+  const coffeeButton = descendants(namedCard).find(node =>
+    node.tag === 'button' && node.attrs['aria-label']?.includes('open shot'));
+  check(renderedText(coffeeButton) === 'Coffee' &&
+    coffeeButton.attrs['aria-label'] === 'Coffee, open shot #7',
+    'coffee button accessible name did not include its visible label and shot number');
+  const rating = descendants(namedCard).find(node => node.attrs?.class === 'shot-rating');
+  check(rating.attrs.role === 'img' && rating.attrs['aria-label'] === '4 out of 5 stars',
+    'rating did not expose its meaning through a named image role');
+  check(renderedText(namedCard).includes('Grind1.8Dose18g') &&
+    renderedText(namedCard).includes('EY 18.6%') &&
+    renderedText(namedCard).includes('sweet · balanced') &&
+    context.api.shotSummaryLines(namedSummary).join('|').includes('grind 1.8 · 18 g') &&
+    context.api.shotSummaryLines(namedSummary).join('|').includes('sweet, balanced'),
+    'card and text summary disagreed on valid fields or lost their own formatting');
+  check(JSON.stringify(cardMetadata) === cardMetadataBefore,
+    'normalizing a summary changed the saved metadata');
+  for (const malformed of [
+    { coffee: 'Coffee', prep: '18', rating: 6, tdsPct: '8.6', tags: 'sweet' },
+    { coffee: [], prep: [], rating: 2.5, tdsPct: Infinity, tags: [42] },
+  ]) {
+    const malformedSummary = summary(malformed, {
+      startUtcSec: 100, durationMs: 30000, yieldCg: 3900,
+    });
+    const malformedCard = context.renderHistoryShot(malformedSummary);
+    check(context.api.shotSummaryLines(malformedSummary).length === 0 &&
+      !descendants(malformedCard).some(node => node.attrs?.class === 'shot-result') &&
+      descendants(malformedCard).filter(node => node.attrs?.class === 'shot-metric').length === 2,
+      'card and text summary disagreed on malformed metadata: ' + JSON.stringify(malformed));
+  }
+  context.fetchShotsPage = async () => historyPage([namedSummary], { total: 2 });
+  await context.api.historyStore.refresh();
+  const pluralHistoryView = context.el('main');
+  context.api.renderList(pluralHistoryView);
+  check(descendants(pluralHistoryView).find(node => node.tag === 'h2')
+    .children.includes('2 shots'), 'History heading did not use the plural count');
+
 
   const views = {
-    el: context.el, localStorage: { getItem: () => null },
+    el: context.el, document: context.document, localStorage: { getItem: () => null },
     state: null, inPumpWindow: () => false,
     lastRecord: { shotId: 7, yieldCg: 9000 },
     selectedShotId: 7, selectedShot: { yieldCg: 3900 },
@@ -2509,7 +2623,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   };
   vm.createContext(views);
   vm.runInContext([
-    constantsPath, historyPath, sourcePath,
+    iconsPath, constantsPath, historyPath, sourcePath,
     require('path').join(require('path').dirname(sourcePath), 'ui-live.js'),
   ].map(path => fs.readFileSync(path, 'utf8')).join('\n'), views);
   // Chart internals are outside this test; keep the actual view composition.
@@ -2589,8 +2703,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
     'damaged shot editor borrowed measurements from another view');
   check(detailMetadataReads === 3,
     'detail and Last Shot edit actions did not refresh metadata before opening');
-  if (checkCount !== 261) {
-    throw new Error(`expected 261 assertions, ran ${checkCount}`);
+  if (checkCount !== 276) {
+    throw new Error(`expected 276 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

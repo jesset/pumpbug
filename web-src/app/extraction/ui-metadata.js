@@ -352,34 +352,69 @@ function nonemptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function ratingText(value) {
+function ratingValue(value) {
   const rating = value && Number.isInteger(value.rating) ? value.rating : 0;
-  return rating >= 1 && rating <= 5 ? '★'.repeat(rating) : null;
+  return rating >= 1 && rating <= 5 ? rating : null;
+}
+
+function ratingText(value) {
+  const rating = ratingValue(value);
+  return rating === null ? null : '★'.repeat(rating);
+}
+
+function shotSummaryData(summary) {
+  const record = metadataRecordFromRow(summary);
+  const value = metadataValue(record);
+  const coffee = isPlainObject(value.coffee) ? value.coffee : {};
+  const prep = isPlainObject(value.prep) ? value.prep : {};
+  const preparation = {};
+  for (const key of ['grinder', 'grind', 'pressure', 'water']) {
+    preparation[key] = nonemptyString(prep[key]);
+  }
+  for (const key of ['doseG', 'targetYieldG', 'tempC']) {
+    preparation[key] = Number.isFinite(prep[key]) ? prep[key] : null;
+  }
+  const tdsPct = Number.isFinite(value.tdsPct) ? value.tdsPct : null;
+  return {
+    record,
+    coffee: {
+      name: nonemptyString(coffee.name),
+      roaster: nonemptyString(coffee.roaster),
+      roastDate: nonemptyString(coffee.roastDate),
+    },
+    prep: preparation,
+    rating: ratingValue(value),
+    tdsPct,
+    extractionYieldPct: extractionYieldPct(tdsPct, preparation.doseG, summary.yieldCg),
+    tags: Array.isArray(value.tags)
+      ? value.tags.filter(tag => typeof tag === 'string') : [],
+    notes: nonemptyString(value.notes),
+  };
 }
 
 function metadataPreparationParts(prep) {
   const preparation = [];
   const grinder = nonemptyString(prep.grinder);
-  if (grinder) preparation.push({ text: grinder });
+  if (grinder) preparation.push(grinder);
   if (nonemptyString(prep.grind)) {
     const value = prep.grind.trim();
-    preparation.push({ text: 'grind ' + value, prefix: 'grind ', value });
+    preparation.push('grind ' + value);
   }
   if (Number.isFinite(prep.doseG)) {
     const value = String(prep.doseG);
-    preparation.push({ text: value + ' g', value, suffix: ' g' });
+    preparation.push(value + ' g');
   }
   if (Number.isFinite(prep.targetYieldG)) {
-    preparation.push({ text: prep.targetYieldG + ' g target' });
+    preparation.push(prep.targetYieldG + ' g target');
   }
   if (Number.isFinite(prep.tempC)) {
-    preparation.push({ text: prep.tempC + '°C' });
+    preparation.push(prep.tempC + '°C');
   }
   if (nonemptyString(prep.pressure)) {
-    preparation.push({ text: prep.pressure.trim() });
+    preparation.push(prep.pressure.trim());
   }
   if (nonemptyString(prep.water)) {
-    preparation.push({ text: prep.water.trim() });
+    preparation.push(prep.water.trim());
   }
   return preparation;
 }
@@ -403,36 +438,31 @@ function extractionYieldText(value, shortLabel = false) {
 function shotSummaryEntries(summary, {
   showCoffeeName = true, shortExtractionLabel = true,
 } = {}) {
-  const value = metadataValue(metadataRecordFromRow(summary));
+  const data = shotSummaryData(summary);
   const entries = [];
-  const coffee = value.coffee && typeof value.coffee === 'object'
-    ? value.coffee : {};
-  const prep = value.prep && typeof value.prep === 'object' ? value.prep : {};
-  const coffeeName = nonemptyString(coffee.name);
-  const roaster = nonemptyString(coffee.roaster);
+  const { coffee, prep } = data;
+  const coffeeName = coffee.name;
+  const roaster = coffee.roaster;
   if (showCoffeeName && coffeeName) {
     entries.push({ text: roaster ? coffeeName + ' · ' + roaster : coffeeName });
   }
-  const roastDate = nonemptyString(coffee.roastDate);
+  const roastDate = coffee.roastDate;
   if (roastDate) entries.push({ text: 'Roasted ' + roastDate });
 
   const preparation = metadataPreparationParts(prep);
   if (preparation.length) entries.push({ parts: preparation });
 
   const result = [];
-  const rating = ratingText(value);
+  const rating = ratingText(data);
   if (rating) result.push(rating);
-  if (Number.isFinite(value.tdsPct)) result.push(value.tdsPct + '% TDS');
-  const extraction = extractionYieldPct(value.tdsPct, prep.doseG, summary.yieldCg);
+  if (data.tdsPct !== null) result.push(data.tdsPct + '% TDS');
+  const extraction = data.extractionYieldPct;
   if (extraction !== null) {
     result.push(extractionYieldText(extraction, shortExtractionLabel));
   }
-  if (Array.isArray(value.tags)) {
-    const tags = value.tags.filter(v => typeof v === 'string');
-    if (tags.length) result.push(tags.join(', '));
-  }
+  if (data.tags.length) result.push(data.tags.join(', '));
   if (result.length) entries.push({ text: result.join(' · ') });
-  const notes = nonemptyString(value.notes);
+  const notes = data.notes;
   if (notes) {
     entries.push({ text: notes.length > 100
       ? notes.slice(0, 97) + '…' : notes });
@@ -442,7 +472,7 @@ function shotSummaryEntries(summary, {
 
 function shotSummaryLines(summary, options = {}) {
   return shotSummaryEntries(summary, options).map(entry => entry.text ||
-    entry.parts.map(part => part.text).join(' · '));
+    entry.parts.join(' · '));
 }
 
 function appendShotSummary(parent, summary, options = {}) {
@@ -452,21 +482,8 @@ function appendShotSummary(parent, summary, options = {}) {
   if (record.state === 'active') {
     for (const entry of shotSummaryEntries(summary, options)) {
       const line = el('div');
-      if (entry.parts && options.emphasizeRecipe) {
-        entry.parts.forEach((part, index) => {
-          if (index) line.append(' · ');
-          if (part.value !== undefined) {
-            if (part.prefix) line.append(part.prefix);
-            line.append(el('strong', { class: 'recipe-key' }, part.value));
-            if (part.suffix) line.append(part.suffix);
-          } else {
-            line.append(part.text);
-          }
-        });
-      } else {
-        line.append(entry.text ||
-          entry.parts.map(part => part.text).join(' · '));
-      }
+      line.append(entry.text ||
+        entry.parts.join(' · '));
       box.append(line);
     }
   } else if (record.state === 'corrupt') {
@@ -487,9 +504,9 @@ function shotMetadataListAction(summary) {
   const { id } = summary;
   const record = metadataRecordFromRow(summary);
   if (record && record.state === 'unsupported') return null;
-  const label = 'Edit details';
+  const label = 'Edit details for shot #' + id;
   return el('button', {
-    type: 'button', class: 'shot-details-link', 'aria-label': label,
+    type: 'button', class: 'shot-details-link', 'aria-label': label, title: label,
     'data-overlay-return-key': 'shot-details-' + id,
     onclick: event => {
       event.stopPropagation();
@@ -501,9 +518,7 @@ function shotMetadataListAction(summary) {
       }
     },
   },
-  el('span', { class: 'shot-details-label' }, label),
-  el('span', { class: 'shot-details-label-compact', 'aria-hidden': 'true' },
-    'Edit'));
+  uiIcon('edit'));
 }
 
 function readCurrentShotMetadata(id, apply, fail) {
@@ -1034,7 +1049,7 @@ function renderCoffeeContext(app) {
   const next = el('div', { class: 'coffee-context-block' },
     el('h3', {}, 'Next recipe'));
   const prep = isPlainObject(nextShotRecipe.prep) ? nextShotRecipe.prep : {};
-  const prepLine = metadataPreparationParts(prep).map(part => part.text);
+  const prepLine = metadataPreparationParts(prep);
   if (prepLine.length) {
     next.append(el('div', { class: 'coffee-prep' }, prepLine.join(' · ')));
   } else {

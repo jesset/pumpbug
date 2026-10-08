@@ -7,12 +7,13 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { test } = require('node:test');
 
-const [metadataPath, historyPath, constantsPath, streamPath] = process.argv.slice(2);
-if (!metadataPath || !historyPath || !constantsPath || !streamPath) {
-  throw new Error('usage: test_history_coordinator.js UI_METADATA_JS UI_HISTORY_JS CONSTANTS_JS STREAM_JS');
+const [metadataPath, historyPath, constantsPath, streamPath, iconsPath] = process.argv.slice(2);
+if (!metadataPath || !historyPath || !constantsPath || !streamPath || !iconsPath) {
+  throw new Error('usage: test_history_coordinator.js UI_METADATA_JS UI_HISTORY_JS CONSTANTS_JS STREAM_JS UI_ICONS_JS');
 }
 const pageUrl = '/app/extraction/shots?limit=20&meta=1';
-const source = fs.readFileSync(constantsPath, 'utf8') + '\n' +
+const source = fs.readFileSync(iconsPath, 'utf8') + '\n' +
+  fs.readFileSync(constantsPath, 'utf8') + '\n' +
   fs.readFileSync(historyPath, 'utf8') + '\n' +
   fs.readFileSync(metadataPath, 'utf8');
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -20,6 +21,7 @@ const harnesses = [];
 
 function element(tag, attrs = {}, ...children) {
   return { tag, attrs, children, childNodes: children, dataset: {},
+    setAttribute(name, value) { attrs[name] = value; },
     append(...more) { children.push(...more); }, addEventListener() {} };
 }
 
@@ -54,6 +56,9 @@ function harness({ automatic = false, restoredRecipe = null, deferredWrites = fa
   let overlaps = 0;
   let now = 0;
   const context = {
+    document: { createElementNS(namespace, tag) {
+      return { ...element(tag), namespaceURI: namespace };
+    } },
     console, TextEncoder, AbortController, el: element, state: { storage: 'ready' },
     performance: { now: () => now },
     inPumpWindow: state => !!state && state.active &&

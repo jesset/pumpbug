@@ -211,6 +211,7 @@ add_test(
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-history.js"
     "${PROJECT_SOURCE_DIR}/src/apps/extraction/history/shot_metadata_codec.h"
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-icons.js"
 )
 
 add_test(
@@ -222,6 +223,7 @@ add_test(
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-history.js"
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
     "${PROJECT_SOURCE_DIR}/web-src/app/extraction/stream.js"
+    "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-icons.js"
 )
 
 add_test(
@@ -289,3 +291,10 @@ add_test(NAME test_recipe_target_js COMMAND "${NODE_EXECUTABLE}"
   "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-metadata.js"
   "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
   "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-live.js")
+
+add_test(NAME test_extraction_header_js COMMAND "${NODE_EXECUTABLE}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/test_extraction_header.js"
+  "${PROJECT_SOURCE_DIR}/web-src/app/extraction/ui-live.js"
+  "${PROJECT_SOURCE_DIR}/web-src/app/extraction/app.js"
+  "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
+  "${PROJECT_SOURCE_DIR}/web-src/app/extraction/stream.js")

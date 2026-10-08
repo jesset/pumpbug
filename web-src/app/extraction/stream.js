@@ -16,15 +16,17 @@ let connectEpoch = 0;
 let wakePollTimer = null;
 let streamStateCurrent = false;
 let streamStatus = {
-  text: 'status · connecting…',
-  cls: 'status idle',
+  label: 'Connecting…',
+  detail: 'Connecting to the device.',
+  kind: 'idle',
+  action: null,
 };
 
-function setStreamStatus(text, kind = 'idle') {
+function setStreamStatus(label, detail, kind = 'idle', action = null) {
   streamStateCurrent = false;
   invalidateDeviceTarget();
-  streamStatus = { text, cls: 'status ' + kind };
-  setBanner(streamStatus.text, streamStatus.cls);
+  streamStatus = { label, detail, kind, action };
+  renderBanner();
 }
 
 function base64Decode(b64) {
@@ -276,7 +278,7 @@ function handleProtocolMismatch(actualVersion) {
 // would loop forever — same browser, two browsers, two devices,
 // doesn't matter), the server sends a final `event: replaced` SSE
 // frame before TCP close. We register a listener for it that
-// suppresses auto-reconnect; user reloads to opt back in.
+// suppresses auto-reconnect; the user chooses Reconnect to opt back in.
 //
 // When the device intentionally goes to deep sleep, it sends a final
 // `event: sleeping` frame. The client closes the stream and enters
@@ -344,14 +346,17 @@ function openStream(url) {
     if (currentStream !== stream) return;
     stream.replaced = true;
     closeStream(stream);
-    setStreamStatus('another client took over — reload to retake the stream');
+    setStreamStatus('Connection taken over',
+      'Another browser took over.', 'warn',
+      { label: 'Reconnect', run: connect });
   });
 
   stream.es.addEventListener('sleeping', () => {
     if (currentStream !== stream) return;
     stream.sleeping = true;
     closeStream(stream);
-    startWakePolling('device sleeping');
+    startWakePolling('device sleeping', 'Device sleeping',
+      'The device is sleeping. Wake it to reconnect.');
   });
 
   stream.es.onopen = () => {
@@ -361,10 +366,7 @@ function openStream(url) {
     metadataStreamSessionStarted();
     armIdleTimer(stream);
     backoffMs = INITIAL_BACKOFF_MS;
-    // Banner gets rewritten by handleStatePacket as soon as the
-    // server's initial STATE arrives; this is just a transient
-    // pre-data signal.
-    setStreamStatus('status · connected, waiting for state…');
+    setStreamStatus('Connecting…', 'Connected, waiting for device state.');
   };
 
   stream.es.onerror = () => {
@@ -373,7 +375,7 @@ function openStream(url) {
     const wasSleeping = stream.sleeping;
     closeStream(stream);
     if (!wasReplaced && !wasSleeping) {
-      setStreamStatus('status · disconnected; reconnecting…');
+      setStreamStatus('Reconnecting…', 'Disconnected; reconnecting to the device.');
       scheduleReconnect();
     }
   };
@@ -382,7 +384,11 @@ function openStream(url) {
 async function connect() {
   if (protocolMismatch) return;
   if (connecting) return;
-  setStreamStatus('status · connecting…');
+  // Keep the last failure visible until the stream opens.
+  if (streamStatus.kind !== 'bad') {
+    setStreamStatus(state ? 'Reconnecting…' : 'Connecting…',
+      'Connecting to the device.');
+  }
   stopWakePolling();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   const myEpoch = ++connectEpoch;
@@ -396,9 +402,11 @@ async function connect() {
     if (myEpoch !== connectEpoch) return;
     if (!r.ok) {
       if (r.status === 401) {
-        setStreamStatus('not paired — open /config to pair this device', 'bad');
+        setStreamStatus('Pairing required',
+          'Not paired — open /config to pair this device.', 'bad');
       } else {
-        setStreamStatus('ticket request failed (' + r.status + ')', 'bad');
+        setStreamStatus('Connection error',
+          'Ticket request failed (HTTP ' + r.status + '); retrying.', 'bad');
       }
       scheduleReconnect();
       return;
@@ -409,9 +417,9 @@ async function connect() {
   } catch (err) {
     if (myEpoch !== connectEpoch) return;
     if (err.name === 'AbortError') {
-      setStreamStatus('ticket request timed out', 'bad');
+      setStreamStatus('Connection error', 'Ticket request timed out; retrying.', 'bad');
     } else {
-      setStreamStatus('error: ' + err.message, 'bad');
+      setStreamStatus('Connection error', err.message + ' — retrying.', 'bad');
     }
     scheduleReconnect();
   } finally {
@@ -440,7 +448,7 @@ function forceReconnect(reason) {
   // reconnect (the new session re-sends the display shot anyway).
   inflight = null;
   backoffMs = INITIAL_BACKOFF_MS;
-  setStreamStatus('stream out of sync; reconnecting…');
+  setStreamStatus('Reconnecting…', 'Stream out of sync; reconnecting.');
   scheduleReconnect();
 }
 
@@ -448,7 +456,8 @@ function forceReconnect(reason) {
 // died unexpectedly), probe a cheap HTTP endpoint periodically and reconnect
 // immediately as soon as the device responds. This avoids the long exponential
 // backoff window that would otherwise delay reconnect after wake.
-function startWakePolling(reason) {
+function startWakePolling(reason, label = 'Disconnected',
+    detail = 'Lost contact with the device; waiting for it to respond.') {
   if (protocolMismatch) return;
   if (wakePollTimer) return;
   ++connectEpoch;
@@ -456,10 +465,8 @@ function startWakePolling(reason) {
   closeCurrentStream();
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   backoffMs = INITIAL_BACKOFF_MS;
-  if (reason) {
-    console.log('start wake polling:', reason);
-    setStreamStatus(reason + ' — waiting for device…');
-  }
+  if (reason) console.log('start wake polling:', reason);
+  setStreamStatus(label, detail);
 
   async function poll() {
     wakePollTimer = null;

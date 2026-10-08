@@ -145,10 +145,18 @@ function fmtCutAlert(e) {
   return e.target.armed ? 'armed · didn’t fire' : 'off';
 }
 
-function setBanner(text, cls) {
+function setBanner(text, cls, action = null) {
   const b = document.getElementById('banner');
-  b.textContent = text;
+  const button = document.getElementById('banner-action');
+  if (!action && document.activeElement === button) {
+    document.getElementById('connection-summary').focus();
+  }
+  b.hidden = text === null;
+  document.getElementById('banner-message').textContent = text ?? '';
   b.className = 'banner ' + cls;
+  button.hidden = !action;
+  button.onclick = action ? action.run : null;
+  button.textContent = action ? action.label : '';
 }
 
 // A short-lived banner message that survives the next few renders before the

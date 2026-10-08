@@ -86,10 +86,11 @@ reporting a bug or checking which firmware is installed.
 
 ## Live dashboard
 
-The banner at the top summarizes whether the device is live, the extraction
-phase, and the scale connection. Pump Bug must be showing `LIVE` on its own
+The header shows connection and recording status. Select the status to see
+more detail, including the scale connection. Connection problems and action
+feedback appear below the header. The device must be showing `LIVE` on its own
 display to detect the pump, connect to the scale, and record an extraction. If
-the browser says `device idle`, return the device to `LIVE`.
+the browser says `Device idle`, return the device to `LIVE`.
 
 ![Pump Bug browser Live view with a connected scale and last-shot chart](images/web-guide/live.png)
 
@@ -191,15 +192,18 @@ trying again.
 
 ## Shot history
 
-Choose `History` on the dashboard to list saved shots, newest first. Each row
-normally shows its date and time, shot ID, duration, final yield, and pump-on
-time. Recipe coffee, preparation, rating, TDS, tags, and notes appear beneath
-that summary. When TDS, dose, and measured beverage weight are available, the
-summary also shows extraction yield (`EY`) as a percentage. If for some reason
-the record's data cannot be read, it's listed as `Record unavailable`, and
-opening it shows a message about the issue.
+Choose `History` on the dashboard to list saved shots, newest first. Each
+card shows its coffee, date and shot ID, with grind, dose, measured yield and
+duration as the main values. Recipe target yield appears beneath actual measured
+yield. Ratings, TDS and a note or tag preview appear below, if available.
+When TDS, dose and measured beverage weight are available, the card also shows
+extraction yield (`EY`) as a percentage.
 
-Use `Edit details` on a row to change its saved details without opening the
+Select a card to see the full preparation and result details. If the record
+cannot be read, it is listed as `Record unavailable`, and opening it shows a
+message about the issue.
+
+Use the pencil button on a card to edit its saved details without opening the
 full shot view.
 
 ![Pump Bug browser History list](images/web-guide/history.png)
@@ -366,12 +370,12 @@ Check the device for `NOT RECORDING` or `SHOT NOT SAVED`, then open
 `PUMP BUG` > `Diagnostics` to inspect storage. Do not assume the missing record
 can be recovered.
 
-### The Live page keeps reconnecting
+### The Live page loses its connection
 
-Make sure another phone, computer, or browser tab is not holding the single live
-stream. Keep one dashboard open during an extraction. The page also reconnects
-automatically after the device sleeps and wakes, but the device must be awake
-and reachable.
+Only one browser tab at a time can receive live updates. If the header says
+`Connection taken over`, choose `Reconnect` in the banner to take back the
+connection. The page also reconnects automatically after the device sleeps and
+wakes.
 
 For device operation, installation, scale compatibility, and power behavior,
 return to the [Pump Bug user guide](user-guide.md).

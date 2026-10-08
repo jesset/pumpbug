@@ -85,7 +85,7 @@ function rendered() {
     } }), null);
   }
   assert.equal(api.recipeFromMetadata(recipe(36)).prep.targetYieldG, 36);
-  assert(api.metadataPreparationParts(recipe(36).prep).some(p => p.text === '36 g target'));
+  assert(api.metadataPreparationParts(recipe(36).prep).includes('36 g target'));
   packet(0, false, false);
   assert.equal(api.current(), false, 'unavailable firmware settings must not enable writes');
   assert.equal(api.device(), null);

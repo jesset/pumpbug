@@ -11,10 +11,26 @@
   </head>
   <body>
     <header class="page-head">
-      <a class="home" href="/">← Home</a>
       <h1>Pump Bug</h1>
+      <details id="connection" class="connection-status" data-kind="idle">
+        <summary id="connection-summary">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span id="connection-label" role="status">Connecting…</span>
+        </summary>
+        <div id="connection-detail" class="connection-detail">Connecting to device…</div>
+      </details>
+      <a class="home" href="/" aria-label="Home" title="Home">
+        <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="m3 10 9-7 9 7M5 9v12h5v-7h4v7h5V9" />
+        </svg>
+      </a>
     </header>
-    <div id="banner" class="banner idle">connecting…</div>
+    <div id="banner" class="banner idle" hidden>
+      <div id="banner-message" class="banner-message"></div>
+      <button id="banner-action" type="button" class="secondary" hidden></button>
+    </div>
     <main id="app"></main>
     <div id="overlay"></div>
     <!-- Inline order matters: each file shares the same global scope, but
@@ -25,6 +41,7 @@
     <script data-inline src="./stream.js"></script>
     <script data-inline src="./robust-flow.js"></script>
     <script data-inline src="./chart.js"></script>
+    <script data-inline src="./ui-icons.js"></script>
     <script data-inline src="./ui-live.js"></script>
     <script data-inline src="./ui-history.js"></script>
     <script data-inline src="./ui-metadata.js"></script>

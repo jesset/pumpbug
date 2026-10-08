@@ -47,7 +47,7 @@ const context = {
       historyStateEvents.push({ storage, savedShot, allowBackgroundRefresh });
     },
   },
-  setBanner: () => {},
+  renderBanner: () => {},
   invalidateDeviceTarget: () => {},
   parseExtractionFromDv: (_dv, off) => ({ decodedAt: off }),
 };
@@ -109,7 +109,7 @@ if (!state.latestShotSaved || state.currentWeightCg !== -25 ||
   throw new Error('STATE payload did not preserve save status');
 }
 
-context.setStreamStatus('status · disconnected; reconnecting…');
+context.setStreamStatus('Reconnecting…', 'Disconnected; reconnecting to the device.');
 if (context.streamConnectionStatus().current) {
   throw new Error('a disconnected stream retained current device state');
 }

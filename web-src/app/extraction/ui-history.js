@@ -599,7 +599,7 @@ async function selectShot(id) {
   } catch (err) {
     if (selectedShotId !== id) return;
     selectedShotError = 'error';
-    setBanner('error loading shot #' + id + ': ' + err.message, 'bad');
+    flashBanner('Error loading shot #' + id + ': ' + err.message, 'bad');
     scheduleRender();
   }
 }
@@ -673,7 +673,7 @@ function downloadShotJson(id, shot, metadata) {
 function shotOpenButton(id, label) {
   return el('button', {
     type: 'button', class: 'when shot-open-link',
-    'aria-label': 'Open shot #' + id,
+    'aria-label': label + ', open shot #' + id,
     onclick: event => {
       event.stopPropagation();
       selectShot(id);
@@ -687,6 +687,65 @@ async function loadMoreHistory(reportError = message => flashBanner(message, 'ba
     reportError('Could not load older history: ' + result.error.message);
   }
   return result;
+}
+
+function historyMetric(icon, label, value, unit = '', secondary = null) {
+  return el('div', { class: 'shot-metric' },
+    el('div', { class: 'shot-metric-label' }, uiIcon(icon), label),
+    el('div', { class: 'shot-metric-value' }, value ?? '—',
+      value != null && unit ? el('span', { class: 'shot-metric-unit' }, unit) : null),
+    secondary ? el('div', { class: 'shot-metric-secondary' }, secondary) : null);
+}
+
+function renderHistoryShot(summary) {
+  const data = shotSummaryData(summary);
+  const { record, coffee, prep } = data;
+  const coffeeName = coffee.name;
+  const coffeeKnown = ['active', 'absent', 'cleared'].includes(record?.state);
+  const open = shotOpenButton(summary.id,
+    coffeeName || (coffeeKnown ? 'Coffee not set' : 'Shot #' + summary.id));
+  open.className += ' shot-coffee-name' + (coffeeName ? '' : ' missing');
+  const hasPreparation = prep.grind || prep.doseG !== null;
+  const yieldText = summary.yieldCg === NO_WEIGHT_CG ? null : fmtG(summary.yieldCg);
+  const target = Number.isFinite(prep.targetYieldG) && prep.targetYieldG > 0
+    ? 'Target ' + prep.targetYieldG + ' g' : null;
+  const metrics = el('div', { class: 'shot-metrics' +
+    (hasPreparation ? '' : ' measurements-only') },
+    ...(hasPreparation ? [
+      historyMetric('grind', 'Grind', prep.grind),
+      historyMetric('dose', 'Dose', prep.doseG, 'g'),
+    ] : []),
+    historyMetric('yield', 'Yield', yieldText, 'g', target),
+    historyMetric('timer', 'Time', fmtMMSS(summary.durationMs)));
+  const result = el('div', { class: 'shot-result' });
+  const rating = ratingText(data);
+  if (rating) result.append(el('span', { class: 'shot-rating',
+    role: 'img', 'aria-label': data.rating + ' out of 5 stars' }, rating));
+  const measurements = el('span', { class: 'shot-result-measurements' });
+  if (data.tdsPct !== null) measurements.append(
+    el('span', {}, el('span', { class: 'dim' }, 'TDS '), data.tdsPct + '%'));
+  const extraction = data.extractionYieldPct;
+  if (extraction !== null) measurements.append(el('span', {},
+    el('span', { class: 'dim' }, 'EY '), extraction.toFixed(1) + '%'));
+  if (measurements.childNodes.length) result.append(measurements);
+  const item = el('li', { onclick: () => selectShot(summary.id) },
+    el('div', { class: 'shot-date' },
+      el('span', {}, fmtDate(summary.startUtcSec) || 'Time unknown'),
+      el('span', {}, '#' + summary.id)),
+    el('div', { class: 'shot-identity' },
+      el('div', { class: 'shot-coffee' }, open,
+        coffee.roaster
+          ? el('div', { class: 'shot-roaster' }, coffee.roaster) : null),
+      shotMetadataListAction(summary)), metrics,
+    result.childNodes.length ? result : null);
+  item.dataset.shotId = String(summary.id);
+  const notes = data.notes;
+  const tags = data.tags.join(' · ');
+  if (notes || tags) item.append(el('p', { class: 'shot-note' }, notes || tags));
+  if (extraction > 100) item.append(el('p', { class: 'err shot-note' },
+    'Check TDS, dose, and beverage weight.'));
+  if (record && record.state !== 'active') appendShotSummary(item, summary);
+  return item;
 }
 
 function renderList(app) {
@@ -739,31 +798,11 @@ function renderList(app) {
       ul.append(item);
       continue;
     }
-    const when = fmtDate(s.startUtcSec) || 'time unknown';
-    const item = el('li', { onclick: () => selectShot(s.id) },
-      el('div', { class: 'head' },
-        shotOpenButton(s.id, when),
-        el('span', { class: 'shot-row-actions' },
-          el('span', { class: 'id' }, '#' + s.id),
-          shotMetadataListAction(s)),
-      ),
-      el('div', { class: 'body' },
-        el('span', {},
-          el('span', { class: 'v' }, fmtMMSS(s.durationMs)),
-          el('span', { class: 'u' }, 'mm:ss')),
-        el('span', {},
-          el('span', { class: 'v' }, fmtG(s.yieldCg)),
-          el('span', { class: 'u' }, 'g')),
-        el('span', {},
-          el('span', { class: 'v' }, fmtSec(s.totalPumpOnMs)),
-          el('span', { class: 'u' }, 's pump')),
-      ));
-    item.dataset.shotId = String(s.id);
-    appendShotSummary(item, s, { emphasizeRecipe: true });
-    ul.append(item);
+    ul.append(renderHistoryShot(s));
   }
   const section = el('section', {},
-    el('h2', {}, `Shots (${historyStore.total})`), ul);
+    el('h2', { class: 'shot-history-heading' },
+      `${historyStore.total} ${historyStore.total === 1 ? 'shot' : 'shots'}`), ul);
   const pagination = historyStore.pagination;
   if (pagination.status === 'ready' || pagination.status === 'loading') {
     const loading = pagination.status === 'loading';
@@ -827,8 +866,9 @@ function renderDetail(app) {
     app, shotSummaryFromRecord(selectedShotId, e, selectedShotMetadata), { variant: 'detail',
       title: `Shot #${selectedShotId} · ${when}` });
   card.append(techFold(e));
+  const actions = el('div', { class: 'shot-detail-actions' });
   // Send this shot to the device's Last Shot slot for on-device replay.
-  app.append(el('button',
+  actions.append(el('button',
     { class: 'backlink', onclick: () => setAsLastShot(selectedShotId) },
     'Set as last shot (replay on device)'));
   // Save the decoded shot locally — no device round-trip, we already have it.
@@ -838,5 +878,6 @@ function renderDetail(app) {
       selectedShotId, e, selectedShotMetadata) },
     metadataPending ? 'Preparing download…' : 'Download shot data (JSON)');
   download.disabled = metadataPending;
-  app.append(download);
+  actions.append(download);
+  app.append(actions);
 }

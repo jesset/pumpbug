@@ -1,24 +1,54 @@
 // SPDX-FileCopyrightText: 2026 ludable
 // SPDX-License-Identifier: AGPL-3.0-only
 
+function renderConnectionStatus() {
+  let label = 'Connected';
+  let kind = 'connected';
+  let detail;
+  if (protocolMismatch) {
+    label = 'Incompatible';
+    kind = 'bad';
+    detail = protocolMismatch;
+  } else if (!streamStateCurrent || !state) {
+    label = streamStatus.label;
+    kind = streamStatus.kind;
+    detail = streamStatus.detail;
+  } else {
+    const activity = !state.active ? 'Extraction screen is not open'
+      : state.phase === 'RUNNING' ? 'Recording'
+      : state.phase === 'POST_PUMP' ? 'Finishing recording' : 'Device ready';
+    detail = activity + ' · Scale ' + state.scale;
+    if (state.active && state.scale !== 'connected') {
+      label = 'Scale ' + state.scale;
+      kind = 'warn';
+    } else if (state.active && state.phase === 'RUNNING') {
+      label = 'Recording';
+    } else if (state.active && state.phase === 'POST_PUMP') {
+      label = 'Finishing';
+    } else if (!state.active) {
+      label = 'Device idle';
+      kind = 'idle';
+    }
+  }
+  const connection = document.getElementById('connection');
+  connection.dataset.kind = kind;
+  const text = document.getElementById('connection-label');
+  if (text.textContent !== label) text.textContent = label;
+  const description = document.getElementById('connection-detail');
+  if (description.textContent !== detail) description.textContent = detail;
+}
+
 function renderBanner() {
+  renderConnectionStatus();
   // A recent one-off action message takes precedence over the status banner.
   if (bannerFlashActive()) return;
   if (protocolMismatch) {
     setBanner(protocolMismatch, 'bad');
-    return;
-  }
-  if (!streamStateCurrent) {
-    setBanner(streamStatus.text, streamStatus.cls);
-    return;
-  }
-  if (!state) { setBanner('status · connecting…', 'status idle'); return; }
-  if (state.active) {
-    setBanner(`status · device live · phase ${state.phase} · scale ${state.scale}`,
-              'status ' + (state.phase === 'IDLE' ? 'idle' : 'live'));
+  } else if (!streamStateCurrent &&
+      (streamStatus.kind === 'bad' || streamStatus.kind === 'warn')) {
+    setBanner(streamStatus.detail, 'status ' + streamStatus.kind, streamStatus.action);
   } else {
-    setBanner('status · device idle (extraction screen not foreground)',
-              'status idle');
+    setBanner(null, 'idle');
   }
 }
 
@@ -28,12 +58,12 @@ function renderTabs(app) {
       class: view === 'live' ? 'active' : '',
       'aria-pressed': view === 'live' ? 'true' : 'false',
       onclick: () => switchView('live'),
-    }, 'Live'),
+    }, uiIcon('live'), 'Live'),
     el('button', {
       class: view === 'live' ? '' : 'active',
       'aria-pressed': view === 'live' ? 'false' : 'true',
       onclick: () => switchView('list'),
-    }, 'History'),
+    }, uiIcon('history'), 'History'),
   );
   app.append(tabs);
 }
