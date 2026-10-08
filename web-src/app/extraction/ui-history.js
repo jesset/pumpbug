@@ -689,61 +689,16 @@ async function loadMoreHistory(reportError = message => flashBanner(message, 'ba
   return result;
 }
 
-function historyMetric(icon, label, value, unit = '', secondary = null) {
-  return el('div', { class: 'shot-metric' },
-    el('div', { class: 'shot-metric-label' }, uiIcon(icon), label),
-    el('div', { class: 'shot-metric-value' }, value ?? '—',
-      value != null && unit ? el('span', { class: 'shot-metric-unit' }, unit) : null),
-    secondary ? el('div', { class: 'shot-metric-secondary' }, secondary) : null);
-}
-
 function renderHistoryShot(summary) {
   const data = shotSummaryData(summary);
-  const { record, coffee, prep } = data;
-  const coffeeName = coffee.name;
-  const coffeeKnown = ['active', 'absent', 'cleared'].includes(record?.state);
-  const open = shotOpenButton(summary.id,
-    coffeeName || (coffeeKnown ? 'Coffee not set' : 'Shot #' + summary.id));
-  open.className += ' shot-coffee-name' + (coffeeName ? '' : ' missing');
-  const hasPreparation = prep.grind || prep.doseG !== null;
-  const yieldText = summary.yieldCg === NO_WEIGHT_CG ? null : fmtG(summary.yieldCg);
-  const target = Number.isFinite(prep.targetYieldG) && prep.targetYieldG > 0
-    ? 'Target ' + prep.targetYieldG + ' g' : null;
-  const metrics = el('div', { class: 'shot-metrics' +
-    (hasPreparation ? '' : ' measurements-only') },
-    ...(hasPreparation ? [
-      historyMetric('grind', 'Grind', prep.grind),
-      historyMetric('dose', 'Dose', prep.doseG, 'g'),
-    ] : []),
-    historyMetric('yield', 'Yield', yieldText, 'g', target),
-    historyMetric('timer', 'Time', fmtMMSS(summary.durationMs)));
-  const result = el('div', { class: 'shot-result' });
-  const rating = ratingText(data);
-  if (rating) result.append(el('span', { class: 'shot-rating',
-    role: 'img', 'aria-label': data.rating + ' out of 5 stars' }, rating));
-  const measurements = el('span', { class: 'shot-result-measurements' });
-  if (data.tdsPct !== null) measurements.append(
-    el('span', {}, el('span', { class: 'dim' }, 'TDS '), data.tdsPct + '%'));
-  const extraction = data.extractionYieldPct;
-  if (extraction !== null) measurements.append(el('span', {},
-    el('span', { class: 'dim' }, 'EY '), extraction.toFixed(1) + '%'));
-  if (measurements.childNodes.length) result.append(measurements);
+  const { record } = data;
   const item = el('li', { onclick: () => selectShot(summary.id) },
-    el('div', { class: 'shot-date' },
-      el('span', {}, fmtDate(summary.startUtcSec) || 'Time unknown'),
-      el('span', {}, '#' + summary.id)),
+    shotDate(summary),
     el('div', { class: 'shot-identity' },
-      el('div', { class: 'shot-coffee' }, open,
-        coffee.roaster
-          ? el('div', { class: 'shot-roaster' }, coffee.roaster) : null),
-      shotMetadataListAction(summary)), metrics,
-    result.childNodes.length ? result : null);
+      shotCoffeeIdentity(summary.id, data, 'Shot #' + summary.id),
+      shotMetadataListAction(summary)), shotMetrics(summary));
   item.dataset.shotId = String(summary.id);
-  const notes = data.notes;
-  const tags = data.tags.join(' · ');
-  if (notes || tags) item.append(el('p', { class: 'shot-note' }, notes || tags));
-  if (extraction > 100) item.append(el('p', { class: 'err shot-note' },
-    'Check TDS, dose, and beverage weight.'));
+  appendShotResult(item, data, { compact: true });
   if (record && record.state !== 'active') appendShotSummary(item, summary);
   return item;
 }
@@ -861,9 +816,9 @@ function renderDetail(app) {
     return;
   }
   const e = selectedShot;
-  const when = fmtDate(e.startUtcSec) || 'time unknown';
+  const when = fmtDate(e.startUtcSec) || 'Time unknown';
   const card = renderCompletedShot(
-    app, shotSummaryFromRecord(selectedShotId, e, selectedShotMetadata), { variant: 'detail',
+    app, shotSummaryFromRecord(selectedShotId, e, selectedShotMetadata), {
       title: `Shot #${selectedShotId} · ${when}` });
   card.append(techFold(e));
   const actions = el('div', { class: 'shot-detail-actions' });

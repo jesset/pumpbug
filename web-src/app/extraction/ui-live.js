@@ -147,23 +147,12 @@ function renderCurve(chart, parent, e) {
 // One finished, graduated shot as a record card. The caller adds any material
 // that follows the measurement summary, such as metadata or diagnostics.
 function renderShotRecord(app, e, opts) {
-  if (opts.variant !== 'live' && opts.variant !== 'detail') {
-    throw new Error('unknown shot-record variant');
-  }
-  const detail = opts.variant === 'detail';
-  const card = el('section',
-    { class: 'card record' + (opts.fresh ? ' fresh' : '') });
-  const head = el('h2', {}, opts.title);
-  if (opts.fresh) head.append(el('span', { class: 'chip' }, 'new'));
-  card.append(head);
+  const card = el('section', { class: 'card record' },
+    el('h2', {}, opts.title));
   card.append(bigWeight(e.yieldCg, rawFinalCg(e)));
-  if (!detail) {
-    card.append(el('div', { class: 'record-target' },
-      'target ' + targetText(e)));
-  }
   card.append(el('div', { class: 'big' }, fmtMMSS(finishedElapsedMs(e) ?? 0)));
   renderCurve(RecordChart, card, e);
-  const rows = recordRows(e, opts.variant);
+  const rows = recordRows(e, 'detail');
   if (rows.childNodes.length) card.append(rows);
   app.append(card);
   return card;
@@ -227,32 +216,43 @@ function renderNowCard(app) {
     state.pumpDecayCandidate;
 
   const card = el('section', {
-    class: 'card now' + (pumpStopping ? ' decay' : ''),
+    class: 'card now' + (pumping ? '' : ' idle') + (pumpStopping ? ' decay' : ''),
   });
-  card.append(el('h2', {},
-    el('span', { class: 'livedot' + (state.active ? ' on' : '') }), 'Now'));
-
+  const heading = el('h2', {},
+    el('span', { class: 'livedot' + (state.active ? ' on' : '') }), 'Now');
+  if (pumping && state.phase === 'RUNNING') {
+    heading.append(el('span', { class: 'now-pump-status' },
+      pumpStopping ? 'Pump stopping' : 'Pump running'));
+  }
+  let weight;
   let mode;
   if (pouring && state.currentYieldCg != null) {
-    card.append(bigWeight(state.currentYieldCg, state.currentWeightCg));
-    mode = pumpStopping ? 'yield · pump stopping' : 'yield';
+    weight = bigWeight(state.currentYieldCg, state.currentWeightCg);
+    mode = 'yield';
   } else if (state.currentWeightCg != null) {
-    card.append(bigWeight(state.currentWeightCg, null));
-    mode = pumpStopping ? 'scale · pump stopping'
-      : pumping ? 'scale · pump running' : 'scale';
+    weight = bigWeight(state.currentWeightCg, null);
+    mode = 'scale';
   } else {
-    card.append(bigWeight(NO_WEIGHT_CG, null));
+    weight = bigWeight(NO_WEIGHT_CG, null);
     mode = state.active ? 'scale ' + state.scale : 'device idle';
   }
-  card.append(el('div', { class: 'mode' }, mode));
-  if (pumping && inflight && inflight.target) {
+  const label = el('div', { class: 'mode' }, mode);
+  if (!pumping) {
+    liveTimerEl = null;
+    card.append(el('div', {}, heading, label), weight);
+    app.append(card);
+    return;
+  }
+  const timer = el('div', { class: 'big timer' + (pouring ? '' : ' dim') },
+    pouring ? fmtTimer(liveElapsedNowMs()) : '0:00.0');
+  card.append(heading, el('div', { class: 'now-measurements' },
+    el('div', {}, label, weight),
+    el('div', {}, el('div', { class: 'mode' }, 'Time'), timer)));
+  if (inflight && inflight.target) {
     card.append(el('div', { class: 'record-target' },
       'This shot: ' + targetText(inflight) + ' · alert ' +
       (inflight.target.armed ? 'enabled' : 'disabled')));
   }
-  const timer = el('div', { class: 'big timer' + (pouring ? '' : ' dim') },
-    pouring ? fmtTimer(liveElapsedNowMs()) : '0:00.0');
-  card.append(timer);
   if (pouring) {
     liveTimerEl = timer;
     ensureLiveTimerTicker();
@@ -260,7 +260,7 @@ function renderNowCard(app) {
     liveTimerEl = null;
   }
 
-  if (pumping) renderLiveChartSlot(card);
+  renderLiveChartSlot(card);
   app.append(card);
 }
 
@@ -281,18 +281,41 @@ function renderLastShot(app) {
   const fresh = freshFinalizedAt > 0 &&
       Date.now() - freshFinalizedAt < FRESH_SHOT_BADGE_MS &&
       lastRecord.beginMs === freshBeginMs;
-  renderCompletedShot(app,
-    shotSummaryFromRecord(lastRecord.shotId, lastRecord, lastShotMetadata), {
-    variant: 'live',
-    title: 'Last shot · ' + (fmtDate(lastRecord.startUtcSec) || 'time unknown'),
-    fresh,
-    openInHistory: true,
-    shortExtractionLabel: true,
-  });
+  const summary = shotSummaryFromRecord(lastRecord.shotId, lastRecord, lastShotMetadata);
+  const data = shotSummaryData(summary);
+  const card = el('section', { class: 'card record last-shot' + (fresh ? ' fresh' : '') });
+  const head = el('h2', {}, 'Last shot');
+  if (fresh) head.append(el('span', { class: 'chip' }, 'new'));
+  card.append(head, shotDate(summary));
+  const identity = shotCoffeeIdentity(summary.id, data);
+  if (identity) {
+    identity.className += ' last-shot-coffee';
+    if (data.coffee.roastDate) identity.append(el('div', { class: 'coffee-roast-date' },
+      'Roasted ' + data.coffee.roastDate));
+    card.append(identity);
+  }
+  card.append(shotMetrics(summary));
+  appendPreparationDetails(card, data.prep);
+  renderCurve(RecordChart, card, summary);
+  const rows = recordRows(summary, 'live');
+  if (rows.childNodes.length) card.append(rows);
+  appendShotResult(card, data);
+  // Recipe details may never load, so keep the recorded device alert visible.
+  if (summary.target?.targetCg !== Math.round((data.prep.targetYieldG ?? 0) * 100) ||
+      !summary.target?.armed) {
+    card.append(el('div', { class: 'last-shot-alert' },
+      'Device alert: ' + (summary.target?.armed ? targetText(summary) : 'disabled')));
+  }
+  if (summary.id) {
+    appendShotMetadataStatus(card, data.record);
+    const actions = shotMetadataActions(summary, { openInHistory: true });
+    if (actions.childNodes.length) card.append(actions);
+  }
+  app.append(card);
 }
 
 function renderLive(app) {
-  renderCoffeeContext(app);
   renderNowCard(app);
+  renderCoffeeContext(app);
   renderLastShot(app);
 }

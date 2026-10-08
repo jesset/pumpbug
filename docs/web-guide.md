@@ -92,48 +92,26 @@ feedback appear below the header. The device must be showing `LIVE` on its own
 display to detect the pump, connect to the scale, and record an extraction. If
 the browser says `Device idle`, return the device to `LIVE`.
 
+Only one browser can hold the live event stream at a time. Opening the dashboard
+in another browser replaces the first live stream; the displaced page offers
+`Reconnect` to take it back.
+
 ![Pump Bug browser Live view with a connected scale and last-shot chart](images/web-guide/live.png)
 
 ### Now
 
-While idle, `Now` shows the scale's current raw weight and a parked timer.
+`Now` is the first section in the Live view. While idle, it shows the scale's
+current weight reading in a compact card.
 During an extraction, the card switches to the self-tared yield, running timer,
 and live weight-and-flow chart. Self-tared means that Pump Bug subtracts the
-stable pre-pour cup weight, so the displayed yield measures the coffee added
-even if the scale itself was not tared. If the pump is active but scale data is
-not yet usable, the chart area reports that it is waiting for the scale or for
-samples.
+stable pre-pour weight (e.g. the weight of the cup), so the displayed yield
+measures the coffee added even if the scale itself was not tared. If the pump is
+active but scale data is not yet usable, the chart area reports that it is
+waiting for the scale or for samples.
 
-### Last shot
+### Prepare the next shot
 
-The device's current Last Shot appears below `Now`. This is normally the latest
-completed shot, but loading a saved shot for replay replaces it. The card shows:
-
-- Its date and time, or `time unknown` if the clock was not available when the
-  shot began.
-- Final yield and duration.
-- The raw scale weight in smaller text when it differs from the yield because
-  the scale itself was not tared.
-- A chart with weight in blue, flow in yellow, and dashed pump-on and pump-off
-  markers.
-- The target yield.
-- Saved shot details, when present.
-- Controls to add or edit shot details and open the shot in History.
-
-History detail contains the cut-alert outcome, total pump-on time, and the
-`Technical` section (used for diagnosis).
-
-During an active pump window, the last-shot card collapses so the current pour
-has priority. Select the collapsed card to expand it temporarily.
-
-Only one browser can hold the live event stream at a time. Opening the dashboard
-in another browser replaces the first live stream; the displaced page will try
-to reconnect. Use one Live dashboard when monitoring a pour. Ordinary pages
-and history requests are unaffected.
-
-## Prepare the next shot
-
-The Live view can keep a coffee and recipe visible while you prepare and brew.
+`Next Shot`, below `Now`, keeps a coffee and recipe visible while you prepare.
 Choose `Choose coffee` to select a coffee found in the loaded history or enter
 a new one. Review its details, including the roast date, then choose `Use
 coffee`. Selecting a coffee from history copies its preparation fields from the
@@ -145,7 +123,7 @@ opens the selected coffee's details; changing them preserves preparation and
 leaves historical shots unchanged. Choose `Use coffee` to return to the recipe,
 then `Save` to keep the draft.
 
-During an extraction, a compact Coffee card appears above the live
+During an extraction, a compact Coffee card appears below the live
 measurements. It shows the selected coffee, or `No coffee selected`. `Clear`
 removes the browser's next-shot recipe; it does not remove details already saved
 with a completed shot.
@@ -154,9 +132,10 @@ with a completed shot.
 
 ![Edit the coffee and preparation for the next shot](images/web-guide/next-shot-recipe.png)
 
-After a coffee has been selected, the Live view keeps the next recipe and the
-most recent loaded shot with that coffee visible while you prepare the next
-shot.
+After a coffee has been selected, the recipe shows grind, dose and target yield
+as its main values. `Previous with this coffee` shows the most recent loaded
+shot's grind, dose, measured yield and duration. Expand it to see the remaining
+preparation and results, open the shot, or choose `More shots`.
 
 ![Review previous shots made with the active coffee](images/web-guide/coffee-history.png)
 
@@ -174,7 +153,7 @@ the browser misses the live shot or the automatic save does not happen, open the
 shot's details and choose `Copy next recipe` to review and save it with the
 shot.
 
-### Recipe target yield
+#### Recipe target yield
 
 `Adjust recipe` includes an optional `Target yield (g)`, from 10 to 99.5 g in
 0.5 g steps. Saving or copying a recipe changes the browser recipe only.
@@ -189,6 +168,30 @@ the next shot. Changing the target on the device while also trying to apply a
 new target yield from the browser can cause conflicts and you may need to
 retry. If an apply cannot be confirmed, check the device alert setting before
 trying again.
+
+### Last shot
+
+The device's current Last Shot appears below `Next Shot`. This is normally the
+latest completed shot, but loading a saved shot for replay replaces it. The card
+shows:
+
+- Its date and time, or `Time unknown` if the clock was not available when the
+  shot began.
+- Grind, dose, measured yield and duration, when available.
+- The raw scale weight in smaller text when it differs from the yield because
+  the scale itself was not tared.
+- A chart with weight in blue, flow in yellow, and dashed pump-on and pump-off
+  markers.
+- Recipe target yield beneath measured yield. The device alert is shown
+  separately when it differs from the recipe target or was disabled.
+- Saved shot details, when present.
+- Controls to add or edit shot details and open the shot in History.
+
+History detail contains the cut-alert outcome, total pump-on time, and the
+`Technical` section (used for diagnosis).
+
+During an active pump window, the last-shot card collapses so the current pour
+has priority. Select the collapsed card to expand it temporarily.
 
 ## Shot history
 
@@ -358,7 +361,7 @@ history.
 Return Pump Bug to its on-device `LIVE` screen. The browser cannot activate
 pump detection or scale recording by itself.
 
-### A date says `time unknown`
+### A date says `Time unknown`
 
 The device clock was unavailable when that shot started. The stored record
 cannot be backfilled. Enable Wi-Fi and wait for a connection before the next

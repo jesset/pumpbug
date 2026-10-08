@@ -42,6 +42,8 @@ const context = {
     dataset: {},
     get id() { return this.attrs.id; },
     get type() { return this.attrs.type || 'text'; },
+    get className() { return this.attrs.class || ''; },
+    set className(value) { this.attrs.class = value; },
     get value() { return String(this.attrs.value ?? ''); },
     set value(value) { this.attrs.value = value; },
     append(...more) {
@@ -70,7 +72,7 @@ vm.runInContext(
   fs.readFileSync(historyPath, 'utf8') + '\n' +
   fs.readFileSync(sourcePath, 'utf8') + '\n' +
   'globalThis.api = { maxBytes: SHOT_METADATA_MAX_BYTES, fetchWithTimeout,' +
-    'metadataRecordFromRow, metadataValue, shotSummaryLines, appendShotSummary, shotSummaryFromRecord, appendShotMetadataDetails,' +
+    'metadataRecordFromRow, metadataValue, shotSummaryEntries, appendShotSummary, shotSummaryFromRecord, appendShotMetadataDetails,' +
     'coffeeIdentity, recipeFromMetadata, nextShotCoffee,' +
     'fieldValue, editorSectionCompatible, renderEditorCoffee, renderEditorPreparation, inputField, coffeeEditorFields,' +
     'readEditorValue, metadataNumericInputError, openMetadataEditor, editorExtractionYield,' +
@@ -440,6 +442,8 @@ for (const [picker, comparison, expected] of [
     'history subscription remounted details or failed to refresh coffee choices/comparison');
 }
 
+context.rawFinalCg = historyApp.rawFinalCg;
+
 const row = {
   id: 7,
   userMetadataState: 'active',
@@ -459,21 +463,26 @@ check(context.api.coffeeIdentity({ name: ' Halo Beriti ', roaster: ' Example ' }
       context.api.coffeeIdentity({ name: 'halo beriti', roaster: 'example' }),
   'coffee identity is not trim- and case-insensitive');
 // Fixtures use the same complete data shape returned by the History endpoint.
+function summaryLines(shot, options = {}) {
+  return context.api.shotSummaryEntries(shot, options).map(entry =>
+    entry.text || entry.parts.join(' · '));
+}
+
 function summary(value, measurements = {}) {
   return { id: 7, ...measurements, userMetadataState: 'active', userMetadata: value };
 }
-check(context.api.shotSummaryLines(summary({
+check(summaryLines(summary({
   coffee: { name: 'Halo Beriti', roastDate: '2026-08-12' },
   prep: { pressure: '9 bar' },
 })).includes('Roasted 2026-08-12'),
   'shot summaries omit the coffee roast date');
-check(context.api.shotSummaryLines(summary({ prep: { pressure: 'Blooming profile' } }))
+check(summaryLines(summary({ prep: { pressure: 'Blooming profile' } }))
   .includes('Blooming profile'),
   'shot summaries omit the pressure or profile');
-check(context.api.shotSummaryLines(summary({ prep: { water: 'Lotus Light & Bright' } }))
+check(summaryLines(summary({ prep: { water: 'Lotus Light & Bright' } }))
   .includes('Lotus Light & Bright'),
   'shot summaries omit the water');
-check(context.api.shotSummaryLines(summary({ rating: 3, tags: [1, 2] }))
+check(summaryLines(summary({ rating: 3, tags: [1, 2] }))
   .join('\n') === '★★★',
   'non-string tags added an empty shot-summary field');
 
@@ -484,7 +493,7 @@ context.api.appendShotSummary(extractionSummary,
 check(descendants(extractionSummary).some(node =>
   node.children.includes('8.6% TDS · EY 18.6%')),
   'shot summary did not show extraction calculated from measured yield');
-check(context.api.shotSummaryLines(summary({ tdsPct: 0, prep: { doseG: 18 } },
+check(summaryLines(summary({ tdsPct: 0, prep: { doseG: 18 } },
   { yieldCg: 3900 })).includes('0% TDS · EY 0.0%'),
   'zero TDS was treated as missing');
 for (const [name, value, measurements] of [
@@ -497,12 +506,12 @@ for (const [name, value, measurements] of [
   ['negative TDS', { tdsPct: -1, prep: { doseG: 18 } }, { yieldCg: 3900 }],
   ['TDS over 100', { tdsPct: 101, prep: { doseG: 18 } }, { yieldCg: 3900 }],
 ]) {
-  check(!context.api.shotSummaryLines(summary(value, measurements))
+  check(!summaryLines(summary(value, measurements))
     .join(' ').includes('EY'),
     'shot summary calculated extraction for ' + name);
 }
 for (const coffee of [undefined, { name: 'Coffee', roastDate: '2026-08-12' }]) {
-  const lines = context.api.shotSummaryLines(summary({
+  const lines = summaryLines(summary({
     coffee, prep: { doseG: 18 }, tdsPct: 8.6,
   }, { yieldCg: 3900 }), { showCoffeeName: false });
   check(lines.includes('18 g') &&
@@ -515,13 +524,13 @@ for (const [tdsPct, expected] of [
   [86, '186.3% — check TDS, dose, and beverage weight.'],
   [8.6, '18.6%'],
 ]) {
-  const lines = context.api.shotSummaryLines(summary({
+  const lines = summaryLines(summary({
     tdsPct, prep: { doseG: 18 },
   }, { yieldCg: 3900 }));
   check(lines.includes(tdsPct + '% TDS · EY ' + expected),
     'extraction feedback was incorrect for TDS ' + tdsPct);
 }
-check(context.api.shotSummaryLines(summary({
+check(summaryLines(summary({
   tdsPct: 50, prep: { doseG: 18 },
 }, { yieldCg: 3600 })).includes('50% TDS · EY 100.0%'),
   'extraction feedback incorrectly flagged the 100% boundary');
@@ -1791,7 +1800,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
         failedRevalidationPicker.includes('Shot history could not be refreshed.') &&
         JSON.stringify(recoveryHistory).includes('Retry') &&
         JSON.stringify(recoveryCoffee).includes('Retry history') &&
-        JSON.stringify(recoveryCoffee).includes('Shot #22') &&
+        renderedText(recoveryCoffee).includes('#22') &&
         !failedRevalidationPicker.includes('Retry older history'),
     'subscribers did not expose manual recovery from failed idle revalidation');
   let revalidationRetries = 0;
@@ -2586,8 +2595,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(renderedText(namedCard).includes('Grind1.8Dose18g') &&
     renderedText(namedCard).includes('EY 18.6%') &&
     renderedText(namedCard).includes('sweet · balanced') &&
-    context.api.shotSummaryLines(namedSummary).join('|').includes('grind 1.8 · 18 g') &&
-    context.api.shotSummaryLines(namedSummary).join('|').includes('sweet, balanced'),
+    summaryLines(namedSummary).join('|').includes('grind 1.8 · 18 g') &&
+    summaryLines(namedSummary).join('|').includes('sweet, balanced'),
     'card and text summary disagreed on valid fields or lost their own formatting');
   check(JSON.stringify(cardMetadata) === cardMetadataBefore,
     'normalizing a summary changed the saved metadata');
@@ -2599,7 +2608,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
       startUtcSec: 100, durationMs: 30000, yieldCg: 3900,
     });
     const malformedCard = context.renderHistoryShot(malformedSummary);
-    check(context.api.shotSummaryLines(malformedSummary).length === 0 &&
+    check(summaryLines(malformedSummary).length === 0 &&
       !descendants(malformedCard).some(node => node.attrs?.class === 'shot-result') &&
       descendants(malformedCard).filter(node => node.attrs?.class === 'shot-metric').length === 2,
       'card and text summary disagreed on malformed metadata: ' + JSON.stringify(malformed));
@@ -2615,10 +2624,13 @@ check(Object.keys(blankEditor.original).length === 0 &&
   const views = {
     el: context.el, document: context.document, localStorage: { getItem: () => null },
     state: null, inPumpWindow: () => false,
-    lastRecord: { shotId: 7, yieldCg: 9000 },
+    lastRecord: { shotId: 7, yieldCg: 9000, beginMs: 200, endMs: 31200,
+      target: { targetCg: 3600, armed: true } },
     selectedShotId: 7, selectedShot: { yieldCg: 3900 },
     selectedShotMetadata: summaryRecord, selectedShotError: null,
-    freshFinalizedAt: 0, fmtDate: () => '',
+    freshFinalizedAt: 0, fmtDate: () => '', fmtG: context.fmtG,
+    fmtMMSS: context.fmtMMSS, rawFinalCg: context.rawFinalCg, WEIGHT_DIFF_CG: 20,
+    finishedElapsedMs: shot => shot.endMs > 0 ? shot.endMs - shot.beginMs : null,
     record: summaryRecord,
   };
   vm.createContext(views);
@@ -2633,6 +2645,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
     return card;
   };
   views.techFold = () => views.el('div');
+  views.RecordChart = {};
+  views.renderCurve = () => {};
   vm.runInContext('lastShotMetadata = record;', views);
   const selectedView = views.el('main');
   views.renderDetail(selectedView);
@@ -2640,8 +2654,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
     'History detail caller did not use its displayed measurements');
   const liveView = views.el('main');
   views.renderLastShot(liveView);
-  check(JSON.stringify(liveView).includes('EY 43.0%') &&
-        !JSON.stringify(liveView).includes('Extraction yield'),
+  check(renderedText(liveView).includes('EY 43.0%') &&
+        !renderedText(liveView).includes('Extraction yield'),
     'Last Shot caller did not use its displayed measurements');
   views.selectedShotError = 'invalid';
   const invalidView = views.el('main');
@@ -2703,8 +2717,189 @@ check(Object.keys(blankEditor.original).length === 0 &&
     'damaged shot editor borrowed measurements from another view');
   check(detailMetadataReads === 3,
     'detail and Last Shot edit actions did not refresh metadata before opening');
-  if (checkCount !== 276) {
-    throw new Error(`expected 276 assertions, ran ${checkCount}`);
+
+  const dialInMetadata = { ...cardMetadata,
+    prep: { ...cardMetadata.prep, targetYieldG: 36 },
+    notes: 'Apricot and honey. Slightly dry finish; try a coarser grind next time.' };
+  context.fetchShotsPage = async () => historyPage([summary(dialInMetadata, {
+    startUtcSec: 100, durationMs: 30000, yieldCg: 3900,
+  })], { total: 1 });
+  await context.api.historyStore.refresh();
+  context.api.setNextRecipe({ coffee: cardMetadata.coffee,
+    prep: { grind: '1.9', doseG: 18, targetYieldG: 40 } });
+  const recipeView = context.el('main');
+  context.api.renderCoffeeContext(recipeView);
+  check(descendants(recipeView).some(node => node.tag === 'h2' &&
+    renderedText(node) === 'Next shot'), 'recipe card has no Next Shot context');
+  const recipeMetrics = descendants(recipeView).find(node =>
+    node.attrs?.class === 'shot-metrics recipe-metrics');
+  check(renderedText(recipeMetrics) === 'Grind1.9Dose18gTarget40g',
+    'next recipe did not show grind, dose and its own target');
+  const previous = descendants(recipeView).find(node =>
+    node.attrs?.class === 'coffee-previous');
+  check(!Object.hasOwn(previous.attrs, 'open') &&
+    descendants(previous.children[0]).filter(node =>
+      node.attrs?.class === 'shot-metric').length === 4 &&
+    renderedText(previous.children[0]).includes('Grind1.8Dose18gYield39gTarget 36 gTime30000'),
+    'collapsed previous shot hid preparation or used the next recipe measurements');
+  previous.open = false;
+  previous.children[0].attrs.onclick();
+  const refreshedRecipe = context.el('main');
+  context.api.renderCoffeeContext(refreshedRecipe);
+  check(descendants(refreshedRecipe).some(node =>
+    node.attrs?.class === 'coffee-previous' && Object.hasOwn(node.attrs, 'open')),
+    'a render before the deferred toggle event collapsed the previous shot');
+  previous.attrs.ontoggle({ currentTarget: { isConnected: false, open: false } });
+  const afterDetachedToggle = context.el('main');
+  context.api.renderCoffeeContext(afterDetachedToggle);
+  check(descendants(afterDetachedToggle).some(node =>
+    node.attrs?.class === 'coffee-previous' && Object.hasOwn(node.attrs, 'open')),
+    'a removed disclosure changed the current expansion state');
+  const expanded = descendants(afterDetachedToggle).find(node =>
+    node.attrs?.class === 'coffee-previous');
+  expanded.open = true;
+  expanded.children[0].attrs.onclick();
+  const closedRecipe = context.el('main');
+  context.api.renderCoffeeContext(closedRecipe);
+  check(!descendants(closedRecipe).find(node =>
+    node.attrs?.class === 'coffee-previous').attrs.open,
+    'a render before the deferred toggle event reopened the previous shot');
+  check(renderedText(expanded).includes('sweet · balanced') &&
+    descendants(expanded).some(node => node.attrs?.class === 'shot-note' &&
+      renderedText(node) === dialInMetadata.notes),
+    'expanded Previous hid tags or used a compact notes preview');
+  context.api.setCoffeeComparisonOpen(true);
+  const comparisonView = context.api.renderCoffeeComparison();
+  const comparisonCard = descendants(comparisonView).find(node =>
+    node.attrs?.class === 'comparison-row');
+  check(descendants(comparisonCard).filter(node =>
+    node.attrs?.class === 'shot-metric').length === 4 &&
+    renderedText(comparisonCard).includes('Grind1.8Dose18gYield39gTarget 36 gTime30000'),
+    'More shots did not use the same measured and recipe metrics');
+  check(renderedText(comparisonCard).includes('sweet · balanced') &&
+    descendants(comparisonCard).some(node => node.attrs?.class === 'shot-note' &&
+      renderedText(node) === dialInMetadata.notes),
+    'More shots hid tags or used a compact notes preview');
+  const compactCard = context.renderHistoryShot(summary(dialInMetadata, {
+    durationMs: 30000, yieldCg: 3900,
+  }));
+  check(!renderedText(compactCard).includes('sweet · balanced') &&
+    descendants(compactCard).some(node => node.attrs?.class === 'shot-note compact'),
+    'History stopped using the compact notes preview');
+  const restoreOverlayRenderer = context.renderMetadataOverlay;
+  context.renderMetadataOverlay = () => {};
+  descendants(comparisonCard).find(node =>
+    node.attrs?.['data-overlay-focus-key'] === 'comparison-use-7').attrs.onclick();
+  check(context.api.browserState().nextShotRecipe.prep.grind === ' 1.8 ' &&
+    context.api.browserState().nextShotRecipe.prep.targetYieldG === 36 &&
+    JSON.stringify(cardMetadata) === cardMetadataBefore,
+    'copying a comparison shot changed its saved preparation');
+  context.renderMetadataOverlay = restoreOverlayRenderer;
+
+  context.api.setNextRecipe({ coffee: cardMetadata.coffee,
+    prep: { grinder: 'Niche', tempC: 93 } });
+  const secondaryRecipe = context.el('main');
+  context.api.renderCoffeeContext(secondaryRecipe);
+  check(!descendants(secondaryRecipe).some(node =>
+    node.attrs?.class === 'shot-metrics recipe-metrics') &&
+    renderedText(secondaryRecipe).includes('Niche · 93°C') &&
+    !renderedText(secondaryRecipe).includes('No recipe set'),
+    'secondary preparation created empty recipe metrics or disappeared');
+
+  views.lastRecord = { shotId: 7, yieldCg: 3900, settledRawCg: 26400,
+    beginMs: 1000, endMs: 32000, target: { targetCg: 4000, armed: true } };
+  vm.runInContext('lastShotMetadata = record;', views);
+  const finalCard = views.el('main');
+  views.renderLastShot(finalCard);
+  check(renderedText(finalCard).includes('Dose18gYield39gTarget 36 gScale 264 gTime31000'),
+    'Last Shot lost its measured duration, raw scale weight or recorded preparation');
+  check(renderedText(finalCard).includes('Device alert: 40 g') &&
+    renderedText(finalCard).includes('EY 18.6%'),
+    'Last Shot confused the recorded device alert with the recipe target');
+  views.metadataFixture = { ...summaryRecord, value: dialInMetadata };
+  vm.runInContext('lastShotMetadata = metadataFixture;', views);
+  const tastingCard = views.el('main');
+  views.renderLastShot(tastingCard);
+  check(renderedText(tastingCard).includes('sweet · balanced') &&
+    descendants(tastingCard).some(node => node.attrs?.class === 'shot-note' &&
+      renderedText(node) === dialInMetadata.notes),
+    'Last Shot hid tags or used a compact notes preview');
+  for (const state of ['absent', 'corrupt', 'unsupported', 'unavailable', 'loading']) {
+    views.metadataFixture = { id: 7, state, loading: state === 'loading' };
+    vm.runInContext('lastShotMetadata = metadataFixture;', views);
+    const incompleteCard = views.el('main');
+    views.renderLastShot(incompleteCard);
+    check(descendants(incompleteCard).filter(node =>
+      node.attrs?.class === 'shot-metric').length === 2 &&
+      !renderedText(incompleteCard).includes('EY '),
+      'Last Shot displayed missing preparation for state ' + state);
+    const expected = {
+      absent: 'Coffee not set', corrupt: 'Shot details damaged',
+      unsupported: 'Shot details need newer firmware',
+      unavailable: 'Load shot details', loading: 'Loading shot details…',
+    }[state];
+    check(renderedText(incompleteCard).includes(expected) &&
+      (state === 'absent' || !renderedText(incompleteCard).includes('Coffee not set')),
+      'Last Shot lost the metadata state or claimed unknown coffee was absent: ' + state);
+  }
+
+  let weightArguments;
+  let timerTick;
+  Object.assign(views, {
+    view: 'live',
+    state: { active: true, phase: 'IDLE', scale: 'connected', currentWeightCg: 1300 },
+    inPumpWindow: context.inPumpWindow,
+    bigWeight: (weight, raw) => {
+      weightArguments = [weight, raw];
+      return views.el('div', { class: 'big' }, String(weight));
+    },
+    fmtTimer: ms => String(ms),
+    setInterval: callback => { timerTick = callback; return 1; },
+    clearInterval() {}, LiveChart: {},
+    inflight: { target: { targetCg: 3600, armed: true }, sampleCount: 0 },
+  });
+  const idleNow = views.el('main');
+  views.renderNowCard(idleNow);
+  check(weightArguments[0] === 1300 && weightArguments[1] === null &&
+    !descendants(idleNow).some(node => node.attrs?.class?.includes('timer')),
+    'idle Now lost the raw scale reading or retained an unused timer');
+  views.state = { ...views.state, phase: 'RUNNING', pouring: true,
+    currentYieldCg: 1800, currentWeightCg: 23800, elapsedMs: 16000 };
+  const recordingNow = views.el('main');
+  views.renderNowCard(recordingNow);
+  const readouts = descendants(recordingNow).find(node =>
+    node.attrs?.class === 'now-measurements');
+  check(readouts.children.length === 2 && weightArguments[0] === 1800 &&
+    weightArguments[1] === 23800 && renderedText(readouts).includes('Time16000'),
+    'recording Now lost its yield, raw reading or adjacent running timer');
+  views.state.elapsedMs = 17000;
+  timerTick();
+  check(descendants(recordingNow).find(node =>
+    node.attrs?.class === 'big timer').textContent === '17000',
+    'the moved timer stopped updating between state packets');
+  for (const [phase, pouring, stopping, status, measurement] of [
+    ['RUNNING', false, false, 'Pump running', 'scale'],
+    ['RUNNING', true, true, 'Pump stopping', 'yield'],
+    ['POST_PUMP', true, false, '', 'yield'],
+  ]) {
+    views.state = { ...views.state, phase, pouring, pumpDecayCandidate: stopping };
+    const now = views.el('main');
+    views.renderNowCard(now);
+    const nodes = descendants(now);
+    const pumpStatus = nodes.find(node => node.attrs?.class === 'now-pump-status');
+    check(renderedText(pumpStatus) === status &&
+      nodes.filter(node => node.attrs?.class === 'mode').map(renderedText).join('|') ===
+        measurement + '|Time',
+      'Now mixed pump status into measurement labels: ' + phase + ', stopping=' + stopping);
+  }
+  views.state = { ...views.state, phase: 'IDLE', pouring: false };
+  const orderedLive = views.el('main');
+  views.renderLive(orderedLive);
+  check(orderedLive.children.map(node => node.attrs.class).join('|') ===
+    'card now idle|coffee-context|card record last-shot',
+    'Live did not put current measurements before the next recipe and last result');
+  if (checkCount !== 308) {
+    throw new Error(`expected 308 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

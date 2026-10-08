@@ -15,6 +15,7 @@ let coffeeHistoryFeedback = null;
 let metadataOverlayReturnFocus = null;
 let nextShotRecipe = {};
 let nextShotRecipeSourceId = null;
+let expandedPreviousCoffee = null;
 
 // Device state is populated only by SSE. Applying a recipe is a one-time
 // command; neither storage restoration nor a stream reconnect sends settings.
@@ -419,6 +420,92 @@ function metadataPreparationParts(prep) {
   return preparation;
 }
 
+function shotMetric(icon, label, value, unit = '', secondary = null) {
+  return el('div', { class: 'shot-metric' },
+    el('div', { class: 'shot-metric-label' }, uiIcon(icon), label),
+    el('div', { class: 'shot-metric-value' }, value ?? '—',
+      value != null && unit ? el('span', { class: 'shot-metric-unit' }, unit) : null),
+    secondary ? el('div', { class: 'shot-metric-secondary' }, secondary) : null);
+}
+
+function shotMetrics(summary) {
+  const { prep } = shotSummaryData(summary);
+  const hasPreparation = prep.grind || prep.doseG !== null;
+  const weight = Number.isFinite(summary.yieldCg) && summary.yieldCg !== NO_WEIGHT_CG
+    ? fmtG(summary.yieldCg) : null;
+  const duration = Number.isFinite(summary.durationMs)
+    ? summary.durationMs
+    : Number.isFinite(summary.beginMs) && Number.isFinite(summary.endMs)
+      ? finishedElapsedMs(summary) : null;
+  const target = prep.targetYieldG > 0 ? 'Target ' + prep.targetYieldG + ' g' : null;
+  const yieldMetric = shotMetric('yield', 'Yield', weight, 'g', target);
+  const raw = rawFinalCg(summary);
+  if (weight !== null && Number.isFinite(raw) &&
+      Math.abs(raw - summary.yieldCg) > WEIGHT_DIFF_CG) {
+    yieldMetric.append(el('div', { class: 'shot-metric-secondary' },
+      'Scale ' + fmtG(raw) + ' g'));
+  }
+  return el('div', { class: 'shot-metrics' +
+    (hasPreparation ? '' : ' measurements-only') },
+    ...(hasPreparation ? [
+      shotMetric('grind', 'Grind', prep.grind),
+      shotMetric('dose', 'Dose', prep.doseG, 'g'),
+    ] : []), yieldMetric,
+    shotMetric('timer', 'Time', duration === null ? null : fmtMMSS(duration)));
+}
+
+function shotDate(summary) {
+  return el('div', { class: 'shot-date' },
+    el('span', {}, fmtDate(summary.startUtcSec) || 'Time unknown'),
+    summary.id ? el('span', {}, '#' + summary.id) : null);
+}
+
+function shotCoffeeIdentity(id, data, unknownLabel = null) {
+  const { coffee, record } = data;
+  const known = ['active', 'absent', 'cleared'].includes(record?.state);
+  const name = coffee.name || (known ? 'Coffee not set' : unknownLabel);
+  if (!name) return null;
+  const title = id ? shotOpenButton(id, name) : el('div', {}, name);
+  title.className += ' shot-coffee-name' + (coffee.name ? '' : ' missing');
+  return el('div', { class: 'shot-coffee' }, title,
+    coffee.roaster ? el('div', { class: 'shot-roaster' }, coffee.roaster) : null);
+}
+
+function appendPreparationDetails(parent, prep) {
+  const parts = metadataPreparationParts({
+    grinder: prep.grinder, tempC: prep.tempC,
+    pressure: prep.pressure, water: prep.water,
+  });
+  if (parts.length) parent.append(el('div', { class: 'preparation-details' },
+    parts.join(' · ')));
+}
+
+function appendShotResult(parent, data, { compact = false } = {}) {
+  const result = el('div', { class: 'shot-result' });
+  const rating = ratingText(data);
+  if (rating) result.append(el('span', { class: 'shot-rating', role: 'img',
+    'aria-label': data.rating + ' out of 5 stars' }, rating));
+  const measurements = el('span', { class: 'shot-result-measurements' });
+  if (data.tdsPct !== null) measurements.append(el('span', {},
+    el('span', { class: 'dim' }, 'TDS '), data.tdsPct + '%'));
+  if (data.extractionYieldPct !== null) measurements.append(el('span', {},
+    el('span', { class: 'dim' }, 'EY '), data.extractionYieldPct.toFixed(1) + '%'));
+  if (measurements.childNodes.length) result.append(measurements);
+  if (!compact && data.tags.length) result.append(el('span',
+    { class: 'shot-tags' }, data.tags.join(' · ')));
+  if (result.childNodes.length) parent.append(result);
+  if (compact) {
+    const preview = data.notes || data.tags.join(' · ');
+    if (preview) parent.append(el('p', { class: 'shot-note compact' }, preview));
+  } else if (data.notes) {
+    const notes = data.notes.length > 100
+      ? data.notes.slice(0, 97) + '…' : data.notes;
+    parent.append(el('p', { class: 'shot-note' }, notes));
+  }
+  if (data.extractionYieldPct > 100) parent.append(el('p', { class: 'err shot-note' },
+    'Check TDS, dose, and beverage weight.'));
+}
+
 function extractionYieldPct(tdsPct, doseG, yieldCg) {
   if (!Number.isFinite(tdsPct) || tdsPct < 0 || tdsPct > 100 ||
       !Number.isFinite(doseG) || doseG <= 0 ||
@@ -468,11 +555,6 @@ function shotSummaryEntries(summary, {
       ? notes.slice(0, 97) + '…' : notes });
   }
   return entries;
-}
-
-function shotSummaryLines(summary, options = {}) {
-  return shotSummaryEntries(summary, options).map(entry => entry.text ||
-    entry.parts.join(' · '));
 }
 
 function appendShotSummary(parent, summary, options = {}) {
@@ -623,12 +705,21 @@ function downloadShotDetailsJson(id, record, { draft = false } = {}) {
   URL.revokeObjectURL(url);
 }
 
-function appendShotMetadataDetails(parent, summary, options = {}) {
-  const { shortExtractionLabel = false } = options;
+function appendShotMetadataStatus(parent, record) {
+  if (!record || record.state === 'unavailable') {
+    parent.append(el('p', { class: 'empty compact' },
+      'Shot details have not been loaded.'));
+  } else if (record.loading) {
+    parent.append(el('p', { class: 'empty compact' }, 'Loading shot details…'));
+  } else if (record.state === 'corrupt' || record.state === 'unsupported') {
+    parent.append(el('p', { class: 'err shot-note' }, record.state === 'corrupt'
+      ? 'Shot details damaged' : 'Shot details need newer firmware'));
+  }
+}
+
+function shotMetadataActions(summary, options = {}) {
   const { id } = summary;
   const record = metadataRecordFromRow(summary);
-  const section = el('section', { class: 'shot-metadata' },
-    el('h2', {}, 'Shot details'));
   const actions = el('div', { class: 'metadata-actions' });
   if (options.openInHistory) {
     actions.append(el('button', {
@@ -636,17 +727,12 @@ function appendShotMetadataDetails(parent, summary, options = {}) {
     }, 'View shot'));
   }
   if (!record || record.state === 'unavailable') {
-    section.append(el('p', { class: 'empty compact' },
-      'Shot details have not been loaded.'));
     actions.append(el('button', {
       class: 'secondary',
       'data-overlay-return-key': 'shot-details-' + id,
       onclick: () => loadShotMetadata(summary),
     }, 'Load shot details'));
-  } else if (record.loading) {
-    section.append(el('p', { class: 'empty compact' }, 'Loading shot details…'));
-  } else {
-    appendShotSummary(section, summary, { shortExtractionLabel });
+  } else if (!record.loading) {
     if (record.state !== 'unsupported' && record.etag) {
       actions.append(el('button', {
         class: 'secondary', 'data-overlay-return-key': 'shot-details-' + id,
@@ -663,6 +749,19 @@ function appendShotMetadataDetails(parent, summary, options = {}) {
       }
     }
   }
+  return actions;
+}
+
+function appendShotMetadataDetails(parent, summary, options = {}) {
+  const record = metadataRecordFromRow(summary);
+  const section = el('section', { class: 'shot-metadata' },
+    el('h2', {}, 'Shot details'));
+  if (record?.state === 'active' && !record.loading) {
+    appendShotSummary(section, summary, { shortExtractionLabel: false });
+  } else {
+    appendShotMetadataStatus(section, record);
+  }
+  const actions = shotMetadataActions(summary, options);
   if (actions.childNodes.length) section.append(actions);
   parent.append(section);
 }
@@ -1023,8 +1122,8 @@ function renderCoffeeContext(app) {
     app.append(section);
     return;
   }
+  section.append(el('h2', {}, 'Next shot'));
   if (!coffee) {
-    section.append(el('h2', {}, 'Coffee'));
     section.append(el('button', { class: 'secondary',
       'data-overlay-return-key': 'choose-coffee',
       onclick: () => openCoffeePicker() }, 'Choose coffee'));
@@ -1035,24 +1134,35 @@ function renderCoffeeContext(app) {
 
   const name = nonemptyString(coffee.name);
   const roaster = nonemptyString(coffee.roaster);
-  const label = roaster ? name + ' · ' + roaster : name;
   section.append(el('div', { class: 'coffee-context-head' },
-    el('h2', {}, 'Coffee'),
+    el('div', { class: 'coffee-identity' },
+      el('h3', { class: 'coffee-title' }, name),
+      roaster ? el('div', { class: 'shot-roaster' }, roaster) : null),
     el('div', { class: 'coffee-context-actions' },
       el('button', { class: 'backlink',
         'data-overlay-return-key': 'change-coffee',
         onclick: () => openCoffeePicker() }, 'Change'),
       coffeeClearButton())));
-  section.append(el('div', { class: 'coffee-name' }, label));
   if (roastDate) section.append(el('div', { class: 'coffee-roast-date' },
     'Roasted ' + roastDate));
   const next = el('div', { class: 'coffee-context-block' },
-    el('h3', {}, 'Next recipe'));
+    el('div', { class: 'coffee-block-heading' },
+      el('h3', {}, 'Recipe'),
+      el('button', { class: 'backlink recipe-edit',
+        'data-overlay-return-key': 'adjust-recipe',
+        onclick: () => openNextShotEditor() }, uiIcon('edit'), 'Adjust recipe')));
   const prep = isPlainObject(nextShotRecipe.prep) ? nextShotRecipe.prep : {};
   const prepLine = metadataPreparationParts(prep);
-  if (prepLine.length) {
-    next.append(el('div', { class: 'coffee-prep' }, prepLine.join(' · ')));
-  } else {
+  if (nonemptyString(prep.grind) || Number.isFinite(prep.doseG) ||
+      Number.isFinite(prep.targetYieldG)) {
+    next.append(el('div', { class: 'shot-metrics recipe-metrics' },
+      shotMetric('grind', 'Grind', nonemptyString(prep.grind)),
+      shotMetric('dose', 'Dose', Number.isFinite(prep.doseG) ? prep.doseG : null, 'g'),
+      shotMetric('yield', 'Target', Number.isFinite(prep.targetYieldG)
+        ? prep.targetYieldG : null, 'g')));
+  }
+  appendPreparationDetails(next, prep);
+  if (!prepLine.length) {
     next.append(el('div', { class: 'coffee-prep empty' }, 'No recipe set'));
   }
   if (nextShotRecipeSourceId) {
@@ -1063,11 +1173,6 @@ function renderCoffeeContext(app) {
       (source && fmtDate(source.startUtcSec) ? ' · ' + fmtDate(source.startUtcSec)
                                            : '')));
   }
-  next.append(el('div', { class: 'coffee-section-actions' },
-    el('button', { class: 'primary',
-      'data-overlay-return-key': 'adjust-recipe',
-      onclick: () => openNextShotEditor() },
-      'Adjust recipe')));
   renderDeviceTarget(next);
   section.append(next);
   if (!state || state.storage === 'unavailable') {
@@ -1079,7 +1184,7 @@ function renderCoffeeContext(app) {
   const previous = el('div', {
     class: 'coffee-context-block coffee-context-history',
   },
-    el('h3', {}, 'Previous with this coffee'));
+    ...(matches.length ? [] : [el('h3', {}, 'Previous with this coffee')]));
   if (historyStore.error && historyStore.rows === null) {
     previous.append(el('div', { class: 'coffee-last-detail' },
       'Previous shots could not be loaded.'));
@@ -1092,20 +1197,30 @@ function renderCoffeeContext(app) {
       'Loading previous shots…'));
   } else if (matches.length) {
     const newest = matches[0];
-    previous.append(el('div', { class: 'coffee-last' },
-      'Shot #' + newest.id +
-      (fmtDate(newest.startUtcSec) ? ' · ' + fmtDate(newest.startUtcSec) : '')));
-    const details = shotSummaryLines(newest, { showCoffeeName: false });
-    if (Number.isFinite(newest.yieldCg)) {
-      details.unshift(fmtG(newest.yieldCg) + ' g yield');
-    }
-    for (const line of details) {
-      previous.append(el('div', { class: 'coffee-last-detail' }, line));
-    }
-    previous.append(el('div', { class: 'coffee-section-actions' },
-      el('button', { class: 'secondary',
+    const identity = coffeeIdentity(coffee);
+    const disclosure = el('details', { class: 'coffee-previous',
+      ...(expandedPreviousCoffee === identity ? { open: '' } : {}),
+      ontoggle: event => {
+        if (!event.currentTarget.isConnected) return;
+        expandedPreviousCoffee = event.currentTarget.open ? identity : null;
+      } },
+      el('summary', { onclick: () => {
+        expandedPreviousCoffee = disclosure.open ? null : identity;
+      } },
+        el('div', { class: 'coffee-previous-heading' },
+          el('h3', {}, 'Previous with this coffee'),
+          el('span', { class: 'coffee-previous-chevron', 'aria-hidden': 'true' }, '⌄')),
+        shotMetrics(newest)));
+    const detail = el('div', { class: 'coffee-previous-detail' }, shotDate(newest));
+    const data = shotSummaryData(newest);
+    if (data.coffee.roastDate) detail.append(el('div', { class: 'coffee-roast-date' },
+      'Roasted ' + data.coffee.roastDate));
+    appendPreparationDetails(detail, data.prep);
+    appendShotResult(detail, data);
+    detail.append(el('div', { class: 'coffee-section-actions' },
+      el('button', { class: 'backlink',
         onclick: () => selectShot(newest.id) }, 'View shot'),
-      el('button', { class: 'secondary',
+      el('button', { class: 'backlink',
         'data-overlay-return-key': 'compare-coffee', onclick: () => {
         metadataEditor = null;
         coffeePicker = null;
@@ -1113,6 +1228,8 @@ function renderCoffeeContext(app) {
         cancelMetadataEditorLoad();
         renderMetadataOverlay();
       } }, 'More shots')));
+    disclosure.append(detail);
+    previous.append(disclosure);
   } else {
     const loaded = historyStore.rows.length;
     previous.append(el('div', { class: 'coffee-last-detail' },
@@ -1236,14 +1353,12 @@ function renderCoffeeComparison() {
       ' loaded history rows'));
   for (const row of matches) {
     const value = metadataValue(metadataRecordFromRow(row));
-    const card = el('section', { class: 'comparison-row' },
-      el('div', { class: 'head' },
-        el('span', {}, fmtDate(row.startUtcSec) || 'time unknown'),
-        el('span', { class: 'id' }, '#' + row.id)),
-      el('div', { class: 'comparison-result' },
-        [ratingText(value), Number.isFinite(row.yieldCg)
-          ? fmtG(row.yieldCg) + ' g' : null].filter(Boolean).join(' · ')));
-    appendShotSummary(card, row);
+    const data = shotSummaryData(row);
+    const card = el('section', { class: 'comparison-row' }, shotDate(row),
+      data.coffee.roastDate ? el('div', { class: 'coffee-roast-date' },
+        'Roasted ' + data.coffee.roastDate) : null, shotMetrics(row));
+    appendPreparationDetails(card, data.prep);
+    appendShotResult(card, data);
     card.append(el('div', { class: 'metadata-actions' },
       el('button', { class: 'secondary',
         'data-overlay-focus-key': 'comparison-use-' + row.id,
