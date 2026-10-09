@@ -112,11 +112,14 @@ waiting for the scale or for samples.
 ### Prepare the next shot
 
 `Next Shot`, below `Now`, keeps a coffee and recipe visible while you prepare.
-Choose `Choose coffee` to select a coffee found in the loaded history or enter
-a new one. Review its details, including the roast date, then choose `Use
-coffee`. Selecting a coffee from history copies its preparation fields from the
-newest shot where it was used. The picker lists coffees from loaded shot
-history; choose `Search older history` there to look through additional pages.
+Choose `Choose coffee` to select a coffee found in the loaded history, or choose
+`New coffee` in the picker to open blank coffee details. Enter a name and any
+other details, including the roast date, then choose `Use coffee`. Selecting a
+coffee from history copies its saved details and preparation from the newest
+loaded shot where it was used. `New coffee` carries over the current recipe's
+preparation. Use `Adjust recipe` to review, change or clear those
+values. The picker lists coffees from loaded shot history; choose
+`Search older history` there to look through additional pages.
 
 `Adjust recipe` sets the parameters for the next shot. `Edit coffee`
 opens the selected coffee's details; changing them preserves preparation and
@@ -155,7 +158,7 @@ shot.
 
 #### Recipe target yield
 
-`Adjust recipe` includes an optional `Target yield (g)`, from 10 to 99.5 g in
+`Adjust recipe` includes an optional `Target (g)`, from 10 to 99.5 g in
 0.5 g steps. Saving or copying a recipe changes the browser recipe only.
 
 When the device target doesn't match the recipe, the Live view shows a message.

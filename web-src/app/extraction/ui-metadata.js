@@ -843,7 +843,8 @@ function inputField(label, options) {
   });
   if (options.disabled) input.disabled = true;
   return el('div', { class: options.wide ? 'field wide' : 'field' },
-    el('label', {}, el('span', {}, label), input));
+    el('label', {}, el('span', {}, ...(options.icon ? [uiIcon(options.icon)] : []),
+      label), input));
 }
 
 // Search feedback belongs to the open coffee dialog. Closing or replacing the
@@ -1005,6 +1006,13 @@ function chooseCoffee(coffee) {
   coffeePicker.recipe = newest
     ? recipeFromMetadata(metadataValue(metadataRecordFromRow(newest)))
     : { coffee: cloneJson(coffee) };
+  const enteringNewCoffee = !coffeeIdentity(coffee);
+  if (enteringNewCoffee) {
+    const currentRecipe = metadataEditor ? metadataEditor.original : nextShotRecipe;
+    if (isPlainObject(currentRecipe.prep)) {
+      coffeePicker.recipe.prep = cloneJson(currentRecipe.prep);
+    }
+  }
   coffeePicker.sourceId = newest && historyStore.rowsAreCurrent ? newest.id : null;
   coffeePicker.sourceCoffeeIdentity = coffeeIdentity(coffeePicker.recipe.coffee);
   coffeePicker.selectionChanged = true;
@@ -1033,13 +1041,13 @@ function confirmCoffeeChoice(form) {
     }
     return;
   }
+  const sourceId = coffeeIdentity(recipe.coffee) === coffeePicker.sourceCoffeeIdentity
+    ? coffeePicker.sourceId : null;
   if (!coffeePicker.onChoose && encodeShotMetadata(recipe).tooLarge) {
     coffeePicker.error = { message: metadataTooLargeMessage() };
     showEditorFormError(form, coffeePicker.error.message);
     return;
   }
-  const sourceId = coffeeIdentity(recipe.coffee) === coffeePicker.sourceCoffeeIdentity
-    ? coffeePicker.sourceId : null;
   const selectionChanged = coffeePicker.selectionChanged;
   if (coffeePicker.onChoose) {
     const onChoose = coffeePicker.onChoose;
@@ -1109,7 +1117,6 @@ async function openCoffeePicker(onChoose = null, coffee = null) {
   coffeeComparisonOpen = false;
   const picker = {
     onChoose,
-    newCoffee: { name: '', roaster: '' },
     stage: coffee ? 'details' : 'select',
     recipe: coffee ? { coffee: cloneJson(coffee) } : null,
     selectionChanged: false,
@@ -1338,42 +1345,24 @@ function renderCoffeePicker() {
       feedback: coffeeHistoryFeedbackForDialog(),
     });
   }
-  const form = el('form', { class: 'new-coffee', onsubmit: event => {
-    event.preventDefault();
-    const name = form.elements.name.value.trim();
-    if (!name) return;
-    const coffee = { name };
-    const roaster = form.elements.roaster.value.trim();
-    if (roaster) coffee.roaster = roaster;
-    chooseCoffee(coffee);
-  } },
-    el('h2', {}, 'New coffee'),
-    inputField('Coffee', {
-      name: 'name', value: picker.newCoffee.name, wide: true,
-      initialFocus: initialFocus === 'new-coffee',
-    }),
-    inputField('Roaster', {
-      name: 'roaster', value: picker.newCoffee.roaster, wide: true,
-    }),
-    el('button', { type: 'submit', class: 'primary',
-      'data-overlay-focus-key': 'coffee-picker-submit' }, 'Continue'));
-  form.addEventListener('input', () => {
-    if (coffeePicker !== picker) return;
-    picker.newCoffee.name = form.elements.name.value;
-    picker.newCoffee.roaster = form.elements.roaster.value;
-  });
-  body.append(form);
   return el('div', { class: 'modal-backdrop' },
     el('section', { class: 'modal compact', role: 'dialog', 'aria-modal': 'true',
       tabindex: '-1', 'aria-label': 'Choose coffee' },
     el('div', { class: 'modal-head' }, el('h1', {}, 'Choose coffee'),
+      el('div', { class: 'modal-head-actions' },
+      el('button', { type: 'button', class: 'secondary',
+        'data-overlay-focus-key': 'coffee-picker-new',
+        ...(initialFocus === 'new-coffee'
+          ? { 'data-overlay-initial-focus': 'true' }
+          : {}),
+        onclick: () => chooseCoffee({}) }, 'New coffee'),
       el('button', { type: 'button', class: 'modal-close',
         'data-overlay-focus-key': 'coffee-picker-close',
         ...(initialFocus === 'close'
           ? { 'data-overlay-initial-focus': 'true' }
           : {}),
         onclick: () => { coffeePicker = null; renderMetadataOverlay(); },
-        'aria-label': 'Close' }, '×')),
+        'aria-label': 'Close' }, '×'))),
     body));
 }
 
@@ -1477,7 +1466,7 @@ function renderMetadataOverlay() {
   const overlayFocusKey = hadOverlayFocus && active.getAttribute
     ? active.getAttribute('data-overlay-focus-key') : null;
   const pickerFocus = coffeePicker && active && active.name && active.form &&
-    active.form.classList.contains('new-coffee')
+    active.form.classList.contains('coffee-details-form')
     ? {
       name: active.name,
       start: active.selectionStart,
@@ -1503,7 +1492,7 @@ function renderMetadataOverlay() {
   if (error && (!previousError || error.textContent !== previousErrorText)) {
     error.focus();
   } else if (pickerFocus) {
-    const form = overlay.querySelector('form.new-coffee');
+    const form = overlay.querySelector('form.coffee-details-form');
     const input = form && form.elements[pickerFocus.name];
     if (input) {
       input.focus();
@@ -1692,7 +1681,7 @@ function appendEditorFieldError(input, message) {
   const error = el('span', { id, class: 'err field-error' });
   error.textContent = message;
   error.dataset.fieldName = input.name;
-  const field = input.closest('.field-with-action') || input.closest('.field');
+  const field = input.closest('.field');
   field.append(error);
   const descriptions = new Set((input.getAttribute('aria-describedby') || '')
     .split(/\s+/).filter(Boolean));
@@ -2225,20 +2214,24 @@ function coffeeEditorFields(value, onChoose) {
   const coffeeName = inputField('Coffee', { name: 'coffee.name',
     value: fieldValue(value, 'coffee', 'name'),
     disabled: !editorFieldCompatible(value, 'coffee', 'name'), wide: true });
-  const coffeeFields = el('div', { class: 'field-grid' },
-    el('div', { class: 'field-with-action wide' }, coffeeName,
+  const coffeeGroup = el('section', { class: 'coffee-field-group' },
+    el('div', { class: 'editor-section-head' }, el('h2', {}, 'Coffee'),
       el('button', { type: 'button', class: 'secondary',
-        onclick: onChoose }, 'Choose another')),
+        onclick: onChoose }, 'Choose from history')),
+    el('div', { class: 'field-grid' }, coffeeName,
     inputField('Roaster', { name: 'coffee.roaster',
       value: fieldValue(value, 'coffee', 'roaster'), list: 'coffee-roasters',
-      disabled: !editorFieldCompatible(value, 'coffee', 'roaster') }),
-    inputField('Origin', { name: 'coffee.origin',
-      value: fieldValue(value, 'coffee', 'origin'), list: 'coffee-origins',
-      disabled: !editorFieldCompatible(value, 'coffee', 'origin') }),
+      disabled: !editorFieldCompatible(value, 'coffee', 'roaster'), wide: true })));
+  const additionalGroup = el('section', { class: 'coffee-field-group' },
+    el('h2', {}, 'Additional details'),
+    el('div', { class: 'field-grid' },
     inputField('Roast date', { name: 'coffee.roastDate', type: roastDateType,
       value: roastDate,
       ...(roastDateType === 'text' ? { placeholder: 'YYYY-MM-DD' } : {}),
       disabled: !editorFieldCompatible(value, 'coffee', 'roastDate') }),
+    inputField('Origin', { name: 'coffee.origin',
+      value: fieldValue(value, 'coffee', 'origin'), list: 'coffee-origins',
+      disabled: !editorFieldCompatible(value, 'coffee', 'origin') }),
     inputField('Roast', { name: 'coffee.roast',
       value: fieldValue(value, 'coffee', 'roast'), list: 'coffee-roasts',
       disabled: !editorFieldCompatible(value, 'coffee', 'roast') }),
@@ -2247,8 +2240,8 @@ function coffeeEditorFields(value, onChoose) {
       disabled: !editorFieldCompatible(value, 'coffee', 'process') }),
     inputField('Variety', { name: 'coffee.variety',
       value: fieldValue(value, 'coffee', 'variety'), list: 'coffee-varieties',
-      disabled: !editorFieldCompatible(value, 'coffee', 'variety') }),
-  );
+      disabled: !editorFieldCompatible(value, 'coffee', 'variety') })));
+  const coffeeFields = el('div', { class: 'coffee-editor-fields' }, coffeeGroup, additionalGroup);
   if (!coffeeOk) coffeeFields.prepend(el('p', { class: 'field-warning' },
     'Some coffee fields contain values this editor cannot edit directly. ' +
     'They are preserved unless you choose another coffee.'));
@@ -2257,7 +2250,7 @@ function coffeeEditorFields(value, onChoose) {
 }
 
 function renderCoffeeDetails(picker) {
-  const form = el('form', { class: 'new-coffee', onsubmit: event => {
+  const form = el('form', { class: 'coffee-details-form', onsubmit: event => {
     event.preventDefault();
     confirmCoffeeChoice(form);
   } });
@@ -2301,7 +2294,10 @@ function renderCoffeeDetails(picker) {
       tabindex: '-1', 'aria-label': 'Coffee details' },
     el('div', { class: 'modal-head' }, el('h1', {}, 'Coffee details'),
       el('button', { type: 'button', class: 'modal-close',
-        'data-overlay-initial-focus': 'true', onclick: cancel,
+        ...(coffeeIdentity(picker.recipe.coffee)
+          ? { 'data-overlay-initial-focus': 'true' }
+          : {}),
+        onclick: cancel,
         'aria-label': 'Close' }, '×')),
     form));
 }
@@ -2394,18 +2390,18 @@ function renderMetadataEditor() {
     if (section) section.open = true;
   }, true);
 
-  const prepFields = el('div', { class: 'field-grid' },
-    inputField('Grind', { name: 'prep.grind',
+  const prepFields = el('div', { class: 'field-grid recipe-fields' },
+    inputField('Grind', { name: 'prep.grind', icon: 'grind',
       value: fieldValue(value, 'prep', 'grind'), list: 'prep-grinds',
       disabled: !editorFieldCompatible(value, 'prep', 'grind') }),
-    inputField('Target yield (g)', { name: 'prep.targetYieldG', type: 'number',
+    inputField('Dose (g)', { name: 'prep.doseG', type: 'number', step: 'any', icon: 'dose',
+      value: fieldValue(value, 'prep', 'doseG', 'number'),
+      disabled: !editorFieldCompatible(value, 'prep', 'doseG', 'number') }),
+    inputField('Target (g)', { name: 'prep.targetYieldG', type: 'number', icon: 'yield',
       min: String(TARGET_MIN_CG / 100), max: String(TARGET_MAX_CG / 100),
       step: String(TARGET_STEP_CG / 100),
       value: fieldValue(value, 'prep', 'targetYieldG', 'number'),
       disabled: !editorFieldCompatible(value, 'prep', 'targetYieldG', 'number') }),
-    inputField('Dose (g)', { name: 'prep.doseG', type: 'number', step: 'any',
-      value: fieldValue(value, 'prep', 'doseG', 'number'),
-      disabled: !editorFieldCompatible(value, 'prep', 'doseG', 'number') }),
   );
   const morePrepFields = el('div', { class: 'field-grid' },
     inputField('Grinder', { name: 'prep.grinder',
@@ -2523,15 +2519,14 @@ function renderMetadataEditor() {
     })()),
   );
 
-  const size = el('div', { class: 'metadata-size' });
+  const size = el('div', { class: 'metadata-size err' });
   const updateSize = () => {
     const value = readEditorValue(form, metadataEditor.original);
     const encodedBytes = new TextEncoder().encode(JSON.stringify(value)).length;
     const remaining = SHOT_METADATA_MAX_BYTES - encodedBytes;
-    size.textContent = remaining >= 0
-      ? remaining + ' bytes available'
-      : -remaining + ' bytes over limit';
-    size.classList.toggle('err', encodedBytes > SHOT_METADATA_MAX_BYTES);
+    size.hidden = remaining >= 0;
+    size.textContent = remaining >= 0 ? '' :
+      `${(-remaining).toLocaleString()} bytes over the size limit.`;
   };
   form.addEventListener('input', event => {
     clearEditorFieldErrors(form, event?.target);
