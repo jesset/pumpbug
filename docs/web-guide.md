@@ -287,10 +287,12 @@ without deleting the shot record. `Cancel` closes the editor without saving.
 
 ### Read the chart
 
-- The blue curve and shaded area show yield in grams.
+- The blue curve and shaded area show yield in grams. Before pour flow is
+  detected, the live chart shows raw scale weight, labelled `Weight (g)`.
 - The yellow curve uses the right axis and shows filtered flow in grams per
   second.
-- Dashed vertical markers identify pump-on and pump-off events.
+- Grey dashed markers identify pump-on and pump-off events.
+- The yellow dashed marker and shaded band show the pump stopping.
 - With a mouse, point at the chart to inspect a time, weight, and flow value.
   On a touch screen, press and drag across the chart.
 

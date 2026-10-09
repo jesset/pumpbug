@@ -144,9 +144,8 @@ function renderCurve(chart, parent, e) {
   chart.update(e, nowMs);
 }
 
-// Fixed-height slot for the in-flight curve. Exists for the whole pump
-// window so the layout never jumps mid-activity: before samples arrive (or
-// when the scale is gone) it holds a placeholder of the same size.
+// Reserve space for the in-flight chart and its labels throughout the pump
+// window, including while waiting for samples or the scale.
 function renderLiveChartSlot(card) {
   const slot = el('div', { class: 'chartslot' });
   if (inflight && inflight.sampleCount > 0) {

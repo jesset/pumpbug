@@ -16,6 +16,7 @@ function createChart() {
   const PAD_L = 36, PAD_R = 36, PAD_T = 12, PAD_B = 22;
 
   let root = null;
+  let block = null;
   let svg = null;
   let overlay = null;
   let e = {};            // cached element refs
@@ -70,6 +71,21 @@ function createChart() {
   function ensureRoot() {
     if (root) return;
     root = htmlEl('div', 'chart');
+    block = htmlEl('div', 'chart-block');
+    e.key = htmlEl('div', 'chart-key');
+    e.key.style.visibility = 'hidden';
+    e.weightKey = htmlEl('span', 'chart-series-key weight');
+    e.flowKey = htmlEl('span', 'chart-series-key flow');
+    e.flowKey.textContent = 'Flow (g/s)';
+    e.key.append(e.weightKey, e.flowKey);
+    e.status = htmlEl('div', 'chart-status');
+    e.eventsKey = htmlEl('div', 'chart-events-key');
+    e.eventsKey.style.visibility = 'hidden';
+    e.pumpKey = htmlEl('span', 'chart-event-key pump');
+    e.pumpKey.textContent = 'Pump on / off';
+    e.stoppingKey = htmlEl('span', 'chart-event-key stopping');
+    e.stoppingKey.textContent = 'Pump stopping';
+    e.eventsKey.append(e.pumpKey, e.stoppingKey);
 
     svg = svgEl('svg', { preserveAspectRatio: 'none' });
     svg.style.display = 'block';
@@ -93,10 +109,12 @@ function createChart() {
     e.yLabels = htmlEl('div', 'chart-ylabels');
     e.yLabelsFlow = htmlEl('div', 'chart-ylabels chart-ylabels-flow');
     e.readout = htmlEl('div', 'chart-readout');
-    e.readout.style.display = 'none';
-    overlay.append(e.xLabels, e.yLabels, e.yLabelsFlow, e.readout);
+    e.readout.style.visibility = 'hidden';
+    overlay.append(e.xLabels, e.yLabels, e.yLabelsFlow);
 
     root.append(svg, overlay);
+    e.status.append(e.eventsKey, e.readout);
+    block.append(e.key, root, e.status);
 
     resizeObs = new ResizeObserver((entries) => {
       const r = entries[0].contentRect;
@@ -116,7 +134,7 @@ function createChart() {
 
   function mount(parent) {
     ensureRoot();
-    if (root.parentElement !== parent) parent.appendChild(root);
+    if (block.parentElement !== parent) parent.appendChild(block);
   }
 
   function update(extraction, nowMs) {
@@ -313,6 +331,7 @@ function createChart() {
       showFlow,
       annotations,
       beginMs,
+      haveZero,
     };
   }
 
@@ -331,9 +350,17 @@ function createChart() {
     if (!latest.extraction) return;
 
     const m = buildModel(latest.extraction, latest.nowMs);
+    e.weightKey.textContent = m.haveZero ? 'Yield (g)' : 'Weight (g)';
+    e.flowKey.hidden = !m.showFlow;
+    e.pumpKey.hidden = !m.annotations.some(annotation =>
+      annotation.type === 'pump-on' || annotation.type === 'pump-off-confirmed');
+    e.stoppingKey.hidden = !m.annotations.some(annotation =>
+      annotation.type === 'pump-signal-decay-onset' ||
+      annotation.type === 'pump-off-transition');
     const plotW = dims.w - PAD_L - PAD_R;
     const plotH = dims.h - PAD_T - PAD_B;
     if (plotW <= 0 || plotH <= 0) return;
+    e.key.style.visibility = 'visible';
 
     const [x0, x1] = m.xDomain;
     const [y0, y1] = m.yDomain;
@@ -372,7 +399,7 @@ function createChart() {
     renderFlowTicks(m, yfS, plotW);
     renderXTicks(m, xS, plotH);
     renderAnnotations(m, xS, plotH);
-    renderCrosshair(m, xS, yS, plotW, plotH);
+    renderCrosshair(m, xS, plotH);
   }
 
   function segmentsToD(segs, xS, yS) {
@@ -535,17 +562,17 @@ function createChart() {
     }
   }
 
-  function renderCrosshair(m, xS, yS, plotW, plotH) {
+  function renderCrosshair(m, xS, plotH) {
+    e.eventsKey.style.visibility = 'visible';
+    e.readout.style.visibility = 'hidden';
     const pinTms = scrub ? scrub.pinnedTms : (hover ? hover.tMs : null);
     if (pinTms == null) {
       e.crosshair.style.display = 'none';
-      e.readout.style.display = 'none';
       return;
     }
     const [x0, x1] = m.xDomain;
     if (pinTms < x0 || pinTms > x1) {
       e.crosshair.style.display = 'none';
-      e.readout.style.display = 'none';
       return;
     }
     const x = xS(pinTms);
@@ -558,7 +585,6 @@ function createChart() {
     const pts = m.pts;
     const nearIdx = nearestPtIdx(pts, pinTms);
     if (nearIdx < 0) {
-      e.readout.style.display = 'none';
       return;
     }
     const near = pts[nearIdx];
@@ -568,12 +594,9 @@ function createChart() {
       flowText = ' · ' + gps.toFixed(1) + ' g/s';
     }
     const secs = ((near.tMs - m.beginMs) / 1000).toFixed(2);
-    e.readout.textContent = 't=' + secs + 's · ' + near.g.toFixed(1) + ' g' + flowText;
-    e.readout.style.display = '';
-    // Position above the touch point. Clamp into plot area.
-    const rx = Math.max(PAD_L, Math.min(PAD_L + plotW - 120, x - 60));
-    e.readout.style.left = rx + 'px';
-    e.readout.style.top = (PAD_T + 4) + 'px';
+    e.readout.textContent = secs + ' s · ' + near.g.toFixed(1) + ' g' + flowText;
+    e.eventsKey.style.visibility = 'hidden';
+    e.readout.style.visibility = 'visible';
   }
 
   function nearestPtIdx(pts, tMs) {
