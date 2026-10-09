@@ -428,6 +428,17 @@ function shotMetric(icon, label, value, unit = '', secondary = null) {
     secondary ? el('div', { class: 'shot-metric-secondary' }, secondary) : null);
 }
 
+function recipeMetrics(prep) {
+  const grind = nonemptyString(prep.grind);
+  const dose = Number.isFinite(prep.doseG) ? prep.doseG : null;
+  const target = Number.isFinite(prep.targetYieldG) ? prep.targetYieldG : null;
+  if (grind === null && dose === null && target === null) return null;
+  return el('div', { class: 'shot-metrics recipe-metrics' },
+    shotMetric('grind', 'Grind', grind),
+    shotMetric('dose', 'Dose', dose, 'g'),
+    shotMetric('yield', 'Target', target, 'g'));
+}
+
 function shotMetrics(summary) {
   const { prep } = shotSummaryData(summary);
   const hasPreparation = prep.grind || prep.doseG !== null;
@@ -1199,14 +1210,8 @@ function renderCoffeeContext(app) {
         onclick: () => openNextShotEditor() }, uiIcon('edit'), 'Adjust recipe')));
   const prep = isPlainObject(nextShotRecipe.prep) ? nextShotRecipe.prep : {};
   const prepLine = metadataPreparationParts(prep);
-  if (nonemptyString(prep.grind) || Number.isFinite(prep.doseG) ||
-      Number.isFinite(prep.targetYieldG)) {
-    next.append(el('div', { class: 'shot-metrics recipe-metrics' },
-      shotMetric('grind', 'Grind', nonemptyString(prep.grind)),
-      shotMetric('dose', 'Dose', Number.isFinite(prep.doseG) ? prep.doseG : null, 'g'),
-      shotMetric('yield', 'Target', Number.isFinite(prep.targetYieldG)
-        ? prep.targetYieldG : null, 'g')));
-  }
+  const metrics = recipeMetrics(prep);
+  if (metrics) next.append(metrics);
   appendPreparationDetails(next, prep);
   if (!prepLine.length) {
     next.append(el('div', { class: 'coffee-prep empty' }, 'No recipe set'));
@@ -1511,7 +1516,7 @@ function renderMetadataOverlay({ focusKey = null } = {}) {
     const target = [...overlay.querySelectorAll('[data-overlay-focus-key]')]
       .find(element =>
         element.getAttribute('data-overlay-focus-key') === overlayFocusKey);
-    if (target) target.focus();
+    if (target && !target.disabled) target.focus();
     else focusFirstMetadataOverlayControl(overlay);
   } else if (content && (!wasOpen || hadOverlayFocus)) {
     focusFirstMetadataOverlayControl(overlay);
@@ -1535,13 +1540,13 @@ function metadataOverlayFocusable(overlay) {
   return [...overlay.querySelectorAll(
     'button:not([disabled]), input:not([type="hidden"]):not([disabled]), ' +
     'select:not([disabled]), ' +
-    'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+    'textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])')];
 }
 
 function focusFirstMetadataOverlayControl(overlay) {
   const controls = metadataOverlayFocusable(overlay);
-  const preferred = controls.find(control =>
-    control.hasAttribute('data-overlay-initial-focus'));
+  const preferred = overlay.querySelector(
+    '[data-overlay-initial-focus]:not([disabled])');
   const input = controls.find(control =>
     control.matches('input:not([type="hidden"]), select, textarea'));
   const dialog = overlay.querySelector('[role="dialog"]');
@@ -1574,16 +1579,17 @@ function handleMetadataOverlayKeydown(event) {
   }
   if (event.key !== 'Tab') return;
   const controls = metadataOverlayFocusable(overlay);
+  const dialog = overlay.querySelector('[role="dialog"]');
   if (!controls.length) {
     event.preventDefault();
-    const dialog = overlay.querySelector('[role="dialog"]');
     if (dialog) dialog.focus();
     return;
   }
   const first = controls[0];
   const last = controls[controls.length - 1];
   if (event.shiftKey &&
-      (document.activeElement === first || !overlay.contains(document.activeElement))) {
+      (document.activeElement === first || document.activeElement === dialog ||
+       !overlay.contains(document.activeElement))) {
     event.preventDefault();
     last.focus();
   } else if (!event.shiftKey && document.activeElement === last) {
@@ -1883,6 +1889,14 @@ async function loadMetadataConflict(editor, action, localValue = null) {
   });
   if (metadataEditor === editor) {
     editor.saving = false;
+    if (action === 'clear' &&
+        ['absent', 'cleared'].includes(editor.conflict?.record.state)) {
+      if (editor.returnToHistory && view === 'list') {
+        revealHistoryShotAfterRender(editor.id);
+      }
+      metadataEditor = null;
+      flashBanner('Shot details cleared.', 'idle');
+    }
     renderMetadataOverlay();
   }
 }
@@ -2142,58 +2156,110 @@ function metadataConflictText(record) {
   return 'Shot details are ' + record.state + '.';
 }
 
+function metadataConflictVersion(label, summary, { draft = false } = {}) {
+  const data = shotSummaryData(summary);
+  const section = el('section', {
+    class: 'conflict-version' + (draft ? ' draft' : ''),
+    'aria-label': label,
+  }, el('h2', {}, label));
+  if (data.record.state !== 'active') {
+    if (['absent', 'cleared'].includes(data.record.state)) {
+      section.append(el('p', { class: 'dim' }, metadataConflictText(data.record)));
+    } else appendShotMetadataStatus(section, data.record);
+    return section;
+  }
+  const value = metadataValue(data.record);
+  const coffee = coffeeDetailFields(isPlainObject(value.coffee) ? value.coffee : {});
+  const results = el('div', { class: 'conflict-results' });
+  appendShotResult(results, data, { fullNotes: true });
+  if (!data.coffee.name && !data.coffee.roaster && !coffee.childNodes.length &&
+      !metadataPreparationParts(data.prep).length && !results.childNodes.length) {
+    section.append(el('p', { class: 'dim' },
+      'No coffee, preparation or results to show.'));
+    return section;
+  }
+  section.append(shotCoffeeIdentity(null, data));
+  if (coffee.childNodes.length) section.append(coffee);
+  const metrics = recipeMetrics(data.prep);
+  if (metrics) section.append(metrics);
+  appendPreparationDetails(section, data.prep);
+  if (results.childNodes.length) section.append(results);
+  return section;
+}
+
+function metadataConflictTechnical(saved, draft) {
+  const details = el('details', { class: 'tech conflict-technical' },
+    el('summary', {}, 'Technical details'));
+  if (saved) details.append(el('h2', {}, 'Saved on device'),
+    el('pre', {}, metadataConflictText(saved)));
+  if (draft) details.append(el('h2', {}, 'Your draft'),
+    el('pre', {}, metadataConflictText(draft)));
+  return details;
+}
+
 function renderMetadataConflict() {
+  const editor = metadataEditor;
   const conflict = metadataEditor.conflict;
+  const shot = { yieldCg: editor.yieldCg };
+  const draft = conflict.localValue
+    ? { state: 'active', value: conflict.localValue } : null;
+  const draftSummary = draft ? shotSummaryFromRecord(editor.id, shot, draft) : null;
   if (conflict.action === 'identity') {
-    const localChanges = conflict.localValue
-      ? JSON.stringify(conflict.localValue, null, 2)
-      : null;
-    return el('div', { class: 'modal-backdrop' },
+    return el('div', { class: 'modal-backdrop conflict-backdrop' },
       el('section', { class: 'modal compact metadata-conflict', role: 'dialog',
         tabindex: '-1', 'aria-modal': 'true',
+        'data-overlay-initial-focus': 'true',
         'aria-label': 'Shot is no longer the same record' },
       el('div', { class: 'modal-head' },
         el('h1', {}, 'Shot changed')),
-      el('p', {}, 'This shot is no longer the record you opened. Your changes ' +
+      el('p', { class: 'conflict-intro' },
+        'This shot is no longer the record you opened. Your changes ' +
         'cannot be saved to it. Reopen the shot to check its details.'),
-      localChanges ? el('h2', {}, 'Your unsaved changes') : null,
-      localChanges ? el('pre', {}, localChanges) : null,
-      el('p', {}, localChanges
+      draftSummary ? metadataConflictVersion('Your draft', draftSummary,
+        { draft: true }) : null,
+      el('p', { class: 'conflict-intro' }, draft
         ? 'Your draft is still available. Return to it or download it ' +
           'before reopening the shot.'
         : 'Your draft is still available. Return to it before reopening ' +
           'the shot.'),
-      el('div', { class: 'editor-actions' },
+      draft ? metadataConflictTechnical(null, draft) : null,
+      el('div', { class: 'editor-actions conflict-actions' },
         el('button', { type: 'button', class: 'secondary',
           onclick: returnToMetadataDraft }, 'Back to draft'),
-        localChanges ? el('button', { type: 'button', class: 'secondary',
+        draft ? el('button', { type: 'button', class: 'secondary',
           onclick: () => downloadShotDetailsJson(metadataEditor.id,
-            { state: 'active', value: conflict.localValue },
+            draft,
             { draft: true }) }, 'Download draft') : null)));
   }
-  const localText = conflict.action === 'save'
-    ? JSON.stringify(conflict.localValue, null, 2)
-    : 'Clear all saved shot details.';
-  return el('div', { class: 'modal-backdrop' },
+  const clearing = conflict.action === 'clear';
+  const savedSummary = shotSummaryFromRecord(editor.id, shot, conflict.record);
+  return el('div', { class: 'modal-backdrop conflict-backdrop' },
     el('section', { class: 'modal compact metadata-conflict', role: 'dialog',
       tabindex: '-1', 'aria-modal': 'true',
+      'data-overlay-initial-focus': 'true',
       'aria-label': 'Shot details changed' },
     el('div', { class: 'modal-head' },
       el('h1', {}, 'Shot details changed')),
-    el('p', {}, 'This record was updated elsewhere after you opened it. ' +
-      'Choose which version to keep.'),
-    el('h2', {}, 'Currently saved on device'),
-    el('pre', {}, metadataConflictText(conflict.record)),
-    el('h2', {}, conflict.action === 'save' ? 'Your changes' : 'Your action'),
-    el('pre', {}, localText),
-    el('div', { class: 'editor-actions' },
-      el('button', { type: 'button', class: 'secondary',
+    el('p', { class: 'conflict-intro' },
+      'The saved details changed while you were editing. ' + (clearing
+        ? 'Review them before clearing.' : 'Choose which version to keep.')),
+    el('div', { class: 'conflict-versions' },
+      metadataConflictVersion('Saved on device', savedSummary),
+      draftSummary ? metadataConflictVersion('Your draft', draftSummary,
+        { draft: true }) : null),
+    clearing ? el('p', { class: 'conflict-clear-warning' },
+      'Clearing will remove all saved shot details. The shot recording will stay.')
+      : null,
+    metadataConflictTechnical(conflict.record, draft),
+    el('div', { class: 'editor-actions conflict-actions' },
+      el('button', { type: 'button', class: 'secondary conflict-back',
         onclick: returnToMetadataDraft }, 'Back to draft'),
-      el('button', { type: 'button', class: 'secondary',
-        onclick: () => keepSavedMetadataConflict() }, 'Keep saved version'),
-      el('button', { type: 'button', class: 'destructive-secondary',
-        onclick: () => overwriteMetadataConflict() },
-      conflict.action === 'save' ? 'Overwrite with my changes' : 'Clear anyway'))));
+      el('div', { class: 'conflict-choices' },
+        el('button', { type: 'button', class: 'secondary',
+          onclick: () => keepSavedMetadataConflict() }, 'Keep saved'),
+        el('button', { type: 'button', class: 'destructive-secondary',
+          onclick: () => overwriteMetadataConflict() },
+        clearing ? 'Clear saved details' : 'Replace saved')))));
 }
 
 function readCoffeeFields(form, original, { trim = false } = {}) {
@@ -2319,6 +2385,10 @@ function renderEditorCoffee(value, onEdit, detailed) {
     el('button', { type: 'button', class: 'secondary', onclick: onEdit },
       coffeeIdentity(coffee) ? 'Edit coffee' : 'Choose coffee'));
   if (!detailed) return summary;
+  return el('div', {}, summary, coffeeDetailFields(coffee));
+}
+
+function coffeeDetailFields(coffee) {
   const fields = el('dl', { class: 'editor-value-details' });
   for (const [name, label] of [
     ['origin', 'Origin'], ['roastDate', 'Roast date'], ['roast', 'Roast'],
@@ -2327,7 +2397,7 @@ function renderEditorCoffee(value, onEdit, detailed) {
     const text = nonemptyString(coffee[name]);
     if (text) fields.append(el('dt', {}, label), el('dd', {}, text));
   }
-  return el('div', {}, summary, fields);
+  return fields;
 }
 
 function renderEditorPreparation(value, onEdit) {

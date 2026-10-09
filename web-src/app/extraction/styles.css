@@ -594,9 +594,52 @@ form > .editor-error:focus {
 .device-target { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 .metadata-actions .backlink { margin: 0; padding: 8px; }
 .modal.compact { max-width: 480px; }
+.conflict-backdrop {
+  max-height: 100dvh;
+  --conflict-footer-padding: max(12px, env(safe-area-inset-bottom));
+  scroll-padding-bottom: calc(128px + var(--conflict-footer-padding));
+}
+.conflict-intro { color: var(--dim); font-size: 14px; line-height: 1.5; margin: 0 0 16px; }
+.conflict-versions { display: grid; gap: 16px; }
+.conflict-version {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px; margin: 0;
+}
+.conflict-version.draft { border-color: var(--primary-fill); }
+.conflict-version > h2 { margin-bottom: 10px; }
+.conflict-version .shot-coffee { margin-bottom: 12px; }
+.conflict-version .shot-coffee-name { font-size: 16px; }
+.conflict-version .shot-roaster { font-size: 12px; }
+.conflict-version .editor-value-details {
+  font-size: 12px; gap: 4px 12px; margin-bottom: 12px;
+}
+.conflict-version .shot-metric-label { font-size: 11px; gap: 5px; }
+.conflict-version .shot-metric-label .ui-icon { width: 16px; height: 16px; }
+.conflict-version .shot-metric-value { font-size: 20px; }
+.conflict-version .preparation-details { line-height: 1.5; }
+.conflict-results { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; }
+.conflict-results .shot-result { border: 0; padding: 0; }
+.conflict-results .shot-result-measurements { flex-wrap: wrap; }
+.conflict-results .shot-note { color: var(--fg); white-space: pre-wrap; }
+.conflict-clear-warning {
+  border-left: 3px solid var(--bad); padding: 8px 12px;
+  margin: 16px 0; font-size: 14px; line-height: 1.5;
+}
+.metadata-conflict .conflict-technical { margin: 16px 0; }
+.conflict-technical > summary { min-height: 44px; }
+.conflict-actions {
+  position: sticky; bottom: 0; background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: 12px 0 var(--conflict-footer-padding);
+  margin: 16px 0 0; display: grid; gap: 8px;
+}
+.conflict-actions button { min-height: 44px; white-space: normal; }
+.conflict-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.conflict-actions .conflict-back {
+  border: 0; background: none; color: var(--accent); padding: 0; justify-self: start;
+}
 .metadata-conflict pre {
-  max-height: 240px;
-  overflow: auto;
+  overflow-x: auto;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 6px;

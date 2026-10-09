@@ -552,6 +552,44 @@ async function testConflictFreshnessAndAcceptance() {
   assert.equal(h.reads.length, 0);
 }
 
+async function testClearConflictAlreadyCleared() {
+  for (const state of ['absent', 'cleared', 'active', 'corrupt']) {
+    for (const action of ['clear', 'save']) {
+      const h = harness({ deferredWrites: true });
+      await h.load([row(1)]);
+      h.context.api.setSelected(1);
+      h.context.api.setLast({ id: 1, state: 'active', value: { rating: 1 } });
+      const editor = { kind: 'shot', id: 1, record: { etag: 'original' },
+        original: action === 'clear' ? {} : { notes: 'My draft' }, conflict: null };
+      h.context.api.setEditor(editor);
+      const pending = action === 'clear' ? h.context.clearShotMetadata(editor)
+        : h.context.writeShotMetadata(editor, editor.original);
+      h.take(h.writes).resolve(response(null, 412));
+      await flush();
+      h.take(h.reads).resolve(response({}, 200, {
+        ETag: 'current', 'X-Shot-Metadata-State': state,
+        'X-Shot-Metadata-Crc': '0',
+      }));
+      await pending;
+      const completed = action === 'clear' && ['absent', 'cleared'].includes(state);
+      assert.equal(h.context.api.editor(), completed ? null : editor,
+        `${action} conflict with ${state} details closed incorrectly`);
+      assert(!editor.saving);
+      assert.equal(h.context.selectedShotMetadata.state, state);
+      assert.equal(h.context.selectedShotMetadata.etag, 'current');
+      assert.equal(h.context.api.last().state, state);
+      assert.equal(h.store.rows[0].userMetadataState, state);
+      assert.equal(h.banners.includes('Shot details cleared.'), completed);
+      if (!completed) {
+        assert.equal(editor.conflict.action, action);
+        assert.equal(editor.conflict.record.state, state);
+        if (action === 'save') assert.equal(editor.conflict.localValue.notes, 'My draft');
+      }
+      assert.equal(h.writes.length, 0, 'conflict resolution sent an unnecessary write');
+    }
+  }
+}
+
 async function testDraftAndUncertainWrite() {
   for (const kind of ['save', 'clear']) {
     const h = harness({ deferredWrites: true });
@@ -602,6 +640,11 @@ async function testCancelledConflictRead() {
 }
 
 async function testConflictIdentity() {
+  const containsDraft = node => {
+    const classes = (node?.attrs?.class || '').split(/\s+/);
+    return (classes.includes('conflict-version') && classes.includes('draft')) ||
+      (node?.children || []).some(containsDraft);
+  };
   for (const kind of ['save', 'clear']) {
     {
       const h = harness({ deferredWrites: true });
@@ -619,7 +662,7 @@ async function testConflictIdentity() {
       assert.equal(editor.conflict.action, 'identity');
       if (kind === 'clear') assert.equal(editor.conflict.localValue, null);
       else assert.equal(editor.conflict.localValue.notes, 'My draft');
-      assert.equal(JSON.stringify(h.context.renderMetadataConflict()).includes('Your unsaved changes'),
+      assert.equal(containsDraft(h.context.renderMetadataConflict()),
         kind === 'save', 'only a save conflict has a submitted draft');
       assert.equal(h.store.rows[0].userMetadata.rating, 1,
         'conflict recovery must not attach another identity to a cached shot');
@@ -1078,7 +1121,7 @@ async function testConflictDraftCanBeRecovered() {
   const dialog = h.context.renderMetadataConflict();
   const buttons = nodes(dialog).filter(node => node.tag === 'button');
   assert(buttons.some(button => button.children.includes('Download draft')));
-  assert(!buttons.some(button => button.children.includes('Overwrite with my changes')));
+  assert(!buttons.some(button => button.children.includes('Replace saved')));
   buttons.find(button => button.children.includes('Back to draft')).attrs.onclick();
   assert.equal(h.context.api.editor(), editor);
   assert.equal(editor.original, draft);
@@ -1527,6 +1570,7 @@ async function testLastShotRefreshPreservesOpenDetail() {
     testRetryProgress, testReentrantInvalidation, testPaginationAfterOvertakenResponse,
     testDemandAndEventContracts, testRecipeDemandLifecycle,
     testIndividualMetadataFreshness, testConflictFreshnessAndAcceptance,
+    testClearConflictAlreadyCleared,
     testDraftAndUncertainWrite, testCancelledConflictRead, testConflictIdentity,
     testRejectedWrites, testWriteConnectionFailures,
     testEmptyShotSave, testClearedDraftSurvivesFailedSave,

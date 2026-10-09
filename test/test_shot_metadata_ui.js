@@ -98,7 +98,7 @@ vm.runInContext(
     'coffeePickerState: () => coffeePicker,' +
     'chooseCoffee, confirmCoffeeChoice, readCoffeeFields, saveMetadataEditor,' +
     'closeActiveMetadataOverlay,' +
-    'overwriteMetadataConflict, keepSavedMetadataConflict,' +
+    'renderMetadataConflict, overwriteMetadataConflict, keepSavedMetadataConflict,' +
     'historyStore, loadMoreHistory, downloadShotJson,' +
     'selectShot, renderList,' +
     'browserState: () => ({ nextShotRecipe, nextShotRecipeSourceId }),' +
@@ -387,16 +387,25 @@ const focusControl = (name, { initial = false, input = false } = {}) => ({
   focus: () => focused.push(name),
 });
 const focusDialog = focusControl('dialog');
+const initialChoice = focusControl('choice', { initial: true });
 context.api.focusFirstMetadataOverlayControl({
   querySelectorAll: () => [
     focusControl('close'),
-    focusControl('choice', { initial: true }),
+    initialChoice,
     focusControl('input', { input: true }),
   ],
-  querySelector: () => focusDialog,
+  querySelector: selector => selector.startsWith('[data-overlay-initial-focus]')
+    ? initialChoice : focusDialog,
 });
 check(focused.join(',') === 'choice',
   'explicit modal focus did not take priority over a later form input');
+focused.length = 0;
+context.api.focusFirstMetadataOverlayControl({
+  querySelectorAll: () => [focusControl('summary'), focusControl('back')],
+  querySelector: () => focusDialog,
+});
+check(focused.join(',') === 'dialog',
+  'a dialog initial-focus target was ignored in favor of a lower control');
 
 const errorPanel = context.renderEditorFormError('Test error');
 check(errorPanel.attrs.tabindex === '-1' && !errorPanel.attrs.role &&
@@ -461,6 +470,14 @@ for (const hadFocus of [false, true]) {
   context.renderMetadataEditor = () => ({});
   context.api.renderMetadataOverlay({ focusKey: 'clear-draft' });
   check(focused === 'clear', 'resetting a draft focused an input before the Clear action');
+  clear.disabled = true;
+  const dialog = { focus() { focused = 'dialog'; } };
+  overlay.querySelector = selector => selector === '[role="dialog"]' ? dialog : null;
+  overlay.querySelectorAll = selector => selector === '[data-overlay-focus-key]'
+    ? [clear] : [];
+  context.api.renderMetadataOverlay({ focusKey: 'clear-draft' });
+  check(focused === 'dialog',
+    'restoring disabled draft-action focus left the saving dialog unfocused');
   context.document = oldDocument;
   context.renderCoffeePicker = oldPicker;
   context.renderMetadataEditor = oldEditor;
@@ -2476,6 +2493,108 @@ check(Object.keys(blankEditor.original).length === 0 &&
   context.document = documentBeforeSubmitValidation;
   context.renderMetadataOverlay = renderBeforeSubmitValidation;
 
+  const savedVersion = {
+    coffee: { name: 'Kercha Haruse', roaster: 'Royal Mile', origin: 'Ethiopia',
+      roastDate: '2026-09-21', roast: 'Light', process: 'Washed', variety: 'Heirloom' },
+    prep: { grinder: 'Lagom O1', grind: '1.8', doseG: 18, targetYieldG: 36,
+      tempC: 93, pressure: '6 bar', water: 'Filtered tap water' },
+    rating: 4, tags: ['sweet', 'balanced'], tdsPct: 8.6,
+    notes: 'Apricot and honey. '.repeat(10), future: { saved: true },
+  };
+  const draftVersion = JSON.parse(JSON.stringify(savedVersion));
+  draftVersion.coffee.origin = 'Rwanda';
+  draftVersion.prep.grind = '1.9';
+  draftVersion.prep.doseG = 20;
+  draftVersion.notes = 'Rounder and sweeter. '.repeat(10);
+  draftVersion.future = { draft: true };
+  const versionEditor = {
+    kind: 'shot', id: 8, yieldCg: 3900, original: draftVersion,
+    conflict: { action: 'save',
+      record: { state: 'active', value: savedVersion, etag: 'current' },
+      localValue: draftVersion },
+  };
+  context.api.setEditor(versionEditor);
+  const versionSnapshot = JSON.stringify(versionEditor);
+  const versionDialog = context.api.renderMetadataConflict();
+  const versionCards = descendants(versionDialog).filter(node =>
+    node.attrs?.class?.split(' ').includes('conflict-version'));
+  check(versionCards.length === 2 &&
+        ['Kercha Haruse', 'Royal Mile', 'Ethiopia', '2026-09-21', 'Light',
+          'Washed', 'Heirloom', 'Lagom O1', '1.8', '93°C', '6 bar',
+          'Filtered tap water', 'sweet · balanced', 'TDS 8.6%', 'EY 18.6%',
+          savedVersion.notes.trim()].every(text => renderedText(versionCards[0]).includes(text)),
+    'saved conflict card omitted coffee, preparation, measurements or full notes');
+  check(versionCards[1].attrs.class.includes('draft') &&
+        ['Rwanda', '1.9', 'EY 16.8%', draftVersion.notes.trim()]
+          .every(text => renderedText(versionCards[1]).includes(text)),
+    'draft conflict card lost edits or used another version\'s dose for extraction');
+  const technical = descendants(versionDialog).find(node =>
+    node.tag === 'details' && node.attrs.class.includes('conflict-technical'));
+  const rawVersions = descendants(versionDialog).filter(node => node.tag === 'pre');
+  check(technical && !technical.attrs.open && rawVersions.length === 2 &&
+        rawVersions.every(node => descendants(technical).includes(node)) &&
+        JSON.stringify(JSON.parse(renderedText(rawVersions[0]))) === JSON.stringify(savedVersion) &&
+        JSON.stringify(JSON.parse(renderedText(rawVersions[1]))) === JSON.stringify(draftVersion),
+    'complete conflict data, including unknown fields, was lost or left outside Technical details');
+  check(descendants(versionDialog).find(node => node.attrs?.role === 'dialog')
+      .attrs['data-overlay-initial-focus'] === 'true' &&
+    descendants(versionDialog).filter(node => node.tag === 'button')
+    .map(renderedText).join('|') === 'Back to draft|Keep saved|Replace saved',
+    'save conflict choices are missing or mislabeled');
+  check(JSON.stringify(versionEditor) === versionSnapshot,
+    'rendering a conflict changed its measurements or metadata');
+  for (const [state, value, message] of [
+    ['absent', null, 'No shot details are saved.'],
+    ['cleared', null, 'Saved details were cleared.'],
+    ['corrupt', null, 'Shot details damaged'],
+    ['unsupported', null, 'Shot details need newer firmware'],
+    ['unavailable', null, 'Shot details have not been loaded.'],
+    ['active', {}, 'No coffee, preparation or results to show.'],
+  ]) {
+    versionEditor.conflict.record = { state, value };
+    const card = descendants(context.api.renderMetadataConflict()).find(node =>
+      node.attrs?.class === 'conflict-version');
+    check(renderedText(card).includes(message) &&
+          !descendants(card).some(node => node.attrs?.class?.includes('shot-metrics')) &&
+          (state !== 'active' || !renderedText(card).includes('Coffee not set')),
+      'conflict card hid its metadata state or invented preparation for ' + state);
+  }
+  const unknownVersion = { future: { kept: true } };
+  versionEditor.conflict.record = { state: 'active', value: unknownVersion };
+  const unknownDialog = context.api.renderMetadataConflict();
+  const unknownCard = descendants(unknownDialog).find(node =>
+    node.attrs?.class === 'conflict-version');
+  check(renderedText(unknownCard).includes('No coffee, preparation or results to show.') &&
+        !renderedText(unknownCard).includes('Coffee not set'),
+    'conflict version with only unknown fields showed two empty-state messages');
+  check(descendants(unknownDialog).filter(node => node.tag === 'pre')
+    .some(node => renderedText(node) === JSON.stringify(unknownVersion, null, 2)),
+    'conflict data containing only unknown fields was lost');
+  versionEditor.conflict = { action: 'clear',
+    record: { state: 'active', value: savedVersion } };
+  const clearDialog = context.api.renderMetadataConflict();
+  check(descendants(clearDialog).filter(node =>
+        node.attrs?.class?.split(' ').includes('conflict-version')).length === 1 &&
+        descendants(clearDialog).filter(node => node.tag === 'pre').length === 1 &&
+        renderedText(clearDialog).includes('The shot recording will stay.') &&
+        descendants(clearDialog).filter(node => node.tag === 'button')
+          .map(renderedText).join('|') === 'Back to draft|Keep saved|Clear saved details',
+    'clear conflict lost its saved version, warning or explicit choices');
+  versionEditor.conflict = { action: 'identity', localValue: draftVersion };
+  const identityDialog = context.api.renderMetadataConflict();
+  check(descendants(identityDialog).filter(node =>
+        node.attrs?.class?.split(' ').includes('conflict-version')).length === 1 &&
+        renderedText(identityDialog).includes(draftVersion.notes.trim()) &&
+        descendants(identityDialog).filter(node => node.tag === 'button')
+          .map(renderedText).join('|') === 'Back to draft|Download draft',
+    'identity conflict lost its readable draft or offered a write action');
+  versionEditor.conflict.localValue = null;
+  const identityClearDialog = context.api.renderMetadataConflict();
+  check(!descendants(identityClearDialog).some(node => node.tag === 'pre') &&
+        descendants(identityClearDialog).filter(node => node.tag === 'button')
+          .map(renderedText).join('|') === 'Back to draft',
+    'identity clear conflict invented a submitted draft or a write action');
+
   const conflictForm = { elements: {
     ...form.elements,
     'coffee.name': element('Edited after conflict'),
@@ -3215,8 +3334,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(orderedLive.children.map(node => node.attrs.class).join('|') ===
     'card now idle|coffee-context|card record last-shot',
     'Live did not put current measurements before the next recipe and last result');
-  if (checkCount !== 353) {
-    throw new Error(`expected 353 assertions, ran ${checkCount}`);
+  if (checkCount !== 371) {
+    throw new Error(`expected 371 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;
