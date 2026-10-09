@@ -224,14 +224,22 @@ data or before they age out of storage.
 
 ## Inspect a shot
 
-Select a History row to open its detail page, where you can see the shot's
-weight-and-flow chart, target and alert outcome, pump time, etc. `Add shot
-details` or `Edit shot details` opens the shot editor, where you can enter
-coffee and preparation details, and also results after the coffee has been
-brewed. When TDS and dose are entered and measured beverage weight is available,
-extraction yield is calculated as TDS (%) × beverage weight (g) ÷ dose (g),
-rounded to one decimal place, and displayed in the editor and in History, Last
-Shot, and coffee summaries.
+Select a History card to open its detail page. The coffee, roast date and
+`Add shot details` or `Edit shot details` action appear at the top, followed by
+grind, dose, measured yield, duration and the weight-and-flow chart.
+
+Below the chart, `Preparation` shows the remaining recipe fields and offers
+`Use for next shot`. `Tasting` shows the rating, tags, TDS, extraction yield and
+the tasting notes.
+`Recording details` contains the device target, cut-alert outcome and total
+pump-on time. An `ended` row explains an unusual end to the shot. The collapsible
+`Technical` section below holds diagnostics.
+
+`Add shot details` or `Edit shot details` opens the shot editor, where you can
+enter coffee, preparation and tasting results. When TDS and dose are entered
+and measured beverage weight is available, extraction yield is calculated as
+TDS (%) × beverage weight (g) ÷ dose (g), rounded to one decimal place, and
+displayed in the editor and in History, Last Shot, and coffee summaries.
 
 In the shot details editor, you can select a coffee or edit its details. Review
 the details and choose `Use coffee` to update the shot draft. Choosing a coffee

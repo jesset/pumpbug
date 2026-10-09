@@ -460,12 +460,12 @@ function shotDate(summary) {
     summary.id ? el('span', {}, '#' + summary.id) : null);
 }
 
-function shotCoffeeIdentity(id, data, unknownLabel = null) {
+function shotCoffeeIdentity(id, data, { unknownLabel = null, heading = false } = {}) {
   const { coffee, record } = data;
   const known = ['active', 'absent', 'cleared'].includes(record?.state);
   const name = coffee.name || (known ? 'Coffee not set' : unknownLabel);
   if (!name) return null;
-  const title = id ? shotOpenButton(id, name) : el('div', {}, name);
+  const title = id ? shotOpenButton(id, name) : el(heading ? 'h2' : 'div', {}, name);
   title.className += ' shot-coffee-name' + (coffee.name ? '' : ' missing');
   return el('div', { class: 'shot-coffee' }, title,
     coffee.roaster ? el('div', { class: 'shot-roaster' }, coffee.roaster) : null);
@@ -480,7 +480,9 @@ function appendPreparationDetails(parent, prep) {
     parts.join(' · ')));
 }
 
-function appendShotResult(parent, data, { compact = false } = {}) {
+function appendShotResult(parent, data, {
+  compact = false, fullNotes = false, shortExtractionLabel = true,
+} = {}) {
   const result = el('div', { class: 'shot-result' });
   const rating = ratingText(data);
   if (rating) result.append(el('span', { class: 'shot-rating', role: 'img',
@@ -489,7 +491,8 @@ function appendShotResult(parent, data, { compact = false } = {}) {
   if (data.tdsPct !== null) measurements.append(el('span', {},
     el('span', { class: 'dim' }, 'TDS '), data.tdsPct + '%'));
   if (data.extractionYieldPct !== null) measurements.append(el('span', {},
-    el('span', { class: 'dim' }, 'EY '), data.extractionYieldPct.toFixed(1) + '%'));
+    el('span', { class: 'dim' }, shortExtractionLabel ? 'EY ' : 'Extraction yield '),
+    data.extractionYieldPct.toFixed(1) + '%'));
   if (measurements.childNodes.length) result.append(measurements);
   if (!compact && data.tags.length) result.append(el('span',
     { class: 'shot-tags' }, data.tags.join(' · ')));
@@ -498,7 +501,7 @@ function appendShotResult(parent, data, { compact = false } = {}) {
     const preview = data.notes || data.tags.join(' · ');
     if (preview) parent.append(el('p', { class: 'shot-note compact' }, preview));
   } else if (data.notes) {
-    const notes = data.notes.length > 100
+    const notes = !fullNotes && data.notes.length > 100
       ? data.notes.slice(0, 97) + '…' : data.notes;
     parent.append(el('p', { class: 'shot-note' }, notes));
   }
@@ -717,6 +720,18 @@ function appendShotMetadataStatus(parent, record) {
   }
 }
 
+function shotMetadataEditAction(summary) {
+  const { id } = summary;
+  const record = metadataRecordFromRow(summary);
+  if (record?.loading || record?.state === 'unsupported') return null;
+  const unavailable = !record || record.state === 'unavailable';
+  if (!unavailable && !record.etag) return null;
+  return el('button', {
+    class: 'secondary', 'data-overlay-return-key': 'shot-details-' + id,
+    onclick: () => loadShotMetadata(summary),
+  }, unavailable ? 'Load shot details' : metadataActionLabel(record));
+}
+
 function shotMetadataActions(summary, options = {}) {
   const { id } = summary;
   const record = metadataRecordFromRow(summary);
@@ -726,27 +741,15 @@ function shotMetadataActions(summary, options = {}) {
       class: 'secondary', onclick: () => selectShot(id),
     }, 'View shot'));
   }
-  if (!record || record.state === 'unavailable') {
-    actions.append(el('button', {
-      class: 'secondary',
-      'data-overlay-return-key': 'shot-details-' + id,
-      onclick: () => loadShotMetadata(summary),
-    }, 'Load shot details'));
-  } else if (!record.loading) {
-    if (record.state !== 'unsupported' && record.etag) {
+  const edit = shotMetadataEditAction(summary);
+  if (edit) actions.append(edit);
+  if (record?.state === 'active' && !record.loading) {
+    appendCoffeeActionButtons(actions, id, metadataValue(record));
+    if (options.allowMetadataDownload) {
       actions.append(el('button', {
-        class: 'secondary', 'data-overlay-return-key': 'shot-details-' + id,
-        onclick: () => loadShotMetadata(summary),
-      }, metadataActionLabel(record)));
-    }
-    if (record.state === 'active') {
-      appendCoffeeActionButtons(actions, id, metadataValue(record));
-      if (options.allowMetadataDownload) {
-        actions.append(el('button', {
-          class: 'backlink',
-          onclick: () => downloadShotDetailsJson(id, record),
-        }, 'Download shot details'));
-      }
+        class: 'backlink',
+        onclick: () => downloadShotDetailsJson(id, record),
+      }, 'Download shot details'));
     }
   }
   return actions;
@@ -764,6 +767,38 @@ function appendShotMetadataDetails(parent, summary, options = {}) {
   const actions = shotMetadataActions(summary, options);
   if (actions.childNodes.length) section.append(actions);
   parent.append(section);
+}
+
+function shotDetailMetadata(summary) {
+  const data = shotSummaryData(summary);
+  if (data.record?.state !== 'active') return null;
+  const preparation = el('section', { class: 'shot-detail-preparation' },
+    el('h3', {}, 'Preparation'));
+  const fields = el('dl', { class: 'shot-detail-fields' });
+  for (const [label, value, unit] of [
+    ['Grinder', data.prep.grinder],
+    ['Temperature', data.prep.tempC, '°C'], ['Pressure', data.prep.pressure],
+    ['Water', data.prep.water],
+  ]) {
+    if (value !== null) fields.append(el('div', {},
+      el('dt', {}, label), el('dd', {}, String(value) + (unit || ''))));
+  }
+  if (fields.childNodes.length) preparation.append(fields);
+  else if (Object.values(data.prep).every(value => value === null)) {
+    preparation.append(el('p', { class: 'shot-detail-empty' }, 'No preparation saved.'));
+  }
+  const actions = el('div', { class: 'metadata-actions' });
+  appendCoffeeActionButtons(actions, summary.id, metadataValue(data.record));
+  if (actions.childNodes.length) preparation.append(actions);
+
+  const tasting = el('section', { class: 'shot-detail-tasting' },
+    el('h3', {}, 'Tasting'));
+  appendShotResult(tasting, data, { fullNotes: true, shortExtractionLabel: false });
+  if (tasting.childNodes.length === 1) {
+    tasting.append(el('p', { class: 'shot-detail-empty' }, 'No tasting results saved.'));
+  }
+  return el('div', { class: 'shot-detail-sections' },
+    preparation.childNodes.length > 1 ? preparation : null, tasting);
 }
 
 function isPlainObject(value) {

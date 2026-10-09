@@ -144,26 +144,6 @@ function renderCurve(chart, parent, e) {
   chart.update(e, nowMs);
 }
 
-// One finished, graduated shot as a record card. The caller adds any material
-// that follows the measurement summary, such as metadata or diagnostics.
-function renderShotRecord(app, e, opts) {
-  const card = el('section', { class: 'card record' },
-    el('h2', {}, opts.title));
-  card.append(bigWeight(e.yieldCg, rawFinalCg(e)));
-  card.append(el('div', { class: 'big' }, fmtMMSS(finishedElapsedMs(e) ?? 0)));
-  renderCurve(RecordChart, card, e);
-  const rows = recordRows(e, 'detail');
-  if (rows.childNodes.length) card.append(rows);
-  app.append(card);
-  return card;
-}
-
-function renderCompletedShot(app, summary, options) {
-  const card = renderShotRecord(app, summary, options);
-  if (summary.id) appendShotMetadataDetails(card, summary, options);
-  return card;
-}
-
 // Fixed-height slot for the in-flight curve. Exists for the whole pump
 // window so the layout never jumps mid-activity: before samples arrive (or
 // when the scale is gone) it holds a placeholder of the same size.

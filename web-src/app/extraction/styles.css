@@ -222,9 +222,64 @@ table.samples td.k { text-align: left; color: var(--dim); }
 }
 .backlink:hover { text-decoration: underline; }
 .shot-detail-actions {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 20px;
 }
 .shot-detail-actions .backlink { margin: 0; min-height: 44px; text-align: left; }
+.card.shot-detail {
+  --detail-width: min(728px, calc(100vw - 32px));
+  width: var(--detail-width);
+  margin-inline: calc((100% - var(--detail-width)) / 2);
+  border-radius: 10px; padding: 16px;
+}
+.shot-detail-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px; margin-bottom: 22px;
+}
+.shot-detail-head .shot-coffee { flex: 1 1 160px; }
+.shot-detail-head .shot-coffee-name {
+  display: block; color: var(--fg); font-size: 22px; font-weight: 650;
+  text-transform: none; letter-spacing: -0.02em; margin: 0;
+}
+.shot-detail-head .shot-coffee-name.missing { color: var(--dim); font-weight: 500; }
+.shot-detail-head button { min-height: 44px; flex-shrink: 0; }
+.shot-detail > .shot-metrics { margin-bottom: 20px; }
+.shot-detail > .chart { margin-bottom: 24px; }
+.shot-detail > .empty.compact { padding: 0; text-align: left; margin-bottom: 20px; }
+.shot-detail-sections { display: grid; gap: 22px; margin-bottom: 24px; }
+.shot-detail-sections > :only-child { grid-column: 1 / -1; }
+.shot-detail-sections > section, .shot-detail-recording {
+  border-top: 1px solid var(--border); padding-top: 16px; margin: 0;
+  min-width: 0;
+}
+.shot-detail h3 {
+  font-size: 12px; font-weight: normal; color: var(--dim);
+  text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 14px;
+}
+.shot-detail-fields {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px; margin: 0; overflow-wrap: anywhere;
+}
+.shot-detail-fields > :only-child { grid-column: 1 / -1; }
+.shot-detail-fields dt { color: var(--dim); font-size: 12px; margin-bottom: 4px; }
+.shot-detail-fields dd { font-size: 14px; line-height: 1.4; margin: 0; }
+.shot-detail-empty { color: var(--dim); font-size: 13px; margin: 0; line-height: 1.5; }
+.shot-detail-preparation .metadata-actions { margin-top: 18px; }
+.shot-detail .metadata-actions button { min-height: 44px; }
+.shot-detail-tasting .shot-result { border: 0; padding: 0; }
+.shot-detail-tasting .shot-result-measurements { flex-wrap: wrap; gap: 8px 16px; }
+.shot-detail-tasting .shot-result-measurements > span { white-space: nowrap; }
+.shot-detail-tasting .shot-note { font-size: 14px; white-space: pre-wrap; }
+.shot-detail-recording .rows { margin: 0; }
+.shot-detail-recording .row { gap: 16px; font-size: 12px; line-height: 1.5; }
+.shot-detail-recording .row .k { flex-shrink: 0; }
+.shot-detail-recording .row .v { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.shot-detail-footer { margin-top: 24px; }
+.shot-detail-footer details.tech { margin-bottom: 12px; }
+.shot-detail > .err { margin-bottom: 20px; color: var(--bad); }
+@media (min-width: 640px) {
+  .shot-detail-sections { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
+  .shot-detail .shot-metric-value { font-size: 26px; }
+}
 
 .loadmore {
   width: 100%; padding: 8px 12px; margin-top: 4px;
@@ -347,9 +402,6 @@ ul.shotlist .shot-row-actions { display: flex; align-items: center; gap: 10px; }
 .card.record > .shot-metadata {
   border-top: 1px solid var(--border);
   margin: 16px 0 0; padding-top: 14px;
-}
-.card.record > .rows + .shot-metadata {
-  border-top: 0; padding-top: 0;
 }
 .shot-metadata .empty.compact { text-align: left; padding: 4px 0; }
 /* User metadata may contain one unbroken token up to the record-size limit. */

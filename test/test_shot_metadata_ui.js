@@ -2626,10 +2626,13 @@ check(Object.keys(blankEditor.original).length === 0 &&
     state: null, inPumpWindow: () => false,
     lastRecord: { shotId: 7, yieldCg: 9000, beginMs: 200, endMs: 31200,
       target: { targetCg: 3600, armed: true } },
-    selectedShotId: 7, selectedShot: { yieldCg: 3900 },
+    selectedShotId: 7, selectedShot: { yieldCg: 3900, beginMs: 200, endMs: 31200,
+      totalPumpOnMs: 26000, target: { targetCg: 3600, armed: true } },
     selectedShotMetadata: summaryRecord, selectedShotError: null,
     freshFinalizedAt: 0, fmtDate: () => '', fmtG: context.fmtG,
     fmtMMSS: context.fmtMMSS, rawFinalCg: context.rawFinalCg, WEIGHT_DIFF_CG: 20,
+    fmtSec: context.fmtSec, fmtCutAlert: historyApp.fmtCutAlert,
+    row: (key, value) => context.el('div', {}, key, value),
     finishedElapsedMs: shot => shot.endMs > 0 ? shot.endMs - shot.beginMs : null,
     record: summaryRecord,
   };
@@ -2639,18 +2642,13 @@ check(Object.keys(blankEditor.original).length === 0 &&
     require('path').join(require('path').dirname(sourcePath), 'ui-live.js'),
   ].map(path => fs.readFileSync(path, 'utf8')).join('\n'), views);
   // Chart internals are outside this test; keep the actual view composition.
-  views.renderShotRecord = app => {
-    const card = views.el('section');
-    app.append(card);
-    return card;
-  };
   views.techFold = () => views.el('div');
   views.RecordChart = {};
   views.renderCurve = () => {};
   vm.runInContext('lastShotMetadata = record;', views);
   const selectedView = views.el('main');
   views.renderDetail(selectedView);
-  check(JSON.stringify(selectedView).includes('Extraction yield 18.6%'),
+  check(renderedText(selectedView).includes('Extraction yield 18.6%'),
     'History detail caller did not use its displayed measurements');
   const liveView = views.el('main');
   views.renderLastShot(liveView);
@@ -2717,6 +2715,76 @@ check(Object.keys(blankEditor.original).length === 0 &&
     'damaged shot editor borrowed measurements from another view');
   check(detailMetadataReads === 3,
     'detail and Last Shot edit actions did not refresh metadata before opening');
+  views.closeMetadataEditor();
+
+  const detailMetadata = {
+    ...cardMetadata,
+    coffee: { ...cardMetadata.coffee, roastDate: '2026-09-21' },
+    prep: { ...cardMetadata.prep, targetYieldG: 36, grinder: 'Lagom O1',
+      tempC: 93, pressure: '6 bar declining', water: 'Filtered tap water' },
+    notes: 'Apricot and honey. Slightly dry finish; try a coarser grind next time. '.repeat(4),
+  };
+  const detailMetadataBefore = JSON.stringify(detailMetadata);
+  views.selectedShot = { yieldCg: 3900, settledRawCg: 26400,
+    beginMs: 1000, endMs: 32000, totalPumpOnMs: 26000,
+    target: { targetCg: 4000, armed: true } };
+  views.selectedShotError = null;
+  views.selectedShotMetadata = { id: 7, state: 'active', value: detailMetadata,
+    etag: 'detail-shot-7' };
+  const fullDetail = views.el('main');
+  views.renderDetail(fullDetail);
+  const detailHead = descendants(fullDetail).find(node => node.attrs?.class === 'shot-detail-head');
+  check(descendants(detailHead).some(node => node.tag === 'h2' &&
+    renderedText(node) === 'Coffee') &&
+    renderedText(detailHead).includes('RoasterRoasted 2026-09-21') &&
+    !!editDetails(detailHead), 'shot detail did not put coffee identity and editing in its header');
+  check(descendants(fullDetail).filter(node => node.attrs?.class === 'shot-metric')
+    .map(renderedText).join('|') ===
+      'Grind1.8|Dose18g|Yield39gTarget 36 gScale 264 g|Time31000',
+    'shot detail confused the recipe with measured yield, raw scale weight or duration');
+  const detailPreparation = descendants(fullDetail).find(node =>
+    node.attrs?.class === 'shot-detail-preparation');
+  check(descendants(detailPreparation).filter(node => node.tag === 'dt')
+    .map(renderedText).join('|') === 'Grinder|Temperature|Pressure|Water' &&
+    renderedText(detailPreparation).includes('Lagom O1Temperature93°C') &&
+    descendants(detailPreparation).some(node => node.tag === 'button' &&
+      renderedText(node) === 'Use for next shot'),
+    'detail preparation lost secondary fields or recipe reuse, or repeated the main metrics');
+  const tasting = descendants(fullDetail).find(node => node.attrs?.class === 'shot-detail-tasting');
+  check(renderedText(tasting).includes('TDS 8.6%Extraction yield 18.6%sweet · balanced') &&
+    descendants(tasting).some(node => node.attrs?.class === 'shot-note' &&
+      renderedText(node) === detailMetadata.notes.trim()),
+    'shot detail hid tags, abbreviated extraction yield or truncated the full tasting note');
+  const recording = descendants(fullDetail).find(node => node.attrs?.class === 'shot-detail-recording');
+  check(renderedText(recording).includes('target40 gcut alertarmed · didn’t firepump time26 s'),
+    'shot detail lost the recorded device target, cut alert or total pump time');
+  const detailFooter = descendants(fullDetail).find(node => node.attrs?.class === 'shot-detail-footer');
+  check(renderedText(detailFooter).includes('Set as last shot (replay on device)') &&
+    renderedText(detailFooter).includes('Download shot data (JSON)'),
+    'detail footer lost replay or download actions');
+  check(JSON.stringify(detailMetadata) === detailMetadataBefore,
+    'rendering shot detail changed its saved metadata');
+  for (const state of ['absent', 'cleared', 'corrupt', 'unsupported', 'unavailable', 'loading']) {
+    views.selectedShotMetadata = { id: 7, state, loading: state === 'loading', etag: 'detail-7' };
+    const partialDetail = views.el('main');
+    views.renderDetail(partialDetail);
+    check(descendants(partialDetail).filter(node => node.attrs?.class === 'shot-metric').length === 2 &&
+      !descendants(partialDetail).some(node => node.attrs?.class === 'shot-detail-sections'),
+      'detail hid measurements or invented preparation/tasting for state ' + state);
+    const expected = {
+      absent: 'Add shot details', cleared: 'Add shot details',
+      corrupt: 'Shot details damaged', unsupported: 'Shot details need newer firmware',
+      unavailable: 'Load shot details', loading: 'Loading shot details…',
+    }[state];
+    check(renderedText(partialDetail).includes(expected) &&
+      ((state === 'absent' || state === 'cleared') ||
+        (!renderedText(partialDetail).includes('Coffee not set') &&
+          descendants(partialDetail).some(node => node.tag === 'h2' &&
+            renderedText(node) === 'Shot #7'))) &&
+      (state !== 'loading' || descendants(partialDetail).some(node =>
+        node.tag === 'button' && node.disabled && renderedText(node) === 'Preparing download…')),
+      'detail lost metadata state feedback or its download guard: ' + state);
+  }
 
   const dialInMetadata = { ...cardMetadata,
     prep: { ...cardMetadata.prep, targetYieldG: 36 },
@@ -2898,8 +2966,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(orderedLive.children.map(node => node.attrs.class).join('|') ===
     'card now idle|coffee-context|card record last-shot',
     'Live did not put current measurements before the next recipe and last result');
-  if (checkCount !== 308) {
-    throw new Error(`expected 308 assertions, ran ${checkCount}`);
+  if (checkCount !== 327) {
+    throw new Error(`expected 327 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

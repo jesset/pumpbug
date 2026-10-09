@@ -695,7 +695,7 @@ function renderHistoryShot(summary) {
   const item = el('li', { onclick: () => selectShot(summary.id) },
     shotDate(summary),
     el('div', { class: 'shot-identity' },
-      shotCoffeeIdentity(summary.id, data, 'Shot #' + summary.id),
+      shotCoffeeIdentity(summary.id, data, { unknownLabel: 'Shot #' + summary.id }),
       shotMetadataListAction(summary)), shotMetrics(summary));
   item.dataset.shotId = String(summary.id);
   appendShotResult(item, data, { compact: true });
@@ -816,11 +816,26 @@ function renderDetail(app) {
     return;
   }
   const e = selectedShot;
-  const when = fmtDate(e.startUtcSec) || 'Time unknown';
-  const card = renderCompletedShot(
-    app, shotSummaryFromRecord(selectedShotId, e, selectedShotMetadata), {
-      title: `Shot #${selectedShotId} · ${when}` });
-  card.append(techFold(e));
+  const summary = shotSummaryFromRecord(selectedShotId, e, selectedShotMetadata);
+  const data = shotSummaryData(summary);
+  const identity = shotCoffeeIdentity(null, data, {
+    unknownLabel: 'Shot #' + selectedShotId, heading: true,
+  });
+  if (data.coffee.roastDate) identity.append(el('div', { class: 'coffee-roast-date' },
+    'Roasted ' + data.coffee.roastDate));
+  const head = el('div', { class: 'shot-detail-head' }, identity);
+  const edit = shotMetadataEditAction(summary);
+  if (edit) head.append(edit);
+  const card = el('section', { class: 'card record shot-detail' },
+    shotDate(summary), head);
+  appendShotMetadataStatus(card, data.record);
+  card.append(shotMetrics(summary));
+  renderCurve(RecordChart, card, e);
+  const metadata = shotDetailMetadata(summary);
+  if (metadata) card.append(metadata);
+  card.append(el('section', { class: 'shot-detail-recording' },
+    el('h3', {}, 'Recording details'), recordRows(e, 'detail')));
+  const footer = el('footer', { class: 'shot-detail-footer' }, techFold(e));
   const actions = el('div', { class: 'shot-detail-actions' });
   // Send this shot to the device's Last Shot slot for on-device replay.
   actions.append(el('button',
@@ -834,5 +849,7 @@ function renderDetail(app) {
     metadataPending ? 'Preparing download…' : 'Download shot data (JSON)');
   download.disabled = metadataPending;
   actions.append(download);
-  app.append(actions);
+  footer.append(actions);
+  card.append(footer);
+  app.append(card);
 }
