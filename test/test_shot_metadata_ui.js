@@ -82,7 +82,7 @@ vm.runInContext(
     'editor: () => metadataEditor,' +
     'setNextRecipe: (value, sourceId = null) => {' +
       'nextShotRecipe = value; nextShotRecipeSourceId = sourceId; },' +
-    'clearNextShotRecipe, startMetadataEditorBlank,' +
+    'clearNextShotRecipe, clearMetadataEditorDraft,' +
     'useCurrentRecipeInMetadataEditor, resolveShotMetadata,' +
     'loadCoffeeContextHistory, shouldLoadCoffeeContextHistory,' +
     'updateCoffeeContextHistoryForState,' +
@@ -96,7 +96,7 @@ vm.runInContext(
     'setCoffeePicker: value => { coffeePicker = value; },' +
     'setCoffeeComparisonOpen: value => { coffeeComparisonOpen = value; },' +
     'coffeePickerState: () => coffeePicker,' +
-    'chooseCoffee, confirmCoffeeChoice, readCoffeeFields, saveMetadataEditor, clearSavedMetadata,' +
+    'chooseCoffee, confirmCoffeeChoice, readCoffeeFields, saveMetadataEditor,' +
     'closeActiveMetadataOverlay,' +
     'overwriteMetadataConflict, keepSavedMetadataConflict,' +
     'historyStore, loadMoreHistory, downloadShotJson,' +
@@ -139,6 +139,14 @@ function descendants(root) {
   };
   visit(root);
   return result;
+}
+
+function editorYieldValue(root) {
+  return descendants(root).find(node => node.tag === 'output').textContent;
+}
+
+function editorYieldWarning(root) {
+  return descendants(root).find(node => node.attrs?.class === 'field-warning').textContent;
 }
 
 function renderedEditorNodes() {
@@ -322,6 +330,55 @@ check(descendants(context.api.renderEditorPreparation({}, () => {}))
   .some(node => node.tag === 'button' && node.children.includes('Add preparation')),
   'empty preparation lacks an add action');
 
+const recipeBeforeEditorLayout = context.api.browserState();
+const editorBeforeEditorLayout = context.api.editor();
+context.api.setNextRecipe({ coffee: { name: 'Next coffee' }, prep: { doseG: 18 } });
+for (const [kind, state, secondaryAction] of [
+  ['shot', 'active', null],
+  ['shot', 'absent', 'Copy next recipe'],
+  ['recipe', 'active', null],
+]) {
+  const original = { coffee: { name: 'Coffee' }, prep: { doseG: 18 },
+    rating: 4, tags: ['sweet'], notes: 'Keep this note', tdsPct: 8.6 };
+  context.api.setEditor({ kind, id: 7, record: { state }, original,
+    rating: 4, tags: ['sweet'], yieldCg: 3900 });
+  const nodes = renderedEditorNodes();
+  const footer = nodes.find(node => node.attrs.class === 'editor-actions');
+  const extra = nodes.find(node => node.attrs.class === 'editor-secondary-actions');
+  const secondary = descendants(extra).filter(node => node.tag === 'button')
+    .map(node => renderedText(node));
+  check(footer.children.map(renderedText).join('|') === 'Clear|Cancel|Save' &&
+        footer.children[0].attrs['aria-label'] === 'Clear draft' &&
+        (secondaryAction ? secondary.includes(secondaryAction) : secondary.length === 0) &&
+        !nodes.some(node => node.tag === 'details'),
+    kind + '/' + state + ': draft clearing was hidden or mixed with saved-detail actions');
+  check(nodes.find(node => node.attrs.class === 'modal-close')
+          .attrs['data-overlay-initial-focus'] === 'true',
+    kind + '/' + state + ': opening the editor could focus an input');
+  if (kind === 'shot') {
+    const results = nodes.find(node => node.attrs.class === 'editor-results');
+    const extraction = descendants(results).find(node =>
+      node.attrs.class === 'editor-extraction');
+    check(descendants(results).some(node => node.attrs.role === 'group' &&
+            node.attrs['aria-label'] === 'Rating') &&
+          ['tags', 'notes', 'tdsPct'].every(name => descendants(results)
+            .some(node => node.attrs.name === name)) &&
+          descendants(extraction).some(node => node.attrs.name === 'tdsPct') &&
+          descendants(extraction).some(node =>
+            node.tag === 'output' && node.textContent === '18.6%'),
+      state + ': results omitted inputs or could not calculate extraction after rendering');
+    const form = nodes.find(node => node.tag === 'form');
+    const edited = context.api.readEditorValue(form, original);
+    check(edited.rating === 4 && edited.tags.join(',') === 'sweet' &&
+          edited.notes === 'Keep this note' && edited.tdsPct === 8.6 &&
+          edited.prep.doseG === 18,
+      state + ': regrouping tasting fields lost saved values');
+  }
+}
+context.api.setEditor(editorBeforeEditorLayout);
+context.api.setNextRecipe(recipeBeforeEditorLayout.nextShotRecipe,
+  recipeBeforeEditorLayout.nextShotRecipeSourceId);
+
 const focused = [];
 const focusControl = (name, { initial = false, input = false } = {}) => ({
   hasAttribute: attribute =>
@@ -376,6 +433,34 @@ for (const hadFocus of [false, true]) {
   previous = error;
   context.api.renderMetadataOverlay();
   check(focusCount === 1, 'an unchanged error stole focus on another render');
+  context.document = oldDocument;
+  context.renderCoffeePicker = oldPicker;
+  context.renderMetadataEditor = oldEditor;
+}
+
+{
+  const oldDocument = context.document;
+  const oldPicker = context.renderCoffeePicker;
+  const oldEditor = context.renderMetadataEditor;
+  let focused = null;
+  const clear = { getAttribute: () => 'clear-draft', focus() { focused = 'clear'; } };
+  const input = { matches: () => true, hasAttribute: () => false,
+    focus() { focused = 'input'; } };
+  const overlay = {
+    firstElementChild: {}, dataset: { modalKeyboard: 'true' },
+    contains: () => true, replaceChildren() {}, append() {},
+    querySelector: () => null,
+    querySelectorAll: selector => selector === '[data-overlay-focus-key]'
+      ? [clear] : [input],
+  };
+  context.document = {
+    activeElement: { getAttribute: () => null },
+    getElementById: () => overlay, querySelectorAll: () => [],
+  };
+  context.renderCoffeePicker = () => null;
+  context.renderMetadataEditor = () => ({});
+  context.api.renderMetadataOverlay({ focusKey: 'clear-draft' });
+  check(focused === 'clear', 'resetting a draft focused an input before the Clear action');
   context.document = oldDocument;
   context.renderCoffeePicker = oldPicker;
   context.renderMetadataEditor = oldEditor;
@@ -675,9 +760,10 @@ check(recoveredEditor.original.coffee.name === 'Current coffee' &&
 const copiedRecipeNodes = renderedEditorNodes();
 check(copiedRecipeNodes.some(node => node.tag === 'input' &&
         node.attrs.name === 'prep.doseG' && node.value === '17.5') &&
-      copiedRecipeNodes.some(node => node.tag === 'details' &&
-        node.attrs.class === 'preparation-more' && !node.open),
-  'copied recipe preparation was not editable or expanded empty extra fields');
+      ['grinder', 'tempC', 'pressure', 'water'].every(name =>
+        copiedRecipeNodes.some(node => node.attrs.name === 'prep.' + name)) &&
+      !copiedRecipeNodes.some(node => node.tag === 'details'),
+  'copied recipe did not expose all preparation fields for editing');
 
 context.api.setNextRecipe({ coffee: { name: 'Coffee-only recipe' } });
 context.api.setEditor({
@@ -846,6 +932,26 @@ context.api.saveMetadataEditor({ elements: {
 } });
 check(context.api.browserState().nextShotRecipeSourceId === null,
   'changing coffee identity retained another shot as the recipe source');
+
+const recipeBeforeEmptySave = context.api.browserState();
+const storageBeforeEmptySave = storedBrowserState;
+context.api.setNextRecipe({ coffee: sourceCoffee, prep: { grind: '19' } }, 42);
+context.api.openNextShotEditor();
+context.api.setCoffeeComparisonOpen(true);
+context.api.saveMetadataEditor({ elements: {
+  ...noCoffeeForm.elements, 'prep.grind': element(''),
+} });
+check(context.api.editor() === null &&
+      Object.keys(context.api.browserState().nextShotRecipe).length === 0 &&
+      context.api.browserState().nextShotRecipeSourceId === null &&
+      Object.keys(JSON.parse(storedBrowserState).nextShotRecipe).length === 0,
+  'saving an empty recipe did not close the editor and clear the stored recipe');
+check(vm.runInContext('coffeeComparisonOpen', context) === false,
+  'saving an empty recipe retained its coffee comparison');
+context.api.setNextRecipe(recipeBeforeEmptySave.nextShotRecipe,
+  recipeBeforeEmptySave.nextShotRecipeSourceId);
+storedBrowserState = storageBeforeEmptySave;
+
 check(!context.api.shouldLoadCoffeeContextHistory({
   storage: 'ready', active: true, phase: 'RUNNING',
 }), 'restored coffee history was eligible to load during a pump window');
@@ -859,7 +965,9 @@ context.api.setEditor({
   tags: ['floral'],
   saving: false,
 });
-context.api.startMetadataEditorBlank();
+context.api.clearMetadataEditorDraft({ elements: {
+  tdsPct: element(''), tags: element(''), notes: element(''),
+} });
 const blankEditor = context.api.editor();
 check(Object.keys(blankEditor.original).length === 0 &&
       blankEditor.rating === 0 && blankEditor.tags.length === 0,
@@ -1358,8 +1466,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   const carriedRecipeForm = carriedRecipeNodes.find(node => node.tag === 'form');
   check(carriedRecipeForm.elements['prep.grind'].value === '2.3 + 4 clicks' &&
         carriedRecipeForm.elements['prep.water'].value === 'Water from the draft' &&
-        carriedRecipeNodes.some(node => node.tag === 'details' &&
-          node.attrs.class === 'preparation-more' && node.open),
+        !carriedRecipeNodes.some(node => node.tag === 'details'),
     'new coffee did not expose copied preparation for editing');
   carriedRecipeForm.elements['prep.grind'].value = '';
   carriedRecipeForm.elements['prep.water'].value = '';
@@ -1407,9 +1514,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(preparationInputs.every(name => chosenCoffeeNodes.some(node =>
           node.tag === 'input' && node.attrs.name === 'prep.' + name &&
           !node.disabled)) &&
-        chosenCoffeeNodes.some(node => node.tag === 'details' &&
-          node.attrs.class === 'preparation-more' && node.open),
-    'choosing coffee did not render editable preparation with populated extra fields expanded');
+        !chosenCoffeeNodes.some(node => node.tag === 'details'),
+    'choosing coffee did not expose every preparation field for editing');
   const preparationBeforeDetails = JSON.stringify(context.api.editor().original.prep);
   context.api.openEditorCoffeePicker(chosenCoffeeNodes.find(node => node.tag === 'form'));
   context.api.confirmCoffeeChoice(coffeeChoiceForm({
@@ -2236,12 +2342,11 @@ check(Object.keys(blankEditor.original).length === 0 &&
       } };
       fields.push(field);
       const input = { ...source, name, attrs: { ...source.attrs },
-        section: { open: false },
         getAttribute(key) { return this.attrs[key] || null; },
         setAttribute(key, value) { this.attrs[key] = value; },
         removeAttribute(key) { delete this.attrs[key]; },
         closest(selector) {
-          return selector === '.field' ? field : this.section;
+          return selector === '.field' ? field : null;
         },
         focus: () => { result.focused = input; },
       };
@@ -2262,19 +2367,17 @@ check(Object.keys(blankEditor.original).length === 0 &&
       ...form.elements, [name]: element(raw),
     });
     const input = invalidNumericForm.elements[name];
-    const section = input.section;
     context.api.setEditor({
       kind: 'recipe', original: { coffee: { name: 'Existing recipe' } },
       rating: 0, tags: [], saving: false, error: null,
     });
     for (let attempt = 1; attempt <= 2; ++attempt) {
       invalidNumericForm.focused = null;
-      section.open = false;
       await context.api.saveMetadataEditor(invalidNumericForm);
       const fieldError = invalidNumericForm.querySelector('.field-error');
       check(context.api.editor().error === null && fieldError &&
             !invalidNumericForm.querySelector('.editor-error') &&
-            invalidNumericForm.focused === input && section.open &&
+            invalidNumericForm.focused === input &&
             input.attrs['aria-describedby'] === fieldError.id &&
             input.attrs['aria-invalid'] === 'true' &&
             input.closest('.field').scrollBlock === 'center' &&
@@ -2447,7 +2550,6 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(context.api.editor().conflict.action === 'identity',
     'generic conflict actions accepted an identity conflict without a record');
 
-  let clearRequests = 0;
   context.api.setEditor({
     kind: 'shot', id: 8,
     record: { id: 8, state: 'active', etag: 'saved-etag' },
@@ -2455,11 +2557,11 @@ check(Object.keys(blankEditor.original).length === 0 &&
     rating: 0, tags: [], saving: false, error: null, conflict: null,
   });
   context.confirm = () => false;
-  context.fetchWithTimeout = async () => { ++clearRequests; };
-  await context.api.clearSavedMetadata();
-  check(clearRequests === 0 && context.api.editor().original.coffee.name ===
-        'Keep this',
-    'cancelling clear removed saved shot details');
+  context.api.clearMetadataEditorDraft({ elements: {
+    tdsPct: element(''), tags: element(''), notes: element(''),
+  } });
+  check(context.api.editor().original.coffee.name === 'Keep this',
+    'cancelling clear discarded the draft');
 
   check(context.api.downloadShotJson(8, {}, { loading: true }) === false,
     'JSON export accepted unresolved shot metadata');
@@ -2483,9 +2585,10 @@ check(Object.keys(blankEditor.original).length === 0 &&
   const unassignedCoffeeNodes = renderedEditorNodes();
   check(unassignedCoffeeNodes.some(node => node.tag === 'input' &&
           node.attrs.name === 'prep.grind') &&
-        unassignedCoffeeNodes.some(node => node.tag === 'details' &&
-          node.attrs.class === 'preparation-more' && !node.open),
-    'adding a coffee did not render preparation or expanded empty extra fields');
+        ['grinder', 'tempC', 'pressure', 'water'].every(name =>
+          unassignedCoffeeNodes.some(node => node.attrs.name === 'prep.' + name)) &&
+        !unassignedCoffeeNodes.some(node => node.tag === 'details'),
+    'adding a coffee did not expose every preparation field for editing');
   context.api.closeMetadataEditor();
   check(context.api.editor() === null && context.api.coffeePickerState() === null,
     'coffee-selection teardown left an editor or picker open');
@@ -2809,26 +2912,42 @@ check(Object.keys(blankEditor.original).length === 0 &&
   const extractionForm = views.el('form');
   extractionForm.elements = { tdsPct: element('8.6'), 'prep.doseG': element('18') };
   const ey = views.editorExtractionYield(extractionForm, detailEditor);
-  check(ey.textContent === 'Extraction yield 18.6%',
+  check(editorYieldValue(ey) === '18.6%',
     'editor extraction did not use its measurement snapshot');
+  const yieldOutput = descendants(ey).find(node => node.tag === 'output');
+  const yieldLabel = descendants(ey).find(node =>
+    node.attrs?.id === yieldOutput.attrs['aria-labelledby']);
+  check(yieldLabel && renderedText(yieldLabel) === 'Extraction yield',
+    'editor extraction output is not associated with its visible label');
+  let yieldText = yieldOutput.textContent;
+  let yieldUpdates = 0;
+  Object.defineProperty(yieldOutput, 'textContent', {
+    get: () => yieldText,
+    set: text => { yieldText = text; ++yieldUpdates; },
+  });
+  extractionForm.listeners.input();
+  extractionForm.elements.tdsPct.value = '8.6001';
+  extractionForm.listeners.input();
+  check(yieldUpdates === 0 && editorYieldValue(ey) === '18.6%',
+    'editor rewrote unchanged extraction output on a form input event');
   extractionForm.elements.tdsPct.value = '86';
   extractionForm.listeners.input();
-  check(ey.textContent ===
-    'Extraction yield 186.3% — check TDS, dose, and beverage weight.' &&
-    extractionForm.elements.tdsPct.value === '86',
+  check(editorYieldValue(ey) === '186.3%' && editorYieldWarning(ey) ===
+    'check TDS, dose, and beverage weight.' &&
+    extractionForm.elements.tdsPct.value === '86' && yieldUpdates === 1,
     'editor failed to flag impossible extraction or changed the entered TDS');
   extractionForm.elements.tdsPct.value = '';
   extractionForm.listeners.input();
-  check(ey.textContent === '', 'blank editor TDS produced an extraction percentage');
+  check(editorYieldValue(ey) === '—', 'blank editor TDS produced an extraction percentage');
   extractionForm.elements.tdsPct.value = '0';
   extractionForm.listeners.input();
-  check(ey.textContent === 'Extraction yield 0.0%', 'zero editor TDS was hidden');
+  check(editorYieldValue(ey) === '0.0%', 'zero editor TDS was hidden');
   extractionForm.elements.tdsPct.value = '9';
   extractionForm.elements['prep.doseG'].value = '20';
   views.lastRecord = { shotId: 7, yieldCg: 10000 };
   views.selectedShot = { yieldCg: 10000 };
   extractionForm.listeners.input();
-  check(ey.textContent === 'Extraction yield 17.6%' &&
+  check(editorYieldValue(ey) === '17.6%' &&
     extractionForm.elements.tdsPct.value === '9' && extractionForm.elements['prep.doseG'].value === '20',
     'changing displayed records replaced editor measurements or draft inputs');
   views.closeMetadataEditor();
@@ -2841,7 +2960,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   await editDetails(invalidView).attrs.onclick();
   const invalidEditor = vm.runInContext('metadataEditor', views);
   check(invalidEditor.yieldCg === undefined &&
-    views.editorExtractionYield(extractionForm, invalidEditor).textContent === '',
+    editorYieldValue(views.editorExtractionYield(extractionForm, invalidEditor)) === '—',
     'damaged shot editor borrowed measurements from another view');
   check(detailMetadataReads === 3,
     'detail and Last Shot edit actions did not refresh metadata before opening');
@@ -3096,8 +3215,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(orderedLive.children.map(node => node.attrs.class).join('|') ===
     'card now idle|coffee-context|card record last-shot',
     'Live did not put current measurements before the next recipe and last result');
-  if (checkCount !== 338) {
-    throw new Error(`expected 338 assertions, ran ${checkCount}`);
+  if (checkCount !== 353) {
+    throw new Error(`expected 353 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

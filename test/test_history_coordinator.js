@@ -671,22 +671,75 @@ async function testWriteConnectionFailures() {
   }
 }
 
-async function testFailedClearPreservesUnsavedFields() {
+async function testEmptyShotSave() {
+  for (const state of ['absent', 'cleared', 'active']) {
+    const h = harness({ deferredWrites: true });
+    await h.load([{ id: 1, userMetadataState: state,
+      userMetadata: state === 'active' ? {} : null,
+      userMetadataEtag: 'original' }]);
+    h.context.openMetadataEditor(h.store.rows[0]);
+    const revision = h.store.metadataRevision;
+    const pending = h.context.saveMetadataEditor({ elements: {
+      tdsPct: { value: '' }, tags: { value: '' }, notes: { value: '' },
+    } });
+    if (state === 'active') {
+      const request = h.take(h.writes);
+      assert.equal(request.options.method, 'DELETE');
+      assert.equal(request.options.headers['If-Match'], 'original');
+      request.resolve(response({}, 200, {
+        ETag: 'cleared', 'X-Shot-Metadata-State': 'cleared',
+      }));
+    }
+    await pending;
+    assert.equal(h.context.api.editor(), null);
+    if (state !== 'active') {
+      assert.equal(h.writes.length, 0, `empty Save wrote ${state} details`);
+      assert.equal(h.reads.length, 0);
+      assert.equal(h.store.rows[0].userMetadataState, state);
+      assert.equal(h.store.rows[0].userMetadataEtag, 'original');
+      assert.equal(h.store.metadataRevision, revision);
+      assert.equal(h.banners.length, 0, 'empty Save claimed to clear saved details');
+    } else {
+      assert.equal(h.store.rows[0].userMetadataState, 'cleared');
+      assert.equal(h.banners.at(-1), 'Shot details cleared.');
+    }
+  }
+}
+
+async function testClearedDraftSurvivesFailedSave() {
   for (const outcome of ['network', 'conflict']) {
     const h = harness({ deferredWrites: true });
-    const editor = { kind: 'shot', id: 1, record: { etag: 'original' },
+    const editor = { kind: 'shot', id: 1, record: { state: 'active', etag: 'original' },
       original: { notes: 'Saved notes', prep: { doseG: 18 }, future: { kept: true } },
       tags: ['saved-tag'], rating: 4, conflict: null };
     h.context.api.setEditor(editor);
-    h.context.confirm = () => true;
+    let confirmations = 0;
+    h.context.confirm = () => { ++confirmations; return false; };
     const form = { elements: {
       tdsPct: { value: '8.6' }, tags: { value: 'draft-tag' },
       notes: { value: 'Unsaved notes' },
       'prep.doseG': { value: '20' }, 'prep.tempC': { value: '94' },
       'prep.grind': { value: '1.8' }, 'prep.pressure': { value: '6 bar' },
     } };
-    const pending = h.context.clearSavedMetadata(form);
+    h.context.clearMetadataEditorDraft(form);
+    assert.equal(confirmations, 1);
+    assert.equal(editor.original.notes, 'Saved notes');
+    assert.equal(form.elements.notes.value, 'Unsaved notes');
+    assert.equal(editor.tags.join(','), 'saved-tag');
+    assert.equal(h.writes.length, 0, 'cancelling draft reset wrote to the device');
+    h.context.confirm = () => { ++confirmations; return true; };
+    h.context.clearMetadataEditorDraft(form);
+    assert.deepEqual(JSON.parse(JSON.stringify(editor.original)), {});
+    assert.equal(h.writes.length, 0, 'clearing the draft wrote before Save');
+    const clearedForm = { elements: {
+      tdsPct: { value: '' }, tags: { value: '' }, notes: { value: '' },
+    } };
+    h.context.clearMetadataEditorDraft(clearedForm);
+    assert.equal(confirmations, 2, 'empty draft asked for another confirmation');
+    const pending = h.context.saveMetadataEditor(clearedForm);
     const request = h.take(h.writes);
+    assert.equal(request.options.method, 'DELETE');
+    assert.equal(request.options.headers['If-Match'], 'original');
     if (outcome === 'network') {
       request.reject(h.context.requestError('network', 'offline'));
     } else {
@@ -700,15 +753,10 @@ async function testFailedClearPreservesUnsavedFields() {
       h.context.returnToMetadataDraft();
       assert.equal(editor.conflict, null);
     }
-    assert.equal(editor.original.notes, 'Unsaved notes');
-    assert.equal(editor.original.tdsPct, 8.6);
-    assert.equal(editor.original.rating, 4);
-    assert.equal(editor.original.prep.doseG, 20);
-    assert.equal(editor.original.prep.tempC, 94);
-    assert.equal(editor.original.prep.grind, '1.8');
-    assert.equal(editor.original.prep.pressure, '6 bar');
-    assert.equal(editor.original.tags.join(','), 'saved-tag,draft-tag');
-    assert.equal(editor.original.future.kept, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(editor.original)), {});
+    assert.equal(editor.rating, 0);
+    assert.equal(editor.tags.length, 0);
+    assert.equal(confirmations, 2, 'Save asked for a second clear confirmation');
     assert.equal(editor.record.etag, 'original');
     assert(!editor.saving);
   }
@@ -1481,7 +1529,8 @@ async function testLastShotRefreshPreservesOpenDetail() {
     testIndividualMetadataFreshness, testConflictFreshnessAndAcceptance,
     testDraftAndUncertainWrite, testCancelledConflictRead, testConflictIdentity,
     testRejectedWrites, testWriteConnectionFailures,
-    testFailedClearPreservesUnsavedFields, testApplicationWriteFailuresStayIdentifiable,
+    testEmptyShotSave, testClearedDraftSurvivesFailedSave,
+    testApplicationWriteFailuresStayIdentifiable,
     testRequestFailureClassification, testRecipeFailureOutcomes,
     testFailedWritesDoNotInvalidateReads, testStreamDefersNewBackgroundReads,
     testRepeatedWritesDuringRefresh, testCancellationDuringMetadataRevalidation,

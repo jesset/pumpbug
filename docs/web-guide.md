@@ -239,10 +239,11 @@ pump-on time. An `ended` row explains an unusual end to the shot. The collapsibl
 `Technical` section below holds diagnostics.
 
 `Add shot details` or `Edit shot details` opens the shot editor, where you can
-enter coffee, preparation and tasting results. When TDS and dose are entered
-and measured beverage weight is available, extraction yield is calculated as
-TDS (%) × beverage weight (g) ÷ dose (g), rounded to one decimal place, and
-displayed in the editor and in History, Last Shot, and coffee summaries.
+enter coffee and preparation, and add a rating, tags, notes and TDS in `Results`.
+When TDS and dose are entered and measured beverage weight is available,
+extraction yield is calculated as TDS (%) × beverage weight (g) ÷ dose (g),
+rounded to one decimal place, and displayed in the editor and in History, Last
+Shot, and coffee summaries.
 
 In the shot details editor, you can select a coffee or edit its details. Review
 the details and choose `Use coffee` to update the shot draft. Choosing a coffee
@@ -251,8 +252,7 @@ values are preserved.
 
 Saved-shot preparation starts read-only. `Edit preparation` (or `Add
 preparation` when empty) opens the fields in place. Choosing a coffee or using
-`Copy next recipe` also opens preparation for review and editing. `More
-preparation details` expands automatically when it contains values.
+`Copy next recipe` also opens all preparation fields for review and editing.
 The editor's bottom `Save` and `Cancel` buttons apply to preparation and result
 edits together.
 
@@ -272,8 +272,9 @@ If you `Delete all data` on the device while editing a shot in the browser,
 trying to save the changes to the older shot will normally be rejected. In that
 case, you can select `Download draft` to keep a local JSON copy of your changes.
 
-`Clear saved details` clears the editable details without deleting the shot
-record.
+`Clear` asks for confirmation before resetting a nonempty draft. Saved details
+stay unchanged until you choose `Save`; saving an empty draft clears the details
+without deleting the shot record. `Cancel` closes the editor without saving.
 
 ![Pump Bug browser shot detail with replay and download actions](images/web-guide/shot-detail.png)
 

@@ -521,8 +521,12 @@ function extractionYieldText(value, shortLabel = false) {
   if (value === null) return '';
   const label = shortLabel ? 'EY' : 'Extraction yield';
   const text = label + ' ' + value.toFixed(1) + '%';
-  return value > 100
-    ? text + ' — check TDS, dose, and beverage weight.' : text;
+  const warning = extractionYieldWarning(value);
+  return warning ? text + ' — ' + warning : text;
+}
+
+function extractionYieldWarning(value) {
+  return value > 100 ? 'check TDS, dose, and beverage weight.' : '';
 }
 
 function shotSummaryEntries(summary, {
@@ -1455,7 +1459,7 @@ function refreshCoffeeHistoryOverlay() {
   }
 }
 
-function renderMetadataOverlay() {
+function renderMetadataOverlay({ focusKey = null } = {}) {
   coffeeHistoryFeedbackForDialog();
   const overlay = document.getElementById('overlay');
   const active = document.activeElement;
@@ -1463,8 +1467,8 @@ function renderMetadataOverlay() {
   const previousError = overlay.querySelector('.editor-error');
   const previousErrorText = previousError && previousError.textContent;
   const hadOverlayFocus = !!active && overlay.contains(active);
-  const overlayFocusKey = hadOverlayFocus && active.getAttribute
-    ? active.getAttribute('data-overlay-focus-key') : null;
+  const overlayFocusKey = focusKey || (hadOverlayFocus && active.getAttribute
+    ? active.getAttribute('data-overlay-focus-key') : null);
   const pickerFocus = coffeePicker && active && active.name && active.form &&
     active.form.classList.contains('coffee-details-form')
     ? {
@@ -1696,8 +1700,6 @@ function showEditorFieldError(form, input, message) {
   const formError = form.querySelector('.editor-error');
   if (formError) formError.remove();
   const field = appendEditorFieldError(input, message);
-  const section = input.closest('details');
-  if (section) section.open = true;
   input.focus({ preventScroll: true });
   field.scrollIntoView({ block: 'center' });
 }
@@ -1837,14 +1839,18 @@ function metadataTooLargeMessage() {
     SHOT_METADATA_MAX_BYTES.toLocaleString() + '-byte limit.';
 }
 
-function startMetadataEditorBlank() {
+function clearMetadataEditorDraft(form) {
   if (!metadataEditor || metadataEditor.saving) return;
+  const value = readEditorValue(form, metadataEditor.original);
+  if (Object.keys(value).length && !confirm('Clear this draft? Unsaved edits ' +
+      'will be lost. Saved details won’t change until you press Save.')) return;
   metadataEditor.original = {};
   metadataEditor.recipeSourceId = null;
   metadataEditor.recipeSourceCoffeeIdentity = null;
   metadataEditor.rating = 0;
   metadataEditor.tags = [];
-  renderMetadataOverlay();
+  metadataEditor.error = null;
+  renderMetadataOverlay({ focusKey: 'clear-draft' });
 }
 
 function useCurrentRecipeInMetadataEditor(form) {
@@ -1973,6 +1979,11 @@ async function saveMetadataEditor(form) {
     delete value.tags;
     delete value.notes;
     editor.original = value;
+    if (!Object.keys(value).length) {
+      metadataEditor = null;
+      clearNextShotRecipe();
+      return;
+    }
     const identity = coffeeIdentity(value.coffee);
     if (!identity) {
       showMetadataEditorError(form,
@@ -1994,7 +2005,11 @@ async function saveMetadataEditor(form) {
     renderMetadataOverlay();
     return;
   }
-  await writeShotMetadata(editor, value);
+  editor.original = value;
+  if (Object.keys(value).length) await writeShotMetadata(editor, value);
+  else if (['absent', 'cleared'].includes(editor.record.state)) {
+    closeMetadataEditor();
+  } else await clearShotMetadata(editor);
 }
 
 async function clearShotMetadata(editor) {
@@ -2049,13 +2064,6 @@ async function clearShotMetadata(editor) {
       renderMetadataOverlay();
     }
   }
-}
-
-async function clearSavedMetadata(form) {
-  if (!metadataEditor || metadataEditor.saving) return;
-  if (!confirm('Clear saved shot details? This cannot be undone.')) return;
-  metadataEditor.original = readEditorValue(form, metadataEditor.original);
-  await clearShotMetadata(metadataEditor);
 }
 
 async function overwriteMetadataConflict() {
@@ -2356,7 +2364,14 @@ function preparationCompatibilityWarning() {
 }
 
 function editorExtractionYield(form, editor) {
-  const output = el('div', { class: 'extraction-yield' });
+  const value = el('output', {
+    class: 'editor-extraction-value',
+    'aria-labelledby': 'editor-extraction-label',
+  });
+  const warning = el('span', { class: 'field-warning' });
+  const output = el('div', { class: 'field extraction-yield' },
+    el('span', { id: 'editor-extraction-label' }, 'Extraction yield'),
+    value, warning);
   const update = () => {
     const doseInput = form.elements['prep.doseG'];
     const doseText = doseInput ? doseInput.value.trim()
@@ -2365,7 +2380,10 @@ function editorExtractionYield(form, editor) {
     const extraction = extractionYieldPct(
       tdsText ? Number(tdsText) : null,
       doseText ? Number(doseText) : null, editor.yieldCg);
-    output.textContent = extractionYieldText(extraction);
+    const text = extraction === null ? '—' : extraction.toFixed(1) + '%';
+    if (value.textContent !== text) value.textContent = text;
+    warning.textContent = extractionYieldWarning(extraction);
+    warning.hidden = !warning.textContent;
   };
   form.addEventListener('input', update);
   update();
@@ -2385,11 +2403,6 @@ function renderMetadataEditor() {
     },
   });
 
-  form.addEventListener('invalid', event => {
-    const section = event.target.closest('details');
-    if (section) section.open = true;
-  }, true);
-
   const prepFields = el('div', { class: 'field-grid recipe-fields' },
     inputField('Grind', { name: 'prep.grind', icon: 'grind',
       value: fieldValue(value, 'prep', 'grind'), list: 'prep-grinds',
@@ -2403,7 +2416,7 @@ function renderMetadataEditor() {
       value: fieldValue(value, 'prep', 'targetYieldG', 'number'),
       disabled: !editorFieldCompatible(value, 'prep', 'targetYieldG', 'number') }),
   );
-  const morePrepFields = el('div', { class: 'field-grid' },
+  const additionalPrepFields = el('div', { class: 'field-grid' },
     inputField('Grinder', { name: 'prep.grinder',
       value: fieldValue(value, 'prep', 'grinder'), list: 'prep-grinders',
       disabled: !editorFieldCompatible(value, 'prep', 'grinder') }),
@@ -2456,13 +2469,11 @@ function renderMetadataEditor() {
   clearRating.disabled = !ratingCompatible;
   rating.append(clearRating);
 
-  const preparation = el('div', { class: 'editor-preparation' });
+  const preparation = el('div', { class: 'editor-preparation', tabindex: '-1' });
   const showPreparationFields = () => {
-    const more = el('details', { class: 'preparation-more' },
-      el('summary', {}, 'More preparation details'), morePrepFields);
-    more.open = ['grinder', 'tempC', 'pressure', 'water'].some(name =>
-      value.prep?.[name] != null && value.prep[name] !== '');
-    preparation.replaceChildren(el('h2', {}, 'Preparation'), prepFields, more);
+    preparation.replaceChildren(el('h2', {}, 'Preparation'), prepFields,
+      el('h3', { class: 'preparation-subheading' }, 'More preparation details'),
+      additionalPrepFields);
   };
   if (metadataEditor.kind === 'recipe' || metadataEditor.editingPreparation) {
     showPreparationFields();
@@ -2472,29 +2483,29 @@ function renderMetadataEditor() {
       metadataEditor.editingPreparation = true;
       showPreparationFields();
       form.dispatchEvent(new Event('input', { bubbles: true }));
-      preparation.querySelector('input:not(:disabled)')?.focus();
+      preparation.focus({ preventScroll: true });
     }));
   }
   form.append(renderEditorCoffee(value, () => openEditorCoffeePicker(form),
     metadataEditor.kind === 'shot'), preparation);
   if (metadataEditor.kind === 'shot') {
-    form.append(el('h2', {}, 'Result'),
-      el('label', { class: 'field wide' }, el('span', {}, 'Rating'), rating),
+    const notes = el('textarea', { name: 'notes', rows: '4' },
+      typeof value.notes === 'string' ? value.notes : '');
+    notes.disabled = !editorFieldCompatible(value, null, 'notes');
+    const results = el('div', { class: 'editor-results' },
+      el('h2', {}, 'Results'),
+      el('div', { class: 'field editor-rating' }, el('span', {}, 'Rating'), rating),
       el('div', { class: 'field-grid' },
-      tagInputField(value),
-      el('label', { class: 'field wide' }, el('span', {}, 'Notes'),
-        (() => {
-          const notes = el('textarea', { name: 'notes', rows: '5' },
-            typeof value.notes === 'string' ? value.notes : '');
-          notes.disabled = !editorFieldCompatible(value, null, 'notes');
-          return notes;
-        })()),
+        tagInputField(value),
+        el('label', { class: 'field wide' }, el('span', {}, 'Notes'), notes)));
+    form.append(results);
+    const extraction = el('div', { class: 'editor-extraction' },
       inputField('TDS (%)', { name: 'tdsPct', type: 'number', step: 'any',
         min: '0', max: '100',
         value: fieldValue(value, null, 'tdsPct', 'number'),
-        disabled: !editorFieldCompatible(value, null, 'tdsPct', 'number') }),
-      ));
-    form.append(editorExtractionYield(form, metadataEditor));
+        disabled: !editorFieldCompatible(value, null, 'tdsPct', 'number') }));
+    results.append(extraction);
+    extraction.append(editorExtractionYield(form, metadataEditor));
   } else {
     for (const name of ['tdsPct', 'tags', 'notes']) {
       form.append(el('input', { type: 'hidden', name, value: '' }));
@@ -2542,24 +2553,19 @@ function renderMetadataEditor() {
   if (metadataEditor.error) {
     form.prepend(renderEditorFormError(metadataEditor.error));
   }
-  const actions = el('div', { class: 'editor-actions' });
+  const secondaryActions = el('div', { class: 'editor-secondary-actions' });
   if (metadataEditor.kind === 'shot' &&
       metadataEditor.record.state === 'absent' &&
       coffeeIdentity(nextShotRecipe.coffee)) {
-    actions.append(el('button', { type: 'button', class: 'secondary',
+    secondaryActions.append(el('button', { type: 'button', class: 'secondary',
       onclick: () => useCurrentRecipeInMetadataEditor(form) },
     'Copy next recipe'));
   }
-  if (metadataEditor.kind === 'shot' &&
-      metadataEditor.record.state !== 'absent') {
-    const clear = el('button', {
-      type: 'button', class: 'destructive-secondary',
-      onclick: () => clearSavedMetadata(form) }, 'Clear saved details');
-    clear.disabled = metadataEditor.saving;
-    actions.append(clear);
-  }
-  actions.append(el('button', { type: 'button', class: 'secondary blank',
-    onclick: () => startMetadataEditorBlank() }, 'Start blank'));
+  if (secondaryActions.childNodes.length) form.append(secondaryActions);
+  const actions = el('div', { class: 'editor-actions' });
+  actions.append(el('button', { type: 'button', class: 'secondary clear-draft',
+    'aria-label': 'Clear draft', 'data-overlay-focus-key': 'clear-draft',
+    onclick: () => clearMetadataEditorDraft(form) }, 'Clear'));
   const cancel = el('button', { type: 'button', class: 'secondary',
     onclick: () => closeMetadataEditor() }, 'Cancel');
   const save = el('button', { type: 'submit', class: 'primary' },
@@ -2574,6 +2580,7 @@ function renderMetadataEditor() {
   }
 
   const close = el('button', { type: 'button', class: 'modal-close',
+    'data-overlay-initial-focus': 'true',
     onclick: () => closeMetadataEditor(), 'aria-label': 'Close' }, '×');
   close.disabled = metadataEditor.saving;
 

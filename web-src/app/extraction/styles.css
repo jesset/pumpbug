@@ -22,7 +22,7 @@ body { padding-top: 16px; }
   width: 18px; height: 18px; flex-shrink: 0; display: block;
 }
 
-h2 {
+h2, .preparation-subheading {
   font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--dim); margin: 0 0 8px; font-weight: normal;
   display: flex; align-items: center; gap: 8px;
@@ -481,19 +481,20 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 .field input:disabled, .field textarea:disabled { color: var(--dim); }
 .field-warning { color: var(--warn); font-size: 0.75rem; margin: 0; }
-.rating { display: flex; align-items: center; gap: 3px; }
+.rating { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 360px; }
 .rating button {
   border: 0; background: none; color: var(--dim); font-size: 1.7rem;
-  padding: 2px; cursor: pointer;
+  min-width: 44px; min-height: 44px; padding: 2px; cursor: pointer;
 }
 .rating button.on { color: var(--warn); }
-.rating .clear-rating { font-size: 0.75rem; margin-left: 8px; }
+.rating .clear-rating { font: inherit; font-size: 0.8125rem; margin-left: auto; }
 .tag-editor {
   border: 1px solid var(--border); border-radius: 4px;
   background: var(--surface); padding: 6px;
 }
 .tag-editor input { border: 0; padding: 4px; }
 .tag-editor input:focus { outline: 0; }
+.tag-editor:focus-within { outline: 1px solid var(--accent); border-color: var(--accent); }
 .tag-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .tag-chips button {
   border: 1px solid var(--border); border-radius: 999px;
@@ -516,7 +517,6 @@ form > .editor-error:focus {
 .editor-actions {
   display: flex; gap: 8px; align-items: center; margin-top: 16px;
 }
-.editor-actions .blank { margin-right: auto; }
 .metadata-actions, .coffee-actions {
   display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
 }
@@ -653,7 +653,6 @@ form > .editor-error:focus {
   .field-grid { grid-template-columns: minmax(0, 1fr); }
   .field.wide, .field-warning { grid-column: auto; }
   .editor-actions { flex-wrap: wrap; }
-  .editor-actions .destructive-secondary { width: 100%; }
 }
 
 .field-grid.recipe-fields {
@@ -786,9 +785,28 @@ form > .editor-error:focus {
   position: sticky; bottom: 0; background: var(--bg);
   padding: 12px 0; border-top: 1px solid var(--border);
 }
+.metadata-editor > .editor-actions { justify-content: flex-end; }
+.metadata-editor > .editor-actions button { min-width: 88px; min-height: 44px; }
+.editor-actions .clear-draft { margin-right: auto; }
+.editor-results { border-top: 1px solid var(--border); padding-top: 20px; margin-top: 20px; }
+.metadata-editor .editor-results h2 { margin: 0 0 12px; }
+.editor-rating { margin-bottom: 16px; }
+.editor-extraction {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+.editor-extraction input, .editor-extraction-value {
+  font-family: var(--measurement-font); font-size: 1.25rem;
+}
+.editor-extraction-value {
+  display: flex; align-items: center; min-height: 2.5em; color: var(--fg);
+}
+.editor-secondary-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.editor-secondary-actions button { min-height: 44px; }
 
-.preparation-more { margin-bottom: 20px; }
-.preparation-more > summary { cursor: pointer; padding: 12px 0; }
+.preparation-subheading {
+  margin: 20px 0 12px;
+}
 
 .editor-value-details {
   display: grid; grid-template-columns: auto minmax(0, 1fr);
