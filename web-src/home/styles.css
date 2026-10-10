@@ -1,32 +1,45 @@
 /* SPDX-FileCopyrightText: 2026 ludable */
 /* SPDX-License-Identifier: AGPL-3.0-only */
 
-@import "../shared/base.css";
+@import "../shared/ui.css";
 a { color: var(--accent); }
+.page-head { margin-bottom: 20px; }
 .msg {
-  padding: 8px 12px; margin: 0 0 16px;
-  border-radius: 4px; font-size: 0.875rem;
+  padding: 12px 14px; margin: 0 0 16px;
+  border-radius: 8px; font-size: 0.8125rem;
   background: var(--surface); line-height: 1.4;
 }
-.msg.warn { color: var(--warn); }
+.msg strong { display: block; margin-bottom: 6px; color: var(--fg); }
+.msg.warn { color: var(--dim); border-left: 3px solid var(--warn); }
 
-/* Link cards */
 .hub { display: flex; flex-direction: column; gap: 12px; }
 .card {
-  display: block; text-decoration: none;
-  padding: 16px; border-radius: 4px;
+  display: flex; align-items: center; gap: 14px; text-decoration: none;
+  min-height: 84px; padding: 16px; border-radius: 10px;
   background: var(--surface); border: 1px solid var(--border);
   color: var(--fg);
 }
 .card:hover { border-color: var(--accent); }
-.card-title { display: block; font-size: 1rem; color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.destination-icon { width: 24px; height: 24px; color: var(--accent); }
+.card-copy { min-width: 0; flex: 1; }
+.card-title { display: block; font-size: 1rem; font-weight: 600; }
 .card-desc {
   display: block; margin-top: 4px;
-  font-size: 0.8125rem; color: var(--dim);
+  font-size: 0.8125rem; line-height: 1.5; color: var(--dim);
 }
+.card-arrow { color: var(--dim); }
+.dashboard { min-height: 124px; border-color: var(--primary-fill); }
+.dashboard .destination-icon { width: 32px; height: 32px; }
+.dashboard .card-title { font-size: 1.25rem; letter-spacing: -0.02em; }
+.dashboard .card-arrow { color: var(--accent); }
 .card.disabled {
   opacity: 0.5; cursor: not-allowed; pointer-events: none;
+  border-color: var(--border);
 }
+.card.disabled .destination-icon { color: var(--dim); }
+.card.disabled .card-arrow { visibility: hidden; }
 .version {
-  margin: 20px 0 0; color: var(--dim); font-size: 0.75rem;
+  margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--border);
+  color: var(--dim); font-size: 0.75rem; line-height: 1.7;
 }

@@ -1,0 +1,27 @@
+/* SPDX-FileCopyrightText: 2026 ludable */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* Shared interface palette, typography, icons and page headers. Import this
+   before page-specific rules; it includes the defaults from base.css. */
+@import "./base.css";
+
+:root {
+  --dim: #9b9ba2;
+  --accent: #65b7ec;
+  --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --measurement-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --primary-fill: #176b99;
+}
+html, body { font-family: var(--ui-font); }
+body { padding-top: 16px; }
+.ui-icon {
+  width: 18px; height: 18px; flex-shrink: 0; display: block;
+}
+.page-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 12px; min-height: 44px;
+}
+.page-head h1 {
+  font-size: 19px; font-weight: 650; color: var(--fg);
+  margin: 0; margin-right: auto; letter-spacing: -0.03em;
+}

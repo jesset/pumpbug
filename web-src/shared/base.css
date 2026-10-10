@@ -1,9 +1,9 @@
 /* SPDX-FileCopyrightText: 2026 ludable */
 /* SPDX-License-Identifier: AGPL-3.0-only */
 
-/* Shared base for every page. Inlined at build time via `@import` (see
-   scripts/build_web.py), so editing this restyles all pages at once.
-   Pages import this first, then add or override their own rules. */
+/* Default palette, typography and page layout for every page. Stylesheets
+   build on these defaults through ui.css or their own rules. Imports are
+   inlined at build time by scripts/build_web.py. */
 :root {
   --bg: #000;
   --fg: #fff;

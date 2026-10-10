@@ -10,25 +10,64 @@
     <link data-inline rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <h1>Pump Bug</h1>
-    <p id="lock" class="msg warn" hidden>
-      Not paired yet. Open <a href="/config/">Pairing &amp; Wi-Fi</a> to enter
-      the PIN shown on the device, then come back.
-    </p>
-    <nav class="hub">
-      <a class="card" href="/app/extraction/" data-protected>
-        <span class="card-title">Shot Dashboard</span>
-        <span class="card-desc">Live shot tracking &amp; history</span>
-      </a>
-      <a class="card" href="/config/">
-        <span class="card-title">Pairing &amp; Wi-Fi</span>
-        <span class="card-desc">Network setup &amp; client pairing</span>
-      </a>
-      <a class="card" href="/logs/" data-protected>
-        <span class="card-title">Logs</span>
-        <span class="card-desc">Device logs &amp; events</span>
-      </a>
-    </nav>
+    <header class="page-head"><h1>Pump Bug</h1></header>
+    <main>
+      <p id="lock" class="msg warn" hidden>
+        <strong>Pair this browser</strong>
+        Open <a href="/config/">Pairing &amp; Wi-Fi</a> and enter the PIN
+        shown on the device to use the dashboard and logs.
+      </p>
+      <nav class="hub" aria-label="Main menu">
+        <a class="card dashboard" href="/app/extraction/" data-protected>
+          <svg class="ui-icon destination-icon" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M2 12h5l3-8 4 16 3-8h5" />
+          </svg>
+          <span class="card-copy">
+            <span class="card-title">Shot Dashboard</span>
+            <span class="card-desc">Live readings, recipes &amp; shot history</span>
+          </span>
+          <svg class="ui-icon card-arrow" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="m9 6 6 6-6 6" />
+          </svg>
+        </a>
+        <a class="card" href="/config/">
+          <svg class="ui-icon destination-icon" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0M8.5 16a5.5 5.5 0 0 1 7 0M12 20h.01" />
+          </svg>
+          <span class="card-copy">
+            <span class="card-title">Pairing &amp; Wi-Fi</span>
+            <span class="card-desc">Browser access &amp; network settings</span>
+          </span>
+          <svg class="ui-icon card-arrow" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="m9 6 6 6-6 6" />
+          </svg>
+        </a>
+        <a class="card" href="/logs/" data-protected>
+          <svg class="ui-icon destination-icon" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M6 3h9l4 4v14H6V3Zm9 0v5h4M9 12h7M9 16h7" />
+          </svg>
+          <span class="card-copy">
+            <span class="card-title">Logs</span>
+            <span class="card-desc">Diagnostics &amp; device events</span>
+          </span>
+          <svg class="ui-icon card-arrow" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="m9 6 6 6-6 6" />
+          </svg>
+        </a>
+      </nav>
+    </main>
     <p class="version">
       Firmware {{PUMP_BUG_VERSION}} ·
       <a href="https://github.com/ludable/pumpbug" target="_blank"

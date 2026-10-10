@@ -18,6 +18,7 @@ function lock() {
   if (note) note.hidden = false;
   for (const a of document.querySelectorAll('a.card[data-protected]')) {
     a.classList.add('disabled');
+    a.setAttribute('role', 'link');
     a.setAttribute('aria-disabled', 'true');
     a.removeAttribute('href');
   }
