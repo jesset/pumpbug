@@ -58,7 +58,7 @@ const context = {
     addEventListener(type, listener) { this.listeners[type] = listener; },
     focus() {},
   }),
-  document: { createElementNS: svgElement, querySelector: () => null },
+  document: { createElementNS: svgElement, querySelector: () => null, addEventListener() {} },
   setBanner: (message, kind) => banners.push({ message, kind }),
   flashBanner: (message, kind) => banners.push({ message, kind }),
   localStorage: {

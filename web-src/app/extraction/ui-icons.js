@@ -10,6 +10,9 @@ const UI_ICON_PATHS = {
   live: 'M2 12h5l3-8 4 16 3-8h5',
   history: 'M3 10a9 9 0 1 1 1 9M3 4v6h6M12 7v5l4 2',
   refresh: 'M20 7a9 9 0 0 0-15-2L2 8m0-5v5h5M4 17a9 9 0 0 0 15 2l3-3m0 5v-5h-5',
+  list: 'M8 5h13M8 12h13M8 19h13M3 5h1M3 12h1M3 19h1',
+  stack: 'M3 3h15v14H3V3Zm4 14v4h14V7h-3',
+  chevronRight: 'm9 6 6 6-6 6',
 };
 
 // Decorative icons accompany a visible label or a labeled action.

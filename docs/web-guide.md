@@ -214,12 +214,25 @@ full shot view.
 
 ![Pump Bug browser History list](images/web-guide/history.png)
 
+The view icon beside Refresh switches between `All shots` and `By coffee`.
+Your browser remembers the selected view for later visits.
+`By coffee` groups loaded shots by coffee name, roaster and roast date, with
+the latest shot on top. Shots without a coffee stay individual. Select a stack
+to see its shots, then open a shot to inspect it. `Back to coffee shots` returns
+to that coffee's list; `Back to history` returns to the stacks at your place.
+
+Stacks include only loaded shots. `Load older` can add more shots to an
+existing stack or reveal another coffee. Different roast dates stay separate;
+shots with no roast date share a group for that coffee.
+
+![Pump Bug browser History grouped by coffee](images/web-guide/history-coffee.png)
+
 The first page contains up to 20 shots. Choose `Load older` to show the next
 page below the existing records. The loaded count shows how much of your history
 is displayed. If loading older shots fails, choose `Retry` beneath the list.
-Choose `Refresh` beside the shot count to reload all loaded shots, including
-older pages, and pick up details changed in another browser. If refreshing
-fails, the displayed shots stay available and you can retry.
+Choose the Refresh icon beside the shot count to reload all loaded shots,
+including older pages, and pick up details changed in another browser. If
+refreshing fails, the displayed shots stay available and you can retry.
 
 Pump Bug stores up to 250 saved shots. When the store is full, saving a new shot
 removes the oldest saved shot.

@@ -17,18 +17,61 @@ const SHOTS_FETCH_TIMEOUT_MS = 10000;
 // A loaded-range refresh can read every page. Its attempts share this deadline
 // so metadata writes cannot keep restarting it indefinitely.
 const SHOTS_REFRESH_TIMEOUT_MS = 60000;
+const HISTORY_VIEW_PREFERENCE_KEY = 'pumpbug.preferences.history-view';
 let historyRevealShotId = null;
 let historyListPosition = null;
 let historyPaginationError = null;
 let historyFooterRefreshError = null;
+let historyViewMode = loadHistoryViewPreference();
+let historyCoffeeBatch = null;
+let historyViewMenuOpen = false;
+let historyViewMenuListening = false;
+let historyListFocusAction = null;
+let historyListNonce = null;
+const historyListPositions = new Map();
+
+function loadHistoryViewPreference() {
+  try {
+    return localStorage.getItem(HISTORY_VIEW_PREFERENCE_KEY) === 'coffee' ? 'coffee' : 'all';
+  } catch (_) {
+    return 'all';
+  }
+}
+
+function saveHistoryViewPreference(mode) {
+  try {
+    localStorage.setItem(HISTORY_VIEW_PREFERENCE_KEY, mode);
+  } catch (_) {
+    // Switching views must still work when browser storage is unavailable.
+  }
+}
+
+function historyListContext() {
+  return historyCoffeeBatch ? 'batch:' + historyCoffeeBatch.key : historyViewMode;
+}
+
+function historyRowKey(row) {
+  return row.dataset.historyKey || 'shot:' + row.dataset.shotId;
+}
+
+function historyRowForShot(id) {
+  const list = document.querySelector('ul.shotlist');
+  if (!list) return null;
+  const summary = historyStore.rows?.find(row => row.id === id);
+  const batchKey = summary && historyCoffeeBatchKey(summary);
+  return Array.from(list.children).find(row =>
+    Number(row.dataset.shotId) === id ||
+    (batchKey && row.dataset.historyKey === 'batch:' + batchKey)) || null;
+}
 
 // Keep the visible shot in place when History is rebuilt or reopened. A card
 // anchor follows changes above it, including newly recorded shots.
 function rememberHistoryListPosition(shotId = null) {
   const list = document.querySelector('ul.shotlist');
   if (!list && !document.querySelector('[data-history-action="refresh"]')) return;
+  if (list?.dataset?.historyContext && list.dataset.historyContext !== historyListContext()) return;
   const row = !list ? null : shotId !== null
-    ? list.querySelector(`li[data-shot-id="${shotId}"]`)
+    ? historyRowForShot(shotId)
     : Array.from(list.children).find(item => item.getBoundingClientRect().bottom > 0);
   const focusedRow = list?.contains(document.activeElement)
     ? document.activeElement.closest('li[data-shot-id]') : null;
@@ -36,32 +79,50 @@ function rememberHistoryListPosition(shotId = null) {
   historyListPosition = {
     atTop: window.scrollY <= 0,
     id: row ? Number(row.dataset.shotId) : null,
+    key: row ? historyRowKey(row) : null,
     top: row ? row.getBoundingClientRect().top : 0,
     scrollY: window.scrollY,
     focusId: focusedRow ? Number(focusedRow.dataset.shotId) : null,
+    focusKey: focusedRow ? historyRowKey(focusedRow) : null,
     focusIndex: buttons.indexOf(document.activeElement),
     focusAction: document.activeElement?.getAttribute?.('data-history-action'),
   };
+  historyListPositions.set(historyListContext(), historyListPosition);
 }
 
-function restoreHistoryListPosition() {
-  if (!historyListPosition) return;
+function restoreHistoryListPosition(focusAction = null) {
   const position = historyListPosition;
-  const row = !position.atTop && document.querySelector(
-    `ul.shotlist li[data-shot-id="${position.id}"]`);
-  const scrollY = position.atTop ? 0 : row
-    ? window.scrollY + row.getBoundingClientRect().top - position.top
-    : position.scrollY;
-  if (Math.abs(scrollY - window.scrollY) >= 1) window.scrollTo(0, scrollY);
-  if (position.focusIndex >= 0) {
-    const focusedRow = document.querySelector(
-      `ul.shotlist li[data-shot-id="${position.focusId}"]`);
-    focusedRow?.querySelectorAll('button')[position.focusIndex]?.focus({ preventScroll: true });
-  } else if (position.focusAction) {
-    const control = document.querySelector(`[data-history-action="${position.focusAction}"]`) ||
+  if (!position && !focusAction) return;
+  const rows = Array.from(document.querySelector('ul.shotlist')?.children || []);
+  if (position) {
+    const row = !position.atTop && (rows.find(row => historyRowKey(row) === position.key) ||
+      historyRowForShot(position.id));
+    const scrollY = position.atTop ? 0 : row
+      ? window.scrollY + row.getBoundingClientRect().top - position.top
+      : position.scrollY;
+    if (Math.abs(scrollY - window.scrollY) >= 1) window.scrollTo(0, scrollY);
+    if (!focusAction && position.focusIndex >= 0) {
+      const focusedRow = rows.find(row => historyRowKey(row) === position.focusKey) ||
+        historyRowForShot(position.focusId);
+      const index = focusedRow && historyRowKey(focusedRow) === position.focusKey ? position.focusIndex : 0;
+      focusedRow?.querySelectorAll('button')[index]?.focus({ preventScroll: true });
+    }
+  } else if (focusAction) {
+    window.scrollTo(0, 0);
+  }
+  const action = focusAction || (position?.focusIndex < 0 && position.focusAction);
+  if (action) {
+    const control = document.querySelector(`[data-history-action="${action}"]`) ||
       document.querySelector('[data-history-action="refresh"]');
     control?.focus({ preventScroll: true });
   }
+}
+
+function setHistoryListContext(mode, batch = null, anchorId = null) {
+  rememberHistoryListPosition(anchorId);
+  historyViewMode = mode;
+  historyCoffeeBatch = batch;
+  historyListPosition = historyListPositions.get(historyListContext()) || null;
 }
 
 function revealHistoryShotAfterRender(id) {
@@ -682,10 +743,23 @@ function switchView(next) {
   if (view === 'list') rememberHistoryListPosition();
   if (next === 'list' && view === 'detail' &&
       historyListPosition?.id === selectedShotId) {
+    historyListPosition.focusKey = 'shot:' + selectedShotId;
     historyListPosition.focusId = selectedShotId;
     historyListPosition.focusIndex = 0;
   }
   cancelMetadataEditorLoad();
+  historyViewMenuOpen = false;
+  if (next === 'live' && historyCoffeeBatch) {
+    setHistoryListContext(historyViewMode);
+  }
+  if (next === 'live') historyListFocusAction = null;
+  if (next === 'list' && view === 'live' && historyListPosition) {
+    // Tab navigation restores the reading position, not a previous visit's focus.
+    historyListPosition.focusId = null;
+    historyListPosition.focusKey = null;
+    historyListPosition.focusIndex = -1;
+    historyListPosition.focusAction = null;
+  }
   view = next;
   if (next !== 'detail') {
     selectedShotId = null;
@@ -701,6 +775,8 @@ function switchView(next) {
 
 async function selectShot(id) {
   if (view === 'list') rememberHistoryListPosition(id);
+  else if (historyCoffeeBatch) setHistoryListContext(historyViewMode);
+  historyViewMenuOpen = false;
   cancelMetadataEditorLoad();
   selectedShotId = id;
   selectedShot = null;
@@ -816,7 +892,11 @@ async function loadMoreHistory(reportError = message => flashBanner(message, 'ba
 async function loadOlderHistory() {
   if (historyStore.pagination.status !== 'ready') return;
   const hadFocus = document.activeElement?.classList.contains('older-history-action');
-  const previousLastId = historyStore.rows?.at(-1)?.id;
+  const context = historyListContext();
+  const grouped = historyViewMode === 'coffee' && !historyCoffeeBatch;
+  // A single coffee card becoming a stack is still the same displayed coffee.
+  const rowKey = summary => (grouped && historyCoffeeBatchKey(summary)) || summary.id;
+  const previousKeys = new Set((historyStore.rows || []).map(rowKey));
   historyPaginationError = null;
   const result = await loadMoreHistory(() => {
     historyPaginationError = {
@@ -828,7 +908,7 @@ async function loadOlderHistory() {
   scheduleRender();
   if (result.status !== 'error' && result.status !== 200) return result;
   requestAnimationFrame(() => {
-    if (view !== 'list') return;
+    if (view !== 'list' || historyListContext() !== context) return;
     const paging = document.querySelector('.history-pagination');
     if (!paging || paging.closest('[inert]')) return;
     if (result.status === 'error' && historyPaginationError) {
@@ -840,11 +920,12 @@ async function loadOlderHistory() {
       document.activeElement === document.querySelector('[data-history-action="refresh"]');
     if (hadFocus && (document.activeElement === document.body || restoredToRefresh ||
         document.activeElement?.classList?.contains('older-history-action'))) {
-      const nextShot = historyStore.rows?.find(row => row.id < previousLastId);
+      const nextShot = historyStore.rows?.find(row =>
+        !previousKeys.has(rowKey(row)) && historyRowForShot(row.id));
       const link = result.status === 200 && nextShot &&
-        document.querySelector(`li[data-shot-id="${nextShot.id}"] .shot-open-link`);
-      const control = link || paging.querySelector('button');
-      control?.focus({ preventScroll: result.status === 'error' });
+        historyRowForShot(nextShot.id)?.querySelector('.shot-open-link');
+      const control = link || paging.querySelector('button') || paging;
+      control.focus({ preventScroll: !link || result.status === 'error' });
     }
   });
   return result;
@@ -856,26 +937,103 @@ function historyLoadedCount() {
   return `${loaded} of ${total} ${total === 1 ? 'shot' : 'shots'} loaded`;
 }
 
-function historyHeading() {
+// A roast date separates bags of the same coffee. Missing dates share one
+// group; shots without a named coffee stay individual.
+function historyCoffeeBatchKey(summary) {
+  const { coffee } = shotSummaryData(summary);
+  const identity = coffeeIdentity(coffee);
+  return identity ? JSON.stringify([identity, coffee.roastDate || '']) : null;
+}
+
+function historyCoffeeGroups(rows) {
+  const batches = new Map();
+  const groups = [];
+  for (const summary of rows) {
+    const key = historyCoffeeBatchKey(summary);
+    const existing = key && batches.get(key);
+    if (existing) existing.rows.push(summary);
+    else {
+      const group = { key, rows: [summary] };
+      groups.push(group);
+      if (key) batches.set(key, group);
+    }
+  }
+  return groups;
+}
+
+function openHistoryCoffeeBatch(group) {
+  setHistoryListContext(historyViewMode, {
+    key: group.key, coffee: shotSummaryData(group.rows[0]).coffee,
+  }, group.rows[0].id);
+  historyListFocusAction = 'back';
+  scheduleRender();
+}
+
+function historyViewMenu() {
+  if (!historyViewMenuListening) {
+    document.addEventListener('click', dismissHistoryViewMenu);
+    historyViewMenuListening = true;
+  }
+  const label = 'History view: ' + (historyViewMode === 'coffee' ? 'By coffee' : 'All shots');
+  const menu = el('details', { class: 'history-view-menu' });
+  menu.open = historyViewMenuOpen;
+  const trigger = el('summary', { title: label, 'aria-label': label,
+    'data-history-action': 'view',
+    onclick: () => { historyViewMenuOpen = !menu.open; },
+  }, uiIcon(historyViewMode === 'coffee' ? 'stack' : 'list'));
+  menu.append(trigger, el('div', { class: 'history-view-options', role: 'group', 'aria-label': 'History view' },
+    ...[['all', 'All shots'], ['coffee', 'By coffee']].map(([mode, text]) => el('button', {
+      type: 'button', 'aria-pressed': String(historyViewMode === mode),
+      'data-history-action': 'view-' + mode,
+      onclick: () => {
+        setHistoryListContext(mode);
+        saveHistoryViewPreference(mode);
+        historyViewMenuOpen = false;
+        historyListFocusAction = 'view';
+        scheduleRender();
+      },
+    }, uiIcon(mode === 'coffee' ? 'stack' : 'list'), text,
+      el('span', { class: 'history-view-check', 'aria-hidden': 'true' }, historyViewMode === mode ? '✓' : '')))));
+  menu.onkeydown = event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault(); historyViewMenuOpen = false; menu.open = false;
+    trigger.focus({ preventScroll: true });
+  };
+  menu.onfocusout = event => {
+    if (event.relatedTarget && !menu.contains(event.relatedTarget)) {
+      historyViewMenuOpen = false; menu.open = false;
+    }
+  };
+  return menu;
+}
+
+function dismissHistoryViewMenu(event) {
+  const menu = document.querySelector('.history-view-menu');
+  if (menu && !menu.contains(event.target)) {
+    historyViewMenuOpen = false; menu.open = false;
+  }
+}
+
+function historyHeading(count = historyLoadedCount()) {
   const refreshing = historyStore.refreshingLoaded;
   const showError = historyStore.error &&
     (historyStore.error !== historyFooterRefreshError || !historyStore.rows?.length);
+  const refresh = el('button', { type: 'button', class: 'backlink history-refresh',
+    'aria-label': refreshing ? 'Refreshing history' : 'Refresh history',
+    title: 'Refresh history',
+    ...(refreshing ? { 'aria-busy': 'true' } : {}),
+    ...(historyStore.error ? { 'aria-describedby': 'history-refresh-error' } : {}),
+    'data-history-action': 'refresh',
+    ...(!historyStore.canRefresh ? { 'aria-disabled': 'true' } : {}),
+    onclick: () => {
+      if (!historyStore.canRefresh) return;
+      historyFooterRefreshError = null;
+      return historyStore.refreshLoaded();
+    },
+  }, uiIcon('refresh'));
   const heading = el('div', { class: 'history-heading' },
-    el('h2', { class: 'shot-history-heading' },
-      historyLoadedCount()),
-    el('button', { type: 'button', class: 'backlink history-refresh',
-      'aria-label': refreshing ? 'Refreshing history' : 'Refresh history',
-      title: 'Refresh history',
-      ...(refreshing ? { 'aria-busy': 'true' } : {}),
-      ...(historyStore.error ? { 'aria-describedby': 'history-refresh-error' } : {}),
-      'data-history-action': 'refresh',
-      ...(!historyStore.canRefresh ? { 'aria-disabled': 'true' } : {}),
-      onclick: () => {
-        if (!historyStore.canRefresh) return;
-        historyFooterRefreshError = null;
-        return historyStore.refreshLoaded();
-      },
-    }, uiIcon('refresh'), refreshing ? 'Refreshing…' : 'Refresh'));
+    el('h2', { class: 'shot-history-heading' }, count),
+    el('div', { class: 'history-tools' }, historyCoffeeBatch ? null : historyViewMenu(), refresh));
   return showError ? el('div', {}, heading, historyRefreshError()) : heading;
 }
 
@@ -884,21 +1042,74 @@ function historyRefreshError() {
     "Couldn't refresh history. Try again.");
 }
 
-function renderHistoryShot(summary) {
+function renderHistoryShot(summary, { coffeeContext = false, showRoastDate = false } = {}) {
   const data = shotSummaryData(summary);
   const { record } = data;
+  const date = coffeeContext ? el('div', { class: 'shot-date' },
+    shotOpenButton(summary.id, fmtDate(summary.startUtcSec) || 'Time unknown'),
+    el('span', { class: 'shot-row-actions' },
+      el('span', {}, '#' + summary.id), shotMetadataListAction(summary))) : shotDate(summary);
+  const coffee = coffeeContext ? null : shotCoffeeIdentity(summary.id, data, { unknownLabel: 'Shot #' + summary.id });
+  if (coffee && showRoastDate && data.coffee.roastDate) {
+    coffee.append(el('p', { class: 'coffee-roast-date' }, 'Roasted ' + data.coffee.roastDate));
+  }
   const item = el('li', { onclick: () => selectShot(summary.id) },
-    shotDate(summary),
-    el('div', { class: 'shot-identity' },
-      shotCoffeeIdentity(summary.id, data, { unknownLabel: 'Shot #' + summary.id }),
+    date,
+    coffeeContext ? null : el('div', { class: 'shot-identity' },
+      coffee,
       shotMetadataListAction(summary)), shotMetrics(summary));
   item.dataset.shotId = String(summary.id);
+  item.dataset.historyKey = 'shot:' + summary.id;
   appendShotResult(item, data, { compact: true });
   if (record && record.state !== 'active') appendShotSummary(item, summary);
   return item;
 }
 
+function hasHistorySummary(summary) {
+  return ['startUtcSec', 'beginMs', 'durationMs', 'yieldCg', 'totalPumpOnMs']
+    .every(key => Number.isFinite(summary[key]));
+}
+
+function renderHistoryCard(summary, options) {
+  if (hasHistorySummary(summary)) return renderHistoryShot(summary, options);
+  const item = el('li', { class: 'unavailable', onclick: () => selectShot(summary.id) },
+    el('div', { class: 'head' }, shotOpenButton(summary.id, 'Record unavailable'),
+      el('span', { class: 'shot-row-actions' },
+        el('span', { class: 'id' }, '#' + summary.id), shotMetadataListAction(summary))));
+  item.dataset.shotId = String(summary.id);
+  item.dataset.historyKey = 'shot:' + summary.id;
+  appendShotSummary(item, summary, { showCoffeeName: !options?.coffeeContext });
+  return item;
+}
+
+function renderHistoryStack(group) {
+  const summary = group.rows[0];
+  const data = shotSummaryData(summary);
+  const open = event => { event.stopPropagation(); openHistoryCoffeeBatch(group); };
+  const item = el('li', { class: 'history-stack', onclick: open });
+  item.dataset.shotId = String(summary.id);
+  item.dataset.historyKey = 'batch:' + group.key;
+  const title = el('button', { type: 'button', class: 'shot-open-link shot-coffee-name',
+    'aria-label': `${data.coffee.name}, ${group.rows.length} loaded shots, open coffee shots`,
+    onclick: open }, data.coffee.name);
+  const front = el('div', { class: 'history-stack-front' },
+    el('div', { class: 'shot-date' }, 'Latest · ' + (fmtDate(summary.startUtcSec) || 'Time unknown')),
+    el('div', { class: 'history-stack-head' },
+      el('div', { class: 'shot-coffee' }, title,
+        data.coffee.roaster ? el('div', { class: 'shot-roaster' }, data.coffee.roaster) : null,
+        data.coffee.roastDate ? el('p', { class: 'coffee-roast-date' }, 'Roasted ' + data.coffee.roastDate) : null),
+      uiIcon('chevronRight')),
+    hasHistorySummary(summary) ? shotMetrics(summary) : el('p', { class: 'err' }, 'Record unavailable'));
+  appendShotResult(front, data, { compact: true });
+  const more = group.rows.length - 1;
+  item.append(front, el('button', { type: 'button', class: 'history-stack-more', onclick: open },
+    `${more} more ${more === 1 ? 'shot' : 'shots'} with this coffee`));
+  return item;
+}
+
 function renderList(app) {
+  let focusAction = historyListFocusAction;
+  historyListFocusAction = null;
   if (state.storage === 'unavailable') {
     return;
   }
@@ -918,43 +1129,79 @@ function renderList(app) {
     }
     return;
   }
-  if (!rows.length) {
+  const nonce = historyStore.shotStoreNonce;
+  if (historyListNonce !== null && nonce !== null && historyListNonce !== nonce) {
+    focusAction = historyCoffeeBatch ? 'view' : null;
+    historyListPositions.clear();
+    historyCoffeeBatch = null;
+    historyListPosition = null;
+    historyViewMenuOpen = false;
+    window.scrollTo(0, 0);
+  }
+  historyListNonce = nonce;
+  if (historyCoffeeBatch && historyRevealShotId !== null) {
+    const revealed = rows.find(row => row.id === historyRevealShotId);
+    if (revealed && historyCoffeeBatchKey(revealed) !== historyCoffeeBatch.key) {
+      setHistoryListContext(historyViewMode);
+    }
+  }
+  const coffeeRows = historyCoffeeBatch
+    ? rows.filter(row => historyCoffeeBatchKey(row) === historyCoffeeBatch.key) : null;
+  if (historyCoffeeBatch) {
+    app.append(el('button', { type: 'button', class: 'backlink history-coffee-back',
+      'data-history-action': 'back',
+      onclick: () => {
+        const key = historyCoffeeBatch.key;
+        const latestShot = historyStore.rows?.find(row => historyCoffeeBatchKey(row) === key);
+        setHistoryListContext(historyViewMode);
+        if (historyListPosition) {
+          historyListPosition.id = latestShot?.id ?? null;
+          historyListPosition.focusKey = 'batch:' + key;
+          historyListPosition.focusId = latestShot?.id ?? null;
+          historyListPosition.focusIndex = latestShot ? 0 : -1;
+          historyListPosition.focusAction = latestShot ? null : 'view';
+        }
+        scheduleRender();
+      },
+    }, '← Back to history'));
+    const data = coffeeRows.length ? shotSummaryData(coffeeRows[0]) : {
+      coffee: historyCoffeeBatch.coffee, record: { state: 'active' },
+    };
+    app.append(el('div', { class: 'history-coffee-context' },
+      shotCoffeeIdentity(null, data, { heading: true }),
+      data.coffee.roastDate ? el('p', { class: 'coffee-roast-date' }, 'Roasted ' + data.coffee.roastDate) : null));
+  }
+  if (!rows.length && !historyCoffeeBatch) {
     app.append(historyHeading());
     app.append(el('p', { class: 'empty' }, 'No shots recorded yet.'));
-    restoreHistoryListPosition();
+    restoreHistoryListPosition(focusAction);
     return;
   }
-  const ul = el('ul', { class: 'shotlist' });
-  for (const s of rows) {
-    const hasSummary = Number.isFinite(s.startUtcSec) &&
-      Number.isFinite(s.beginMs) && Number.isFinite(s.durationMs) &&
-      Number.isFinite(s.yieldCg) && Number.isFinite(s.totalPumpOnMs);
-    if (!hasSummary) {
-      const item = el('li', { class: 'unavailable',
-                             onclick: () => selectShot(s.id) },
-        el('div', { class: 'head' },
-          shotOpenButton(s.id, 'Record unavailable'),
-          el('span', { class: 'shot-row-actions' },
-            el('span', { class: 'id' }, '#' + s.id),
-            shotMetadataListAction(s)),
-        ),
-      );
-      item.dataset.shotId = String(s.id);
-      appendShotSummary(item, s);
-      ul.append(item);
-      continue;
-    }
-    ul.append(renderHistoryShot(s));
+  const ul = el('ul', { class: 'shotlist' + (coffeeRows ? ' coffee-shots' : '') });
+  ul.dataset.historyContext = historyListContext();
+  if (coffeeRows) {
+    ul.append(...coffeeRows.map(row => renderHistoryCard(row, { coffeeContext: true })));
+  } else if (historyViewMode === 'coffee') {
+    ul.append(...historyCoffeeGroups(rows).map(group => group.rows.length > 1
+      ? renderHistoryStack(group) : renderHistoryCard(group.rows[0], { showRoastDate: true })));
+  } else {
+    ul.append(...rows.map(row => renderHistoryCard(row)));
   }
+  const count = coffeeRows ? `${coffeeRows.length} loaded ${coffeeRows.length === 1 ? 'shot' : 'shots'}`
+    : historyLoadedCount();
   const section = el('section', {},
-    historyHeading(), ul);
+    historyHeading(count), ul);
+  if (coffeeRows && !coffeeRows.length) {
+    section.append(el('p', { class: 'empty' }, 'No loaded shots with this coffee.'));
+  }
   const pagination = historyStore.pagination;
   if (pagination.status === 'complete' ||
       historyPaginationError?.shotStoreNonce !== historyStore.shotStoreNonce ||
       historyPaginationError?.cursor !== rows.at(-1)?.id) {
     historyPaginationError = null;
   }
-  const paging = el('div', { class: 'history-pagination' },
+  const paging = el('div', { class: 'history-pagination', tabindex: '-1',
+    'data-history-action': 'pagination' },
     el('p', { class: 'history-loaded-count' }, historyLoadedCount()));
   const waiting = pagination.status === 'deferred' && historyStore.hasMore;
   const refreshing = historyStore.refreshingLoaded || (waiting && historyStore.loading);
@@ -998,8 +1245,7 @@ function renderList(app) {
   if (historyRevealShotId !== null) {
     const revealShotId = historyRevealShotId;
     requestAnimationFrame(() => {
-      const row = document.querySelector(
-        `ul.shotlist li[data-shot-id="${revealShotId}"]`);
+      const row = historyRowForShot(revealShotId);
       if (historyRevealShotId === revealShotId) historyRevealShotId = null;
       if (!row) return;
       row.scrollIntoView({ block: 'center' });
@@ -1007,14 +1253,14 @@ function renderList(app) {
       setTimeout(() => row.classList.remove('recently-edited'), 1800);
     });
   } else {
-    restoreHistoryListPosition();
+    restoreHistoryListPosition(focusAction);
   }
 }
 
 function renderDetail(app) {
   app.append(el('button', { class: 'backlink',
                             onclick: () => switchView('list') },
-    '← Back to history'));
+    historyCoffeeBatch ? '← Back to coffee shots' : '← Back to history'));
 
   if (selectedShotError === 'not_found') {
     app.append(el('p', { class: 'empty' },

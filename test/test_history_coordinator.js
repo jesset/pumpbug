@@ -32,6 +32,7 @@ function renderedHistory(h) {
 }
 
 function findElement(root, match) {
+  if (!root) return null;
   if (match(root)) return root;
   for (const child of root.children || []) {
     if (typeof child !== 'object') continue;
@@ -57,7 +58,7 @@ function row(id, rating = 1) {
   };
 }
 
-function harness({ automatic = false, restoredRecipe = null, deferredWrites = false } = {}) {
+function harness({ automatic = false, restoredRecipe = null, deferredWrites = false, storage = null } = {}) {
   const pages = [];
   const reads = [];
   const writes = [];
@@ -66,7 +67,7 @@ function harness({ automatic = false, restoredRecipe = null, deferredWrites = fa
   let overlaps = 0;
   let now = 0;
   const context = {
-    document: { createElementNS(namespace, tag) {
+    document: { querySelector: () => null, addEventListener() {}, createElementNS(namespace, tag) {
       return { ...element(tag), namespaceURI: namespace };
     } },
     console, TextEncoder, AbortController, el: element, state: { storage: 'ready' },
@@ -76,8 +77,9 @@ function harness({ automatic = false, restoredRecipe = null, deferredWrites = fa
     lastRecord: null, selectedShot: null, selectedShotId: null,
     selectedShotMetadata: null, view: 'live',
     scheduleRender() {}, flashBanner: message => banners.push(message),
-    localStorage: {
-      getItem: () => restoredRecipe ? JSON.stringify({ nextShotRecipe: restoredRecipe }) : null,
+    localStorage: storage || {
+      getItem: key => key === 'pumpbug.shot-details.v1' && restoredRecipe
+        ? JSON.stringify({ nextShotRecipe: restoredRecipe }) : null,
       setItem() {},
     },
   };
@@ -2033,7 +2035,7 @@ function historyControlViewport(h) {
       if (!selector.endsWith('.shot-open-link')) return node;
       selector = '.shot-open-link';
     }
-    const action = selector.match(/^\[data-history-action="(\w+)"\]$/)?.[1];
+    const action = selector.match(/^\[data-history-action="([\w-]+)"\]$/)?.[1];
     return node && findElement(node, item => action
       ? item.attrs?.['data-history-action'] === action
       : selector.startsWith('.') ? item.classList?.contains(selector.slice(1))
@@ -2044,9 +2046,15 @@ function historyControlViewport(h) {
   h.context.document.activeElement = h.context.document.body;
   h.context.el = (tag, attrs, ...children) => {
     const node = element(tag, attrs, ...children);
-    node.classList = { contains: name => (node.attrs.class || '').split(/\s+/).includes(name) };
+    node.classList = {
+      contains: name => (node.attrs.class || '').split(/\s+/).includes(name),
+      add: name => { node.attrs.class = (node.attrs.class || '') + ' ' + name; },
+      remove: name => { node.attrs.class = (node.attrs.class || '').split(/\s+/).filter(item => item !== name).join(' '); },
+    };
+    node.scrollIntoView = () => { node.scrolled = true; };
     node.getAttribute = name => node.attrs[name];
-    node.focus = () => {
+    node.focus = options => {
+      node.focusOptions = options;
       if (!node.attrs.disabled) h.context.document.activeElement = node;
     };
     node.contains = target => !!findElement(node, item => item === target);
@@ -2063,6 +2071,7 @@ function historyControlViewport(h) {
   };
   h.context.document.querySelector = selector => query(root, selector);
   return {
+    get root() { return root; },
     leave() {
       root = element('main');
       h.context.document.activeElement = h.context.document.body;
@@ -2078,6 +2087,460 @@ function historyControlViewport(h) {
       return h.context.document.querySelector(`[data-history-action="${action}"]`);
     },
   };
+}
+
+function coffeeRow(id, coffee, rating = 4) {
+  return { ...row(id, rating), startUtcSec: 100, beginMs: 0,
+    durationMs: 31000, yieldCg: 3900, totalPumpOnMs: 28000,
+    userMetadata: { coffee, prep: { grind: '1.8', doseG: 16, targetYieldG: 40 }, rating } };
+}
+
+function coffeeHistoryUi(h) {
+  Object.assign(h.context, { fmtDate: () => 'Oct 9, 2026',
+    fmtG: value => String(value / 100), fmtMMSS: () => '00:31', rawFinalCg: () => null });
+  const ui = historyControlViewport(h);
+  h.context.view = 'list';
+  const chooseView = mode => {
+    const option = findElement(ui.root, node => node.tag === 'button' &&
+      node.children.includes(mode === 'coffee' ? 'By coffee' : 'All shots'));
+    option.focus(); option.attrs.onclick(); ui.render();
+  };
+  return { ...ui, chooseView, get root() { return ui.root; } };
+}
+
+async function testCoffeeGroupingUsesLoadedBatches() {
+  const h = harness();
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile', roastDate: '2026-09-28' };
+  const rows = [coffeeRow(9, coffee),
+    coffeeRow(8, { ...coffee, name: ' kercha ', roaster: 'ROYAL MILE' }),
+    coffeeRow(7, { ...coffee, roastDate: '2026-09-21' }),
+    coffeeRow(6, { ...coffee, roastDate: '2026-09-21' }),
+    coffeeRow(5, { ...coffee, roastDate: undefined }),
+    coffeeRow(4, { ...coffee, roastDate: '' }),
+    coffeeRow(3, { ...coffee, roaster: 'Another roaster' }), row(2),
+    { ...coffeeRow(1, coffee), userMetadataState: 'corrupt' }];
+  await h.load(rows, true, 40);
+  const before = JSON.stringify(h.store.rows);
+  const groups = h.context.historyCoffeeGroups(h.store.rows);
+  assert.deepEqual(Array.from(groups, group => Array.from(group.rows, row => row.id)),
+    [[9, 8], [7, 6], [5, 4], [3], [2], [1]]);
+  assert.equal(JSON.stringify(h.store.rows), before, 'grouping changed stored metadata');
+  const ui = coffeeHistoryUi(h);
+  ui.render();
+  assert.equal(h.context.document.querySelector('ul.shotlist').children.length, 9,
+    'History did not start with All shots');
+  ui.chooseView('coffee');
+  const cards = h.context.document.querySelector('ul.shotlist').children;
+  assert.equal(cards.length, 6);
+  assert.equal(cards[0].dataset.shotId, '9', 'stack did not show its newest shot');
+  assert.equal(cards[3].dataset.historyKey, 'shot:3', 'single shot acquired a stack');
+  assert(findElement(cards[3], node => node.children?.includes('Roasted 2026-09-28')),
+    'a single-shot coffee batch hid its roast date');
+  assert(findElement(cards[0], node => node.children?.includes('1 more shot with this coffee')));
+  assert.equal(h.pages.length, 0, 'grouping fetched unloaded history');
+  assert.equal(findElement(ui.root, node => node.tag === 'h2').children[0], '9 of 40 shots loaded');
+}
+
+async function testCoffeeDrillDownAndReturn() {
+  const h = harness();
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile', roastDate: '2026-09-28' };
+  await h.load([coffeeRow(4, coffee), coffeeRow(3, { ...coffee, roastDate: '2026-09-21' }),
+    coffeeRow(2, coffee), coffeeRow(1, coffee)]);
+  const ui = coffeeHistoryUi(h);
+  ui.render(); ui.chooseView('coffee');
+  let list = h.context.document.querySelector('ul.shotlist');
+  const context = list.dataset.historyContext;
+  const stack = list.children[0];
+  const open = stack.querySelector('.shot-open-link');
+  open.focus(); open.attrs.onclick({ stopPropagation() {} }); ui.render();
+  list = h.context.document.querySelector('ul.shotlist');
+  assert.deepEqual(Array.from(list.children, row => Number(row.dataset.shotId)), [4, 2, 1]);
+  assert.equal(h.context.document.activeElement, ui.control('back'));
+  assert.equal(ui.control('view'), null, 'coffee drill-down retained the root view switch');
+  assert.equal(h.pages.length, 0, 'opening a stack fetched history');
+  assert.equal(findElement(ui.root, node => node.attrs?.class === 'shot-history-heading').children[0], '3 loaded shots');
+  assert(!findElement(list, node => node.attrs?.class === 'shot-identity'),
+    'coffee list repeated the coffee on every shot');
+  h.context.fetchBinary = async () => ({ status: 'missing' });
+  h.context.loadShotMetadataForDetail = () => {};
+  await h.context.selectShot(2);
+  const detail = element('main');
+  h.context.renderDetail(detail);
+  assert(detail.children[0].children.includes('← Back to coffee shots'));
+  ui.leave();
+  h.context.switchView('list');
+  h.reply(h.take(), h.store.rows);
+  await flush(); ui.render();
+  assert.equal(h.context.document.activeElement.closest('li[data-shot-id]').dataset.shotId, '2');
+  ui.control('back').attrs.onclick(); ui.render();
+  assert.equal(h.context.document.querySelector('ul.shotlist').dataset.historyContext, context);
+  assert.equal(h.context.document.activeElement.closest('li[data-shot-id]').dataset.shotId, '4');
+}
+
+async function testCoffeeGroupsFollowLoadedMetadata() {
+  const h = harness();
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile', roastDate: '2026-09-28' };
+  await h.load([coffeeRow(4, coffee), coffeeRow(3, coffee)], true, 4);
+  const ui = coffeeHistoryUi(h);
+  ui.render(); ui.chooseView('coffee');
+  const older = h.store.loadMore();
+  h.reply(h.take(), [coffeeRow(2, coffee), coffeeRow(1, { ...coffee, name: 'Kivu' })]);
+  await older; ui.render();
+  let cards = h.context.document.querySelector('ul.shotlist').children;
+  assert.equal(cards.length, 2);
+  assert(findElement(cards[0], node => node.children?.includes('2 more shots with this coffee')));
+  const changed = { ...h.store.rows[1].userMetadata,
+    coffee: { ...coffee, roastDate: '2026-09-21' } };
+  h.store.metadataChanged({ id: 3, state: 'active', value: changed, etag: 'changed' });
+  ui.render();
+  cards = h.context.document.querySelector('ul.shotlist').children;
+  assert.equal(cards.length, 3, 'edited roast date did not move the shot out of its batch');
+  const refresh = ui.control('refresh').attrs.onclick();
+  h.take().reject(new Error('device asleep'));
+  await refresh; ui.render();
+  assert.equal(h.context.document.querySelector('ul.shotlist').children.length, 3,
+    'failed refresh discarded the displayed stacks');
+}
+
+async function testHistoryViewMenuInteraction() {
+  const h = harness();
+  await h.load([row(1)]);
+  const ui = coffeeHistoryUi(h);
+  ui.render();
+  let menu = h.context.document.querySelector('.history-view-menu');
+  let trigger = ui.control('view');
+  assert.equal(trigger.attrs['aria-label'], 'History view: All shots');
+  trigger.attrs.onclick(); menu.open = true;
+  ui.render();
+  menu = h.context.document.querySelector('.history-view-menu');
+  assert.equal(menu.open, true, 'background render closed the view menu');
+  menu.onkeydown({ key: 'Escape', preventDefault() {} });
+  assert.equal(menu.open, false);
+  assert.equal(h.context.document.activeElement, ui.control('view'));
+  ui.chooseView('coffee');
+  assert.equal(ui.control('view').attrs['aria-label'], 'History view: By coffee');
+  assert.equal(h.context.document.activeElement, ui.control('view'));
+  menu = h.context.document.querySelector('.history-view-menu');
+  trigger = ui.control('view');
+  trigger.attrs.onclick(); menu.open = true;
+  h.context.dismissHistoryViewMenu({ target: ui.control('refresh') });
+  assert.equal(menu.open, false, 'outside click left the menu open');
+  assert.equal(h.pages.length, 0, 'changing the view fetched history');
+}
+
+async function testHistoryViewPreferenceRestoresAndDefaults() {
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile' };
+  for (const saved of [null, 'all', 'coffee', '', 'stacked', '{broken']) {
+    const writes = [];
+    const h = harness({ storage: {
+      getItem: key => key === 'pumpbug.preferences.history-view' ? saved : null,
+      setItem: (...args) => writes.push(args),
+    } });
+    await h.load([coffeeRow(2, coffee), coffeeRow(1, coffee)]);
+    const ui = coffeeHistoryUi(h); ui.render();
+    const grouped = saved === 'coffee';
+    assert.equal(h.context.document.querySelector('ul.shotlist').children.length, grouped ? 1 : 2,
+      String(saved) + ': wrong restored History view');
+    assert.equal(ui.control('view').attrs['aria-label'],
+      'History view: ' + (grouped ? 'By coffee' : 'All shots'));
+    assert.equal(ui.control('back'), null, 'restoration reopened a coffee list');
+    assert.deepEqual(writes, [], 'restoration wrote a preference without a selection');
+  }
+}
+
+async function testHistoryViewPreferencePersistsOnlySelection() {
+  const key = 'pumpbug.preferences.history-view';
+  const recipeKey = 'pumpbug.shot-details.v1';
+  const recipe = JSON.stringify({ nextShotRecipe: { coffee: { name: 'Kivu' } } });
+  const saved = new Map([[recipeKey, recipe], ['pumpbug.preferences.future-setting', 'keep']]);
+  const writes = [];
+  const storage = {
+    getItem: key => saved.get(key) ?? null,
+    setItem: (key, value) => { writes.push([key, value]); saved.set(key, value); },
+  };
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile' };
+  const rows = [coffeeRow(2, coffee), coffeeRow(1, coffee)];
+  const h = harness({ storage }); await h.load(rows);
+  const ui = coffeeHistoryUi(h); ui.render(); ui.chooseView('coffee');
+  assert.deepEqual(writes, [[key, 'coffee']]);
+  h.context.document.querySelector('ul.shotlist').children[0]
+    .querySelector('.shot-open-link').attrs.onclick({ stopPropagation() {} });
+  ui.render(); ui.control('back').attrs.onclick(); ui.render();
+  assert.deepEqual(writes, [[key, 'coffee']], 'coffee navigation persisted temporary state');
+
+  const restored = harness({ storage }); await restored.load(rows);
+  const restoredUi = coffeeHistoryUi(restored); restoredUi.render();
+  assert.equal(restored.context.document.querySelector('ul.shotlist').children.length, 1);
+  assert.equal(restoredUi.control('back'), null);
+  assert.equal(restored.context.document.querySelector('.history-view-menu').open, false);
+  restoredUi.chooseView('all');
+  assert.deepEqual(writes, [[key, 'coffee'], [key, 'all']]);
+
+  const restoredAll = harness({ storage }); await restoredAll.load(rows);
+  const allUi = coffeeHistoryUi(restoredAll); allUi.render();
+  assert.equal(restoredAll.context.document.querySelector('ul.shotlist').children.length, 2);
+  assert.equal(saved.get(recipeKey), recipe, 'History preference overwrote the recipe');
+  assert.equal(saved.get('pumpbug.preferences.future-setting'), 'keep');
+  assert.equal(writes.length, 2, 'restoration or rendering wrote browser storage');
+}
+
+async function testHistoryViewPreferenceStorageFailuresStayUsable() {
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile' };
+  for (const failure of ['read', 'write']) {
+    const h = harness({ storage: {
+      getItem() { if (failure === 'read') throw new Error('storage blocked'); return null; },
+      setItem() { throw new Error('storage blocked'); },
+    } });
+    await h.load([coffeeRow(2, coffee), coffeeRow(1, coffee)]);
+    const ui = coffeeHistoryUi(h); ui.render();
+    assert.equal(h.context.document.querySelector('ul.shotlist').children.length, 2);
+    ui.chooseView('coffee'); ui.render();
+    assert.equal(h.context.document.querySelector('ul.shotlist').children.length, 1,
+      failure + ': storage failure prevented grouping for this session');
+    ui.chooseView('all');
+    assert.equal(h.context.document.querySelector('ul.shotlist').children.length, 2);
+  }
+}
+
+async function testCoffeeViewWhenBatchDisappears() {
+  const h = harness();
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile', roastDate: '2026-09-28' };
+  await h.load([coffeeRow(2, coffee), coffeeRow(1, coffee)]);
+  const ui = coffeeHistoryUi(h);
+  ui.render(); ui.chooseView('coffee');
+  h.context.document.querySelector('ul.shotlist').children[0]
+    .querySelector('.shot-open-link').attrs.onclick({ stopPropagation() {} });
+  ui.render();
+  for (const id of [2, 1]) {
+    h.store.metadataChanged({ id, state: 'cleared', value: null, etag: 'cleared-' + id });
+  }
+  ui.render();
+  assert.equal(h.context.document.querySelector('ul.shotlist').children.length, 0);
+  assert(findElement(ui.root, node => node.children?.includes('No loaded shots with this coffee.')));
+  assert(ui.control('back'), 'an empty batch left no way back to History');
+  ui.control('back').attrs.onclick(); ui.render();
+  assert.equal(h.context.document.querySelector('ul.shotlist').children.length, 2);
+}
+
+async function testCoffeeContextResetAfterStorageErase() {
+  const h = harness();
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile', roastDate: '2026-09-28' };
+  const first = h.store.ensureLoaded();
+  h.reply(h.take(), [coffeeRow(2, coffee), coffeeRow(1, coffee)], 'before', false, 2, 1);
+  await first;
+  const ui = coffeeHistoryUi(h);
+  ui.render(); ui.chooseView('coffee');
+  h.context.document.querySelector('ul.shotlist').children[0]
+    .querySelector('.shot-open-link').attrs.onclick({ stopPropagation() {} });
+  ui.render();
+  const refreshed = h.store.refreshLoaded();
+  h.reply(h.take(), [row(1)], 'after', false, 1, 2);
+  await refreshed; ui.render();
+  assert.equal(h.context.document.querySelector('ul.shotlist').children.length, 1);
+  assert.equal(ui.control('back'), null, 'storage erase retained an old coffee filter');
+  assert.equal(h.context.document.activeElement, ui.control('view'));
+}
+
+async function testCoffeeBackFollowsRemainingBatch() {
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile' };
+  const other = { name: 'Kivu', roaster: 'Royal Mile' };
+  for (const remaining of [1, 2, 0]) {
+    const h = harness();
+    const rows = [coffeeRow(4, coffee), coffeeRow(3, coffee),
+      coffeeRow(2, remaining === 2 ? coffee : other), coffeeRow(1, other)];
+    await h.load(rows);
+    const ui = coffeeHistoryUi(h);
+    const cardTops = { 4: 1400, 3: 1650, 2: 1900, 1: 2150 };
+    const createElement = h.context.el;
+    h.context.el = (...args) => {
+      const node = createElement(...args);
+      if (node.tag === 'li') {
+        node.getBoundingClientRect = () => {
+          const top = cardTops[node.dataset.shotId] - h.context.window.scrollY;
+          return { top, bottom: top + 250 };
+        };
+      }
+      return node;
+    };
+    ui.render(); ui.chooseView('coffee');
+    h.context.window.scrollY = 1200;
+    h.context.document.querySelector('ul.shotlist').children[0]
+      .querySelector('.shot-open-link').attrs.onclick({ stopPropagation() {} });
+    ui.render();
+    h.store.metadataChanged({ id: 4, state: 'active', value: { coffee: other }, etag: 'moved-4' });
+    if (!remaining) {
+      h.store.metadataChanged({ id: 3, state: 'active', value: { coffee: other }, etag: 'moved-3' });
+    }
+    cardTops[4] = 400;
+    cardTops[3] = 1700;
+    ui.render();
+    ui.control('back').attrs.onclick(); ui.render();
+    const expected = remaining
+      ? h.context.document.querySelector('li[data-shot-id="3"] .shot-open-link')
+      : ui.control('view');
+    assert(expected, remaining + ': Back left no focus target');
+    assert.equal(h.context.document.activeElement, expected,
+      remaining + ': Back followed the former newest shot into another coffee');
+    assert.equal(expected.focusOptions?.preventScroll, true);
+    assert.equal(h.context.window.scrollY, remaining ? 1500 : 1200,
+      remaining + ': Back restored the moved shot instead of the coffee or saved offset');
+    if (remaining) {
+      assert.equal(expected.closest('li[data-shot-id]').getBoundingClientRect().top, 200,
+        remaining + ': remaining coffee did not return to its former screen position');
+    }
+  }
+}
+
+async function testSingleCoffeeCardBecomesStackWithoutLosingFocus() {
+  const h = harness();
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile' };
+  await h.load([coffeeRow(2, coffee)], true, 2);
+  const ui = coffeeHistoryUi(h);
+  ui.render(); ui.chooseView('coffee');
+  h.context.document.querySelector('ul.shotlist').children[0].querySelector('.shot-open-link').focus();
+  const older = h.store.loadMore();
+  h.reply(h.take(), [coffeeRow(1, coffee)]);
+  await older; ui.render();
+  const stack = h.context.document.querySelector('ul.shotlist').children[0];
+  assert(stack.classList.contains('history-stack'));
+  assert.equal(h.context.document.activeElement, stack.querySelector('.shot-open-link'),
+    'adding a second shot lost focus when the coffee card became a stack');
+}
+
+async function testEditedCoffeeRevealsShotOutsideBatch() {
+  for (const state of ['active', 'cleared']) {
+    const h = harness();
+    const coffee = { name: 'Kercha', roaster: 'Royal Mile' };
+    await h.load([coffeeRow(2, coffee), coffeeRow(1, coffee)]);
+    const ui = coffeeHistoryUi(h);
+    ui.render(); ui.chooseView('coffee');
+    h.context.document.querySelector('ul.shotlist').children[0]
+      .querySelector('.shot-open-link').attrs.onclick({ stopPropagation() {} });
+    ui.render();
+    const frames = [];
+    h.context.requestAnimationFrame = callback => frames.push(callback);
+    h.context.setTimeout = () => 0;
+    h.context.revealHistoryShotAfterRender(2);
+    h.store.metadataChanged({ id: 2, state, etag: 'edited',
+      value: state === 'active' ? { coffee: { name: 'Kivu' } } : null });
+    ui.render();
+    while (frames.length) frames.shift()();
+    const edited = h.context.historyRowForShot(2);
+    assert.equal(ui.control('back'), null, state + ': edited shot stayed in the wrong coffee list');
+    assert.equal(edited.dataset.shotId, '2');
+    assert.equal(edited.scrolled, true, state + ': edited shot was not revealed');
+    assert(edited.classList.contains('recently-edited'));
+  }
+}
+
+async function testOlderCoffeeHistoryFocusesOnlyNewRows() {
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile' };
+  const otherCoffee = { name: 'Kivu', roaster: 'Royal Mile' };
+  for (const outcome of ['stack', 'single', 'new-coffee', 'complete']) {
+    const h = harness();
+    const initial = outcome === 'single' ? [coffeeRow(4, coffee), row(3)]
+      : [coffeeRow(4, coffee), coffeeRow(3, coffee)];
+    await h.load(initial, true, 4);
+    const ui = coffeeHistoryUi(h);
+    ui.render(); ui.chooseView('coffee');
+    const frames = [];
+    h.context.requestAnimationFrame = callback => frames.push(callback);
+    h.context.scheduleRender = () => frames.push(() => ui.render());
+    ui.control('older').focus();
+    const older = ui.control('older').attrs.onclick();
+    h.reply(h.take(), [coffeeRow(2, coffee), coffeeRow(1,
+      outcome === 'new-coffee' ? otherCoffee : coffee)], 'older', outcome !== 'complete', 4);
+    await older;
+    while (frames.length) frames.shift()();
+    const expected = outcome === 'new-coffee'
+      ? h.context.document.querySelector('li[data-shot-id="1"] .shot-open-link')
+      : ui.control(outcome === 'complete' ? 'pagination' : 'older');
+    assert(expected, outcome + ': pagination left no focus target');
+    assert.equal(h.context.document.activeElement, expected,
+      outcome + ': older shots pulled focus to a coffee already displayed');
+    if (outcome !== 'new-coffee') {
+      assert.equal(expected.focusOptions?.preventScroll, true,
+        outcome + ': retaining footer focus could scroll the page');
+    }
+  }
+}
+
+async function testHistoryTabDoesNotRestoreCoffeeRowFocus() {
+  const coffee = { name: 'Kercha', roaster: 'Royal Mile' };
+  for (const from of ['root', 'coffee', 'detail']) {
+    const h = harness();
+    await h.load([coffeeRow(2, coffee), coffeeRow(1, coffee)]);
+    const ui = coffeeHistoryUi(h);
+    ui.render(); ui.chooseView('coffee');
+    const open = h.context.document.querySelector('ul.shotlist').children[0]
+      .querySelector('.shot-open-link');
+    open.focus();
+    if (from !== 'root') {
+      open.attrs.onclick({ stopPropagation() {} }); ui.render();
+    }
+    if (from === 'detail') {
+      h.context.fetchBinary = async () => ({ status: 'missing' });
+      h.context.loadShotMetadataForDetail = () => {};
+      await h.context.selectShot(1); ui.leave();
+    }
+    h.context.switchView('live'); ui.leave();
+    h.context.switchView('list');
+    h.reply(h.take(), h.store.rows); await flush(); ui.render();
+    assert.equal(h.context.document.activeElement, h.context.document.body,
+      from + ': History tab restored focus from an earlier visit');
+  }
+}
+
+async function testHistoryViewMenuKeepsFocusedOption() {
+  const h = harness(); await h.load([row(1)]);
+  const ui = coffeeHistoryUi(h); ui.render();
+  const menu = h.context.document.querySelector('.history-view-menu');
+  ui.control('view').attrs.onclick(); menu.open = true;
+  for (const text of ['All shots', 'By coffee']) {
+    const option = findElement(ui.root, node => node.tag === 'button' && node.children.includes(text));
+    option.focus(); ui.render();
+    const restored = findElement(ui.root, node => node.tag === 'button' && node.children.includes(text));
+    assert.equal(h.context.document.activeElement, restored,
+      text + ': background render moved focus out of the option');
+    assert.equal(h.context.document.querySelector('.history-view-menu').open, true);
+  }
+}
+
+async function testHistoryIdentityResetDoesNotFocusView() {
+  const h = harness();
+  const initial = h.store.ensureLoaded();
+  h.reply(h.take(), [row(2)], 'before', false, 1, 1); await initial;
+  const ui = coffeeHistoryUi(h); ui.render();
+  h.context.window.scrollY = 600;
+  ui.control('refresh').focus();
+  const refresh = h.store.refreshLoaded();
+  h.reply(h.take(), [row(1)], 'after', false, 1, 2); await refresh;
+  ui.render();
+  assert.equal(h.context.window.scrollY, 0, 'new storage kept the old scroll position');
+  assert.notEqual(h.context.document.activeElement, ui.control('view'),
+    'new storage took focus without removing a coffee list');
+}
+
+async function testHistoryFocusRequestExpiresWhenRestoreSkipped() {
+  for (const skipped of ['unavailable', 'reveal']) {
+    const h = harness(); await h.load([row(1)]);
+    const ui = coffeeHistoryUi(h); ui.render();
+    const frames = [];
+    h.context.requestAnimationFrame = callback => frames.push(callback);
+    h.context.setTimeout = () => 0;
+    const option = findElement(ui.root, node => node.tag === 'button' && node.children.includes('By coffee'));
+    option.attrs.onclick();
+    if (skipped === 'unavailable') h.context.state.storage = 'unavailable';
+    else h.context.revealHistoryShotAfterRender(1);
+    ui.render();
+    while (frames.length) frames.shift()();
+    h.context.state.storage = 'ready';
+    if (skipped === 'reveal') ui.control('refresh').focus();
+    ui.render();
+    assert.equal(h.context.document.activeElement,
+      skipped === 'reveal' ? ui.control('refresh') : h.context.document.body,
+      skipped + ': skipped restoration moved focus on an unrelated render');
+  }
 }
 
 async function testRefreshKeepsControlFocus() {
@@ -2255,6 +2718,16 @@ async function testHistoryOverscrollStaysAtTop() {
     testRefreshKeepsControlFocus, testRefreshFailureHasOneMessage,
     testRefreshRetryWaitsForStorage, testBackgroundRefreshFailureUsesHeading,
     testHistoryOverscrollStaysAtTop,
+    testCoffeeGroupingUsesLoadedBatches, testCoffeeDrillDownAndReturn,
+    testCoffeeGroupsFollowLoadedMetadata, testHistoryViewMenuInteraction,
+    testHistoryViewPreferenceRestoresAndDefaults, testHistoryViewPreferencePersistsOnlySelection,
+    testHistoryViewPreferenceStorageFailuresStayUsable,
+    testCoffeeViewWhenBatchDisappears, testCoffeeContextResetAfterStorageErase,
+    testCoffeeBackFollowsRemainingBatch,
+    testSingleCoffeeCardBecomesStackWithoutLosingFocus, testEditedCoffeeRevealsShotOutsideBatch,
+    testOlderCoffeeHistoryFocusesOnlyNewRows, testHistoryTabDoesNotRestoreCoffeeRowFocus,
+    testHistoryViewMenuKeepsFocusedOption, testHistoryIdentityResetDoesNotFocusView,
+    testHistoryFocusRequestExpiresWhenRestoreSkipped,
   ];
   for (const scenario of active) {
     await test(scenario.name, async () => {
