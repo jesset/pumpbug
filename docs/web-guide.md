@@ -350,9 +350,12 @@ From this page you can:
 - Set an mDNS hostname of 1–31 letters, digits, or hyphens. It takes effect
   after the next Wi-Fi restart, and browsers must pair again at the new name.
 - Reveal the paired cookie for command-line or API access. Treat this cookie as
-  a password and reveal it only when needed.
+  a password and reveal it only when needed. This option is available once
+  Pump Bug is connected to your Wi-Fi.
 - Choose `Forget Wi-Fi and unpair all clients` to remove the saved network and
   every browser authorization.
+
+Hostname, command-line access, and reset are under `Advanced`.
 
 The device's `WI-FI` screen also offers these controls:
 

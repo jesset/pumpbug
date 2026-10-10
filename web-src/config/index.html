@@ -6,12 +6,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pump Bug</title>
+    <title>Pairing &amp; Wi-Fi · Pump Bug</title>
     <link data-inline rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <a class="home" href="/">← Home</a>
-    <h1 id="title">Pump Bug</h1>
+    <header class="page-head">
+      <h1>Pairing &amp; Wi-Fi</h1>
+      <a class="home" href="/" aria-label="Home" title="Home">
+        <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="m3 10 9-7 9 7M5 9v12h5v-7h4v7h5V9" />
+        </svg>
+      </a>
+    </header>
+    <p id="device-name" class="device-name" hidden></p>
     <main id="app"><p class="muted">Loading…</p></main>
     <!-- Inline order matters: api.js's functions reference state vars
          (authed, status, msg) declared in app.js, but only at call time —

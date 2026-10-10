@@ -41,7 +41,7 @@ section { margin: 0 0 24px; }
   width: 6px; height: 6px; border-radius: 50%; background: var(--dim);
   flex-shrink: 0;
 }
-.connection-status[data-kind="connected"] .connection-dot { background: #49ce8f; }
+.connection-status[data-kind="connected"] .connection-dot { background: var(--status-ok); }
 .connection-status[data-kind="warn"] .connection-dot { background: var(--warn); }
 .connection-status[data-kind="bad"] .connection-dot { background: var(--bad); }
 .connection-detail {

@@ -41,6 +41,10 @@ async function refresh() {
   } else {
     status = null;
   }
+  if (justPaired) {
+    justPaired = false;
+    if (authed) msg = { kind: 'ok', text: 'Paired with the device.' };
+  }
   render();
 }
 
@@ -159,7 +163,7 @@ async function submitPin(pin) {
       render();
       return;
     }
-    justPaired = true;
+    msg = { kind: 'ok', text: 'Paired with the device.' };
     await refresh();
   } finally {
     pairingInFlight = false;

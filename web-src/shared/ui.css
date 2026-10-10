@@ -8,6 +8,7 @@
 :root {
   --dim: #9b9ba2;
   --accent: #65b7ec;
+  --status-ok: #49ce8f;
   --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --measurement-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --primary-fill: #176b99;

@@ -8,9 +8,9 @@ let nets;  // undefined: no scan yet; null: scan running; array: results
 let selectedSsid = null;
 let manualEntry = false;
 let changingNetwork = false;
-// True when this visit should greet a fresh pairing: the device's setup QR
-// redirects here with #paired, and the manual PIN path sets it directly.
-// The hash is consumed so a later reload doesn't re-greet.
+// Shows a pairing confirmation for visits from the pairing QR. Remove the
+// hash so reloading doesn't repeat it, and check authentication before
+// showing success.
 let justPaired = location.hash === '#paired';
 if (justPaired) {
   history.replaceState(null, '', location.pathname + location.search);
@@ -41,6 +41,25 @@ function renderMsg() {
   return msg ? el('div', { class: 'msg ' + msg.kind }, msg.text) : null;
 }
 
+function configIcon(name) {
+  const paths = {
+    pair: 'M8 11V7a4 4 0 0 1 8 0v4M5 11h14v10H5V11Zm7 4v2',
+    wifi: 'M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0M8.5 16a5.5 5.5 0 0 1 7 0M12 20h.01',
+  };
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  for (const [key, value] of Object.entries({
+    class: 'ui-icon', viewBox: '0 0 24 24', fill: 'none',
+    stroke: 'currentColor', 'stroke-width': '1.6',
+    'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+    'aria-hidden': 'true', focusable: 'false',
+  })) svg.setAttribute(key, value);
+  const path = document.createElementNS(ns, 'path');
+  path.setAttribute('d', paths[name]);
+  svg.append(path);
+  return svg;
+}
+
 // Copies text to the clipboard. The device serves plain HTTP on the LAN, so
 // navigator.clipboard is usually absent (non-secure context); fall back to a
 // throwaway textarea + execCommand, which works there.
@@ -69,6 +88,7 @@ function execCopy(text, done) {
 }
 
 function renderUnauth() {
+  const helpOpen = document.getElementById('pairing-help')?.open;
   const onSubmit = (e) => {
     e.preventDefault();
     const v = e.target.pin.value.trim();
@@ -80,15 +100,16 @@ function renderUnauth() {
       submitPin(e.target.value);
     }
   };
-  return el('section', {},
-    el('h2', {}, 'Pair'),
-    el('p', { class: 'muted' },
-      'On the device, open Wi-Fi and tap A (VISIT). If A shows RETRY, ' +
-      'hold A for SETTINGS, choose Network, and follow setup to the pairing ' +
-      'step. Use TEXT to find the 4-digit PIN, or scan the pairing QR code.'),
+  return el('section', { class: 'panel pairing' },
+    el('h2', {}, configIcon('pair'), 'Pair this browser'),
+    el('ol', { class: 'pairing-steps' },
+      el('li', {}, 'On Pump Bug, open Wi-Fi and tap A for VISIT.'),
+      el('li', {}, 'Tap A for TEXT to see the PIN.')),
     el('form', { onsubmit: onSubmit },
+      el('label', { for: 'pin', class: 'pin-label' }, '4-digit PIN'),
       el('input', {
         class: 'pin',
+        id: 'pin',
         type: 'text',
         name: 'pin',
         inputmode: 'numeric',
@@ -99,6 +120,12 @@ function renderUnauth() {
         oninput: onInput,
       })),
     renderMsg(),
+    el('p', { class: 'muted pairing-qr' },
+      'You can also pair by scanning the pairing QR code.'),
+    el('details', { id: 'pairing-help', class: 'pairing-help', ...(helpOpen ? { open: '' } : {}) },
+      el('summary', {}, 'If A shows RETRY'),
+      el('p', { class: 'muted' },
+        'Hold A for SETTINGS, choose Network, and follow setup to the pairing step.')),
   );
 }
 
@@ -118,10 +145,13 @@ function renderPasswordPrompt(net) {
   };
   return el('form', { class: 'netpass', onsubmit: onSubmit },
     net.secure
+      ? el('label', { for: 'wifi-password' }, 'Password for ' + net.ssid)
+      : null,
+    net.secure
       ? el('input', {
+          id: 'wifi-password',
           type: 'password',
           name: 'pass',
-          placeholder: 'Password for ' + net.ssid,
           autocomplete: 'new-password',
           autofocus: 'true',
         })
@@ -138,10 +168,10 @@ function renderManualForm() {
   };
   return el('div', {},
     el('form', { onsubmit: onSubmit },
-      el('label', { for: 'ssid' }, 'Network name'),
-      el('input', { type: 'text', name: 'ssid', autocomplete: 'off' }),
-      el('label', { for: 'pass' }, 'Password'),
-      el('input', { type: 'password', name: 'pass',
+      el('label', { for: 'wifi-ssid' }, 'Network name'),
+      el('input', { id: 'wifi-ssid', type: 'text', name: 'ssid', autocomplete: 'off' }),
+      el('label', { for: 'wifi-password' }, 'Password'),
+      el('input', { id: 'wifi-password', type: 'password', name: 'pass',
                     autocomplete: 'new-password' }),
       el('button', { type: 'submit' }, 'Connect'),
     ),
@@ -168,13 +198,15 @@ function renderNetworkPicker() {
       const selected = n.ssid === selectedSsid;
       list.append(el('button', {
         class: 'net' + (selected ? ' selected' : ''),
+        'aria-expanded': selected ? 'true' : 'false',
         onclick: () => {
           selectedSsid = selected ? null : n.ssid;
           render();
         },
       },
-        el('span', {}, n.ssid),
-        el('span', { class: 'sig' }, signalDots(n.rssi))));
+        el('span', { class: 'net-name' }, n.ssid),
+        el('span', { class: 'sig', role: 'img',
+          'aria-label': 'Signal strength: ' + n.rssi + ' dBm' }, signalDots(n.rssi))));
       if (selected) list.append(renderPasswordPrompt(n));
     }
     kids.push(list);
@@ -193,20 +225,28 @@ function renderNetworkPicker() {
 
 // ----- shared sections -------------------------------------------------------
 
-function renderStatusList() {
+function renderConnectionStatus() {
   const s = status || {};
   const hostname = s.hostname || s.device_id || '';
-  return el('dl', {},
-    el('div', { class: 'row' }, el('dt', {}, 'mode'),
-      el('dd', {}, s.mode || '-')),
-    el('div', { class: 'row' }, el('dt', {}, 'state'),
-      el('dd', {}, s.state || '-')),
-    el('div', { class: 'row' }, el('dt', {}, 'ssid'),
-      el('dd', {}, s.ssid || '-')),
-    el('div', { class: 'row' }, el('dt', {}, 'ip'),
-      el('dd', {}, s.ip || '-')),
-    el('div', { class: 'row' }, el('dt', {}, 'hostname'),
-      el('dd', {}, hostname ? hostname + '.local' : '-')),
+  const connection = {
+    off: { label: 'Wi-Fi off', kind: 'idle' },
+    sta_connecting: { label: 'Connecting…', kind: 'idle' },
+    sta_connected: { label: 'Connected', kind: 'ok' },
+    ap_up: { label: 'Setup network active', kind: 'idle' },
+  }[s.state] || { label: 'Status unavailable', kind: 'idle' };
+  const mode = { off: 'Off', sta: 'Wi-Fi network', ap: 'Setup network' }[s.mode];
+  return el('div', {},
+    el('div', { class: 'connection-state', 'data-kind': connection.kind },
+      el('span', { class: 'connection-dot', 'aria-hidden': 'true' }),
+      el('span', {}, connection.label)),
+    el('p', { class: 'network-name' }, s.ssid || 'Network not reported'),
+    el('dl', {},
+      el('div', { class: 'row' }, el('dt', {}, 'Mode'),
+        el('dd', {}, mode || '-')),
+      el('div', { class: 'row' }, el('dt', {}, 'IP address'),
+        el('dd', {}, s.ip || '-')),
+      el('div', { class: 'row' }, el('dt', {}, 'Hostname'),
+        el('dd', {}, hostname ? hostname + '.local' : '-'))),
   );
 }
 
@@ -221,16 +261,16 @@ function renderHostnameSection() {
   return el('section', {},
     el('h2', {}, 'Hostname'),
     el('p', { class: 'muted' },
-      'mDNS name. Defaults to the device ID. Applies on the next ' +
-      'Wi-Fi restart; you will re-pair from the new name.'),
+      'The name used to open Pump Bug on your network. Changes take effect ' +
+      'after the next Wi-Fi restart; pair again at the new name.'),
     el('form', { onsubmit: onSubmit },
-      el('label', { for: 'name' }, 'Hostname'),
-      el('input', { type: 'text', name: 'name',
+      el('label', { for: 'hostname' }, 'Hostname'),
+      el('input', { id: 'hostname', type: 'text', name: 'name',
                     value: hostname,
                     autocomplete: 'off',
                     pattern: '[A-Za-z0-9-]{1,31}',
                     maxlength: '31' }),
-      el('button', { type: 'submit' }, 'Save hostname'),
+      el('button', { type: 'submit', class: 'secondary' }, 'Save hostname'),
     ),
   );
 }
@@ -243,10 +283,10 @@ function renderCliAccessSection() {
     'The device’s endpoints require this paired cookie. Reveal it to reuse ' +
     'the session from a script or the command line.')];
   if (cliToken == null) {
-    body.push(el('button', { onclick: revealCliToken }, 'Show cookie'));
+    body.push(el('button', { class: 'secondary', onclick: revealCliToken }, 'Show cookie'));
   } else {
     const box = el('textarea', {
-      class: 'cli', readonly: 'true', rows: '2',
+      class: 'cli', readonly: 'true', rows: '2', 'aria-label': 'Paired session cookie',
       onclick: (e) => e.target.select(),
     });
     box.value = cliToken;
@@ -270,6 +310,16 @@ function renderResetSection() {
   );
 }
 
+function renderAdvanced({ setup = false } = {}) {
+  const open = document.getElementById('advanced')?.open;
+  return el('details', { id: 'advanced', class: 'advanced', ...(open ? { open: '' } : {}) },
+    el('summary', {}, 'Advanced'),
+    setup ? el('section', {}, el('h2', {}, 'Connection'), renderConnectionStatus()) : null,
+    renderHostnameSection(),
+    setup ? null : renderCliAccessSection(),
+    renderResetSection());
+}
+
 // ----- top-level views --------------------------------------------------------
 
 // AP mode: the device is waiting to be pointed at a network, so the page is
@@ -279,8 +329,8 @@ function renderSetup() {
     const host = (status && status.hostname) ||
                  (status && status.device_id) || 'pumpbug';
     return el('div', {},
-      el('section', {},
-        el('h2', {}, 'Connecting'),
+      el('section', { class: 'panel' },
+        el('h2', {}, configIcon('wifi'), 'Return to your Wi-Fi'),
         el('p', {},
           'Wi-Fi details sent. Reconnect this phone or computer to your ' +
           'usual Wi-Fi, then use the link below.'),
@@ -291,21 +341,14 @@ function renderSetup() {
       renderMsg());
   }
   return el('div', {},
-    justPaired
-      ? el('div', { class: 'msg ok' }, 'Paired with the device.')
-      : null,
-    el('section', {},
-      el('h2', {}, 'Connect to your Wi-Fi'),
+    el('section', { class: 'panel' },
+      el('h2', {}, configIcon('wifi'), 'Connect to your Wi-Fi'),
       el('p', { class: 'muted' },
         'Choose the Wi-Fi network for Pump Bug. Your browser will disconnect ' +
         'while Pump Bug joins it.'),
       renderNetworkPicker()),
     renderMsg(),
-    el('details', {},
-      el('summary', {}, 'Advanced'),
-      el('section', {}, el('h2', {}, 'Status'), renderStatusList()),
-      renderHostnameSection(),
-      renderResetSection()),
+    renderAdvanced({ setup: true }),
   );
 }
 
@@ -317,21 +360,20 @@ function renderManage() {
         'Last Wi-Fi attempt: ' + s.reason)
     : null;
   return el('div', {},
-    el('section', {},
-      el('h2', {}, 'Status'),
-      renderStatusList()),
+    el('section', { class: 'panel' },
+      el('h2', {}, configIcon('wifi'), 'Wi-Fi'),
+      renderConnectionStatus()),
     failureBanner,
-    el('section', {},
+    el('section', { class: 'panel' },
       el('h2', {}, 'Network'),
       changingNetwork
         ? renderNetworkPicker()
         : el('button', {
+            class: 'secondary',
             onclick: () => { changingNetwork = true; render(); },
           }, 'Change network')),
     renderMsg(),
-    renderHostnameSection(),
-    renderCliAccessSection(),
-    renderResetSection(),
+    renderAdvanced(),
   );
 }
 
@@ -342,7 +384,7 @@ function renderAuth() {
 
 function render() {
   const app = document.getElementById('app');
-  const title = document.getElementById('title');
+  const deviceName = document.getElementById('device-name');
   let view;
   if (authed === null) {
     view = el('p', { class: 'muted' }, 'Loading…');
@@ -352,10 +394,10 @@ function render() {
     view = renderUnauth();
   }
   app.replaceChildren(view);
-  if (status && status.device_id) {
-    title.textContent = status.device_id;
-    document.title = status.device_id;
-  }
+  const deviceId = status && status.device_id;
+  deviceName.textContent = deviceId || '';
+  deviceName.hidden = !deviceId;
+  document.title = 'Pairing & Wi-Fi · ' + (deviceId || 'Pump Bug');
   const focus = app.querySelector('input.pin, .netpass input');
   if (focus) focus.focus();
 }
