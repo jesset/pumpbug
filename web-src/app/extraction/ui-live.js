@@ -56,13 +56,15 @@ function renderTabs(app) {
   const tabs = el('div', { class: 'tabs' },
     el('button', {
       class: view === 'live' ? 'active' : '',
+      'data-view-focus-key': 'live-tab',
       'aria-pressed': view === 'live' ? 'true' : 'false',
-      onclick: () => switchView('live'),
+      onclick: () => switchView('live', { fromTab: true }),
     }, uiIcon('live'), 'Live'),
     el('button', {
       class: view === 'live' ? '' : 'active',
+      'data-view-focus-key': 'history-tab',
       'aria-pressed': view === 'live' ? 'false' : 'true',
-      onclick: () => switchView('list'),
+      onclick: () => switchView('list', { fromTab: true }),
     }, uiIcon('history'), 'History'),
   );
   app.append(tabs);

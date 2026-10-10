@@ -182,21 +182,43 @@ function bannerFlashActive() {
   return false;
 }
 
+function appFocusKey(control) {
+  return control?.getAttribute('data-view-focus-key') ||
+    control?.getAttribute('data-live-focus-key') ||
+    control?.getAttribute('data-overlay-return-key');
+}
+
+function restoreAppFocus(app, key) {
+  // Overlay synchronization may have focused an editor during this render.
+  if (!key || document.activeElement !== document.body) return;
+  const target = [...app.querySelectorAll(
+    '[data-view-focus-key], [data-live-focus-key], [data-overlay-return-key]')]
+    .find(control => appFocusKey(control) === key);
+  if (!target || target.disabled ||
+      target.closest('[hidden], [inert]') || !target.getClientRects().length) return;
+  target.focus({ preventScroll: true });
+}
+
 function render() {
   const app = document.getElementById('app');
+  const previousFocus = document.activeElement;
+  const focusKey = app.contains(previousFocus) &&
+    (view === 'live' || previousFocus.getAttribute('data-view-focus-key'))
+    ? appFocusKey(previousFocus) : null;
   if (view === 'list') rememberHistoryListPosition();
   app.replaceChildren();
   renderBanner();
   synchronizeMetadataOverlayState();
   if (!state) {
     renderCoffeeContext(app);
-    return;
+  } else {
+    renderTabs(app);
+    appendStorageWarning(app, state);
+    if (view === 'live') renderLive(app);
+    else if (view === 'list') renderList(app);
+    else if (view === 'detail') renderDetail(app);
   }
-  renderTabs(app);
-  appendStorageWarning(app, state);
-  if (view === 'live') renderLive(app);
-  else if (view === 'list') renderList(app);
-  else if (view === 'detail') renderDetail(app);
+  restoreAppFocus(app, focusKey);
 }
 
 function scheduleRender() {

@@ -97,9 +97,13 @@ function rendered() {
     'an enabled Apply button must omit the HTML boolean disabled attribute');
   const pending = api.applyRecipeTarget();
   assert(api.pending());
-  assert(Object.hasOwn(rendered().find(n => n.tag === 'button').attrs, 'disabled'),
-    'the Apply button must be disabled while the request is pending');
-  await api.applyRecipeTarget();
+  const applying = rendered().find(n => n.tag === 'button');
+  assert.equal(applying.attrs['aria-disabled'], 'true');
+  assert.equal(applying.attrs['aria-busy'], 'true');
+  assert(!Object.hasOwn(applying.attrs, 'disabled'),
+    'the pending Apply button must remain keyboard focusable');
+  assert(applying.children.includes('Applying…'));
+  await applying.attrs.onclick();
   assert.equal(requests.length, 1, 'duplicate application while pending');
   assert.deepEqual(JSON.parse(requests[0].options.body), { targetCg: 3600, armed: true });
   assert.equal(requests[0].options.headers['Content-Type'], 'application/json');
@@ -149,6 +153,10 @@ function rendered() {
   assert.equal(reconnects, 0, 'a rejected apply must preserve the extraction stream');
   assert.equal(api.current(), true);
   assert.equal(requests.length, 2, 'conflict must not retry automatically');
+  const retry = rendered().find(n => n.tag === 'button');
+  assert.equal(retry.attrs['data-live-focus-key'], applying.attrs['data-live-focus-key']);
+  assert(!retry.attrs['aria-disabled'] && !retry.attrs['aria-busy'],
+    'a failed target request must leave the same action usable again');
   packet(4000, true);
   const uncertain = api.applyRecipeTarget();
   respond(new Error('timeout'));

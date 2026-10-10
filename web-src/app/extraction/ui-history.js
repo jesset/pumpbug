@@ -738,7 +738,7 @@ const historyStore = (() => {
   };
 })();
 
-function switchView(next) {
+function switchView(next, { fromTab = false } = {}) {
   if (view === next) return;
   if (view === 'list') rememberHistoryListPosition();
   if (next === 'list' && view === 'detail' &&
@@ -753,7 +753,7 @@ function switchView(next) {
     setHistoryListContext(historyViewMode);
   }
   if (next === 'live') historyListFocusAction = null;
-  if (next === 'list' && view === 'live' && historyListPosition) {
+  if (next === 'list' && historyListPosition && fromTab) {
     // Tab navigation restores the reading position, not a previous visit's focus.
     historyListPosition.focusId = null;
     historyListPosition.focusKey = null;

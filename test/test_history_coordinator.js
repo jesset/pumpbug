@@ -2484,7 +2484,7 @@ async function testHistoryTabDoesNotRestoreCoffeeRowFocus() {
       await h.context.selectShot(1); ui.leave();
     }
     h.context.switchView('live'); ui.leave();
-    h.context.switchView('list');
+    h.context.switchView('list', { fromTab: true });
     h.reply(h.take(), h.store.rows); await flush(); ui.render();
     assert.equal(h.context.document.activeElement, h.context.document.body,
       from + ': History tab restored focus from an earlier visit');
@@ -2503,6 +2503,29 @@ async function testHistoryViewMenuKeepsFocusedOption() {
     assert.equal(h.context.document.activeElement, restored,
       text + ': background render moved focus out of the option');
     assert.equal(h.context.document.querySelector('.history-view-menu').open, true);
+  }
+}
+
+async function testHistoryTabFromDetailDoesNotRestoreRowFocus() {
+  for (const focusedTab of [false, true]) {
+    const h = harness();
+    await h.load([row(2), row(1)]);
+    const ui = coffeeHistoryUi(h);
+    ui.render();
+    h.context.document.querySelector('li[data-shot-id="2"] .shot-open-link').focus();
+    h.context.fetchBinary = async () => ({ status: 'missing' });
+    h.context.loadShotMetadataForDetail = () => {};
+    await h.context.selectShot(2);
+    ui.leave();
+    if (focusedTab) {
+      h.context.document.activeElement = h.context.el('button', {
+        'data-view-focus-key': 'history-tab',
+      });
+    }
+    h.context.switchView('list', { fromTab: true });
+    h.reply(h.take(), h.store.rows); await flush(); ui.render();
+    assert.equal(h.context.document.activeElement, h.context.document.body,
+      'History restored a shot row after tab navigation, focusedTab=' + focusedTab);
   }
 }
 
@@ -2726,6 +2749,7 @@ async function testHistoryOverscrollStaysAtTop() {
     testCoffeeBackFollowsRemainingBatch,
     testSingleCoffeeCardBecomesStackWithoutLosingFocus, testEditedCoffeeRevealsShotOutsideBatch,
     testOlderCoffeeHistoryFocusesOnlyNewRows, testHistoryTabDoesNotRestoreCoffeeRowFocus,
+    testHistoryTabFromDetailDoesNotRestoreRowFocus,
     testHistoryViewMenuKeepsFocusedOption, testHistoryIdentityResetDoesNotFocusView,
     testHistoryFocusRequestExpiresWhenRestoreSkipped,
   ];

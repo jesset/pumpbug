@@ -509,7 +509,7 @@ button.primary {
   background: var(--primary-fill); border-color: var(--primary-fill);
 }
 button.destructive-secondary { color: var(--bad); }
-button:disabled { opacity: 0.5; cursor: default; }
+button:disabled, button[aria-disabled="true"] { opacity: 0.5; cursor: default; }
 
 .modal-backdrop {
   position: fixed; inset: 0; z-index: 20; background: #000c;

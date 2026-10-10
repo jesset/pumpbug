@@ -90,7 +90,7 @@ vm.runInContext(
     'renderCoffeeContext,' +
     'metadataStreamSessionStarted,' +
     'loadShotMetadata, openNextShotEditor,' +
-    'shotMetadataListAction,' +
+    'shotMetadataListAction, shotMetadataEditAction,' +
     'openEditorCoffeePicker, openCoffeePicker, closeMetadataEditor,' +
     'renderCoffeePicker, renderCoffeeComparison, renderMetadataOverlay, renderMetadataEditor,' +
     'focusFirstMetadataOverlayControl,' +
@@ -1063,6 +1063,25 @@ check(Object.keys(blankEditor.original).length === 0 &&
   await context.api.historyStore.observeDeviceState('ready');
   check(undemandedHistoryRequests === 0,
     'a device session loaded history before a view requested it');
+  const recipeBeforeHistoryDemand = context.api.browserState();
+  context.api.setNextRecipe({ coffee: { name: 'Coffee' } });
+  const waitingHistory = context.el('main');
+  context.api.renderCoffeeContext(waitingHistory);
+  check(renderedText(waitingHistory).includes('Waiting to load previous shots.') &&
+        !descendants(waitingHistory).some(node =>
+          node.attrs?.['data-live-focus-key'] === 'retry-coffee-history'),
+    'previous history offered Retry before a load had started or failed');
+  context.state = { storage: 'ready', active: true, phase: 'RUNNING' };
+  const pumpingHistory = context.el('main');
+  context.api.renderCoffeeContext(pumpingHistory);
+  check(!renderedText(pumpingHistory).includes('Previous with this coffee') &&
+        !descendants(pumpingHistory).some(node =>
+          node.attrs?.['data-live-focus-key'] === 'retry-coffee-history') &&
+        undemandedHistoryRequests === 0,
+    'the pump window exposed a previous-history action or requested history');
+  context.state = { storage: 'ready' };
+  context.api.setNextRecipe(recipeBeforeHistoryDemand.nextShotRecipe,
+    recipeBeforeHistoryDemand.nextShotRecipeSourceId);
   context.fetchShotsPage = async () => {
     throw new Error('history unavailable');
   };
@@ -1098,13 +1117,46 @@ check(Object.keys(blankEditor.original).length === 0 &&
         JSON.stringify(invalidatedHistoryErrorView).includes('Retry'),
     'session invalidation left an unreported or dead initial-history retry');
   let initialHistoryRetryRequests = 0;
+  let rejectInitialHistoryRetry;
+  context.fetchShotsPage = () => {
+    ++initialHistoryRetryRequests;
+    return new Promise((_resolve, reject) => { rejectInitialHistoryRetry = reject; });
+  };
+  const previousRecipe = context.api.browserState();
+  context.api.setNextRecipe({ coffee: { name: 'Coffee' } });
+  const previousHistory = context.el('main');
+  context.api.renderCoffeeContext(previousHistory);
+  const previousRetry = descendants(previousHistory).find(node =>
+    node.attrs?.['data-live-focus-key'] === 'retry-coffee-history');
+  const retryingHistory = previousRetry.attrs.onclick();
+  const loadingPreviousHistory = context.el('main');
+  context.api.renderCoffeeContext(loadingPreviousHistory);
+  const loadingPrevious = descendants(loadingPreviousHistory).find(node =>
+    node.attrs?.['data-live-focus-key'] === 'retry-coffee-history');
+  check(loadingPrevious && loadingPrevious.children.includes('Loading…') &&
+        loadingPrevious.attrs['aria-disabled'] === 'true' &&
+        loadingPrevious.attrs['aria-busy'] === 'true' && !loadingPrevious.attrs.disabled,
+    'previous-history Retry disappeared or stopped being focusable while loading');
+  await loadingPrevious.attrs.onclick();
+  check(initialHistoryRetryRequests === 1,
+    'the busy previous-history action started another request');
+  rejectInitialHistoryRetry(new Error('history still unavailable'));
+  await retryingHistory;
+  const retriedPreviousHistory = context.el('main');
+  context.api.renderCoffeeContext(retriedPreviousHistory);
+  const previousRetryAgain = descendants(retriedPreviousHistory).find(node =>
+    node.attrs?.['data-live-focus-key'] === 'retry-coffee-history');
+  check(previousRetryAgain.children.includes('Retry') &&
+        !previousRetryAgain.attrs['aria-disabled'] && !previousRetryAgain.attrs['aria-busy'],
+    'previous-history failure did not restore the same usable Retry action');
+  context.api.setNextRecipe(previousRecipe.nextShotRecipe, previousRecipe.nextShotRecipeSourceId);
   context.fetchShotsPage = async () => {
     ++initialHistoryRetryRequests;
     throw new Error('history still unavailable');
   };
   const initialHistoryRetry = await context.api.historyStore.retry();
   check(initialHistoryRetry.status === 'error' &&
-        initialHistoryRetryRequests === 1 &&
+        initialHistoryRetryRequests === 2 &&
         context.api.historyStore.error,
     'initial-history retry did not remain actionable after invalidation');
   unsubscribeFailedHistory();
@@ -1118,6 +1170,57 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(resolved.state === 'absent' &&
         context.selectedShotMetadata.state === 'absent',
   'resolving shot metadata did not update the selected shot');
+
+  for (const automaticView of ['live', 'detail']) {
+    context.view = automaticView;
+    context.lastRecord = { shotId: 8 };
+    let finishAutomaticRead;
+    context.fetchShotMetadata = () => new Promise(resolve => {
+      finishAutomaticRead = resolve;
+    });
+    const automaticRead = automaticView === 'live'
+      ? context.api.setLastShotMetadataId(8) : context.api.resolveShotMetadata(8);
+    const automaticRecord = automaticView === 'live'
+      ? context.api.lastMetadata() : context.selectedShotMetadata;
+    const automaticSummary = context.api.shotSummaryFromRecord(8, null, automaticRecord);
+    const automaticStatus = context.el('main');
+    context.api.appendShotMetadataDetails(automaticStatus, automaticSummary);
+    check(context.api.shotMetadataEditAction(automaticSummary) === null &&
+          renderedText(automaticStatus).includes('Loading shot details…'),
+      automaticView + ': automatic metadata loading added a duplicate busy button');
+    finishAutomaticRead({ id: 8, state: 'absent', etag: 'etag-8' });
+    await automaticRead;
+  }
+  context.view = 'live';
+
+  let rejectMetadataRead;
+  let metadataReads = 0;
+  context.lastRecord = { shotId: 8 };
+  context.fetchShotMetadata = () => {
+    ++metadataReads;
+    return new Promise((_resolve, reject) => { rejectMetadataRead = reject; });
+  };
+  const loadingMetadata = context.api.loadShotMetadata({ id: 8 });
+  await context.api.loadShotMetadata({ id: 8 });
+  check(metadataReads === 1,
+    'another activation before the loading render started a duplicate metadata read');
+  const loadingMetadataAction = context.api.shotMetadataEditAction(
+    context.api.shotSummaryFromRecord(8, null, context.selectedShotMetadata));
+  check(loadingMetadataAction && loadingMetadataAction.children.includes('Loading…') &&
+        loadingMetadataAction.attrs['aria-disabled'] === 'true' &&
+        loadingMetadataAction.attrs['aria-busy'] === 'true' && !loadingMetadataAction.attrs.disabled,
+    'loading shot details removed the action or made it unfocusable');
+  await loadingMetadataAction.attrs.onclick();
+  check(metadataReads === 1, 'the busy metadata action started another read');
+  rejectMetadataRead(new Error('metadata unavailable'));
+  await loadingMetadata;
+  const retryMetadataAction = context.api.shotMetadataEditAction(
+    context.api.shotSummaryFromRecord(8, null, context.selectedShotMetadata));
+  check(retryMetadataAction.children.includes('Load shot details') &&
+        retryMetadataAction.attrs['data-overlay-return-key'] ===
+          loadingMetadataAction.attrs['data-overlay-return-key'] &&
+        !retryMetadataAction.attrs['aria-disabled'] && !retryMetadataAction.attrs['aria-busy'],
+    'failed metadata loading did not restore the same usable action');
 
   context.api.setEditor(null);
   context.lastRecord = { shotId: 999 };
@@ -3354,8 +3457,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(orderedLive.children.map(node => node.attrs.class).join('|') ===
     'card now idle|coffee-context|card record last-shot',
     'Live did not put current measurements before the next recipe and last result');
-  if (checkCount !== 374) {
-    throw new Error(`expected 374 assertions, ran ${checkCount}`);
+  if (checkCount !== 385) {
+    throw new Error(`expected 385 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

@@ -53,6 +53,195 @@ function harness() {
   return { context, streams, timers, get: id => elements.get(id) };
 }
 
+function liveRenderHarness() {
+  const h = harness();
+  const { context } = h;
+  const doc = context.document;
+  doc.body = {};
+  doc.activeElement = doc.body;
+  let controls = [];
+  let specs = [];
+  const app = {
+    contains: target => controls.includes(target),
+    replaceChildren() {
+      if (this.contains(doc.activeElement)) doc.activeElement = doc.body;
+      controls = [];
+    },
+    querySelectorAll: () => controls,
+  };
+  const getElementById = doc.getElementById;
+  doc.getElementById = id => id === 'app' ? app : getElementById(id);
+  function populate() {
+    controls = specs.map(spec => ({
+      ...spec,
+      getAttribute: name => spec.attrs?.[name] ?? null,
+      getClientRects: () => spec.hidden ? [] : [{}],
+      closest: () => spec.inert ? {} : null,
+      focus(options) { doc.activeElement = this; this.focusOptions = options; },
+    }));
+  }
+  context.renderTabs = () => {};
+  context.appendStorageWarning = () => {};
+  context.synchronizeMetadataOverlayState = () => {};
+  context.renderLive = populate;
+  context.renderCoffeeContext = populate;
+  context.renderList = populate;
+  context.rememberHistoryListPosition = () => {};
+  return { ...h, app, setControls: next => { specs = next; },
+    controls: () => controls };
+}
+
+test('Tab buttons pass navigation intent even when they do not receive focus', () => {
+  const h = harness();
+  h.context.el = (tag, attrs = {}, ...children) => ({ tag, attrs, children });
+  h.context.uiIcon = () => null;
+  const navigation = [];
+  h.context.switchView = (next, options) => navigation.push({ next, fromTab: options.fromTab });
+  const app = { append(tabs) { this.tabs = tabs; } };
+  h.context.renderTabs(app);
+  for (const button of app.tabs.children) button.attrs.onclick();
+  assert.deepEqual(navigation, [
+    { next: 'live', fromTab: true },
+    { next: 'list', fromTab: true },
+  ]);
+  assert.equal(h.context.document.activeElement, null);
+});
+
+test('Live updates retain a control across label changes without scrolling', () => {
+  const h = liveRenderHarness();
+  h.setControls([{ attrs: { 'data-overlay-return-key': 'shot-details-7' },
+    label: 'Load shot details' }]);
+  h.context.render();
+  h.controls()[0].focus();
+  h.setControls([{ attrs: { 'data-overlay-return-key': 'shot-details-7' },
+    label: 'Edit shot details' }]);
+  h.context.render();
+  assert.equal(h.context.document.activeElement, h.controls()[0]);
+  assert.equal(h.context.document.activeElement.focusOptions.preventScroll, true);
+});
+
+test('Live retains tabs and disclosures, including keys with quotes', () => {
+  for (const key of ['live-tab', 'previous-coffee-"quoted"\\coffee']) {
+    const h = liveRenderHarness();
+    h.setControls([{ attrs: { 'data-live-focus-key': key } }]);
+    h.context.render();
+    h.controls()[0].focus();
+    h.context.render();
+    assert.equal(h.context.document.activeElement, h.controls()[0]);
+  }
+});
+
+test('Live does not restore a vanished or unavailable control', () => {
+  for (const next of [[], [{ disabled: true }], [{ hidden: true }],
+    [{ inert: true }]]) {
+    const h = liveRenderHarness();
+    const attrs = { 'data-live-focus-key': 'apply-recipe-target' };
+    h.setControls([{ attrs }]);
+    h.context.render();
+    h.controls()[0].focus();
+    h.setControls(next.map(spec => ({ ...spec, attrs: { ...attrs, ...spec.attrs } })));
+    h.context.render();
+    assert.equal(h.context.document.activeElement, h.context.document.body);
+  }
+});
+
+test('Live retains focus on a busy search control that remains keyboard focusable', () => {
+  const h = liveRenderHarness();
+  const attrs = { 'data-live-focus-key': 'search-coffee-history' };
+  h.setControls([{ attrs, label: 'Search older history' }]);
+  h.context.render();
+  h.controls()[0].focus();
+  h.setControls([{ attrs: { ...attrs, 'aria-disabled': 'true' }, label: 'Loading…' }]);
+  h.context.render();
+  assert.equal(h.context.document.activeElement, h.controls()[0]);
+});
+
+test('Live leaves focus outside the app alone', () => {
+  const h = liveRenderHarness();
+  h.setControls([{ attrs: { 'data-overlay-return-key': 'adjust-recipe' } }]);
+  h.context.render();
+  const outside = {};
+  h.context.document.activeElement = outside;
+  h.context.render();
+  assert.equal(h.context.document.activeElement, outside);
+});
+
+test('Live actions keep focus through loading updates and a failed request', () => {
+  for (const attrs of [
+    { 'data-live-focus-key': 'apply-recipe-target' },
+    { 'data-overlay-return-key': 'shot-details-7' },
+    { 'data-live-focus-key': 'retry-coffee-history' },
+  ]) {
+    const h = liveRenderHarness();
+    h.setControls([{ attrs }]);
+    h.context.render();
+    h.controls()[0].focus();
+    h.setControls([{ attrs: { ...attrs, 'aria-disabled': 'true', 'aria-busy': 'true' } }]);
+    for (let i = 0; i < 2; ++i) {
+      h.context.render();
+      assert.equal(h.context.document.activeElement, h.controls()[0]);
+    }
+    h.setControls([{ attrs }]);
+    h.context.render();
+    assert.equal(h.context.document.activeElement, h.controls()[0]);
+    assert.equal(h.controls()[0].focusOptions.preventScroll, true);
+  }
+});
+
+test('shared tabs retain focus when switching views in either direction', () => {
+  for (const [from, to, key] of [
+    ['live', 'list', 'history-tab'], ['list', 'live', 'live-tab'],
+    ['detail', 'list', 'history-tab'],
+  ]) {
+    const h = liveRenderHarness();
+    h.context.setView(from);
+    h.context.renderDetail = h.context.renderLive;
+    h.setControls([{ attrs: { 'data-view-focus-key': key } }]);
+    h.context.render();
+    h.controls()[0].focus();
+    h.context.setView(to);
+    h.context.render();
+    assert.equal(h.context.document.activeElement, h.controls()[0]);
+    assert.equal(h.controls()[0].focusOptions.preventScroll, true);
+    h.context.render();
+    assert.equal(h.context.document.activeElement, h.controls()[0]);
+  }
+});
+
+test('Live does not take focus back when synchronization opens an editor', () => {
+  const h = liveRenderHarness();
+  h.setControls([{ attrs: { 'data-overlay-return-key': 'adjust-recipe' } }]);
+  h.context.render();
+  h.controls()[0].focus();
+  const editor = {};
+  h.context.synchronizeMetadataOverlayState = () => {
+    h.context.document.activeElement = editor;
+  };
+  h.context.render();
+  assert.equal(h.context.document.activeElement, editor);
+});
+
+test('Live retains Choose coffee while waiting for the first device state', () => {
+  const h = liveRenderHarness();
+  h.context.setState(null);
+  h.setControls([{ attrs: { 'data-overlay-return-key': 'choose-coffee' } }]);
+  h.context.render();
+  h.controls()[0].focus();
+  h.context.render();
+  assert.equal(h.context.document.activeElement, h.controls()[0]);
+});
+
+test('Live focus restoration leaves other views to their own focus handling', () => {
+  const h = liveRenderHarness();
+  h.context.setView('detail');
+  h.context.renderDetail = h.context.renderLive;
+  h.setControls([{ attrs: { 'data-overlay-return-key': 'shot-details-7' } }]);
+  h.context.render();
+  h.controls()[0].focus();
+  h.context.render();
+  assert.equal(h.context.document.activeElement, h.context.document.body);
+});
+
 test('healthy status stays compact and keeps an open explanation across updates', () => {
   const { context, get } = harness();
   get('connection').open = true;

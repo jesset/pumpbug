@@ -124,7 +124,8 @@ function renderDeviceTarget(parent) {
     el('span', { class: targetCg !== null ? 'device-target-warning' : '' }, status)));
   if (targetCg !== null) {
     box.append(el('button', { class: 'secondary',
-      ...(targetApplyPending ? { disabled: true } : {}),
+      'data-live-focus-key': 'apply-recipe-target',
+      ...(targetApplyPending ? { 'aria-disabled': 'true', 'aria-busy': 'true' } : {}),
       onclick: applyRecipeTarget },
       targetApplyPending ? 'Applying…' : matches ? 'Enable alert' : 'Apply recipe target'));
     box.append(el('div', { class: 'coffee-last-detail' },
@@ -662,6 +663,8 @@ function currentMetadataOverlayReturnFocus() {
 
 async function loadShotMetadata(summary, options = {}) {
   const { id } = summary;
+  if (metadataEditorLoad?.id === id &&
+      metadataEditorLoadOriginIsCurrent(metadataEditorLoad)) return;
   const request = {
     id,
     view,
@@ -738,13 +741,19 @@ function appendShotMetadataStatus(parent, record) {
 function shotMetadataEditAction(summary) {
   const { id } = summary;
   const record = metadataRecordFromRow(summary);
-  if (record?.loading || record?.state === 'unsupported') return null;
+  if (record?.state === 'unsupported') return null;
+  const loading = !!record?.loading;
+  if (loading && (metadataEditorLoad?.id !== id ||
+      !metadataEditorLoadOriginIsCurrent(metadataEditorLoad))) return null;
   const unavailable = !record || record.state === 'unavailable';
-  if (!unavailable && !record.etag) return null;
+  if (!loading && !unavailable && !record.etag) return null;
   return el('button', {
     class: 'secondary', 'data-overlay-return-key': 'shot-details-' + id,
-    onclick: () => loadShotMetadata(summary),
-  }, unavailable ? 'Load shot details' : metadataActionLabel(record));
+    ...(loading ? { 'aria-disabled': 'true', 'aria-busy': 'true' } : {}),
+    onclick: () => {
+      if (!loading) return loadShotMetadata(summary);
+    },
+  }, loading ? 'Loading…' : unavailable ? 'Load shot details' : metadataActionLabel(record));
 }
 
 function shotMetadataActions(summary, options = {}) {
@@ -753,6 +762,7 @@ function shotMetadataActions(summary, options = {}) {
   const actions = el('div', { class: 'metadata-actions' });
   if (options.openInHistory) {
     actions.append(el('button', {
+      'data-live-focus-key': 'view-shot-' + id,
       class: 'secondary', onclick: () => selectShot(id),
     }, 'View shot'));
   }
@@ -904,6 +914,9 @@ function appendOlderCoffeeHistorySearch(parent, options) {
     class: (options.buttonClass || 'secondary') + ' older-history-action',
     ...(options.focusKey
       ? { 'data-overlay-focus-key': options.focusKey }
+      : {}),
+    ...(options.liveFocusKey
+      ? { 'data-live-focus-key': options.liveFocusKey }
       : {}),
     ...(loading ? { 'aria-disabled': 'true' } : {}),
     onclick: () => {
@@ -1089,6 +1102,7 @@ function clearNextShotRecipe() {
 function coffeeClearButton() {
   return el('button', {
     class: 'backlink coffee-clear',
+    'data-live-focus-key': 'clear-next-recipe',
     'aria-label': 'Clear next recipe',
     onclick: () => clearNextShotRecipe(),
   }, 'Clear');
@@ -1147,7 +1161,8 @@ async function openCoffeePicker(onChoose = null, coffee = null) {
 function appendCoffeeActionButtons(actions, id, value) {
   if (!coffeeIdentity(value.coffee)) return;
   if (nextShotRecipeSourceId !== id) {
-    actions.append(el('button', { class: 'secondary', onclick: event => {
+    actions.append(el('button', { class: 'secondary',
+      'data-live-focus-key': 'use-next-recipe-' + id, onclick: event => {
       event.stopPropagation();
       useShotForNextRecipe(value, id);
     } }, 'Use for next shot'));
@@ -1236,16 +1251,25 @@ function renderCoffeeContext(app) {
     class: 'coffee-context-block coffee-context-history',
   },
     ...(matches.length ? [] : [el('h3', {}, 'Previous with this coffee')]));
-  if (historyStore.error && historyStore.rows === null) {
-    previous.append(el('div', { class: 'coffee-last-detail' },
-      'Previous shots could not be loaded.'));
-    previous.append(el('div', { class: 'coffee-section-actions' },
-      el('button', { class: 'secondary', onclick: () => {
-        loadCoffeeContextHistory();
-      } }, 'Retry')));
-  } else if (historyStore.rows === null) {
-    previous.append(el('div', { class: 'coffee-last-detail' },
-      'Loading previous shots…'));
+  if (historyStore.rows === null) {
+    const loading = historyStore.loading;
+    if (historyStore.error) {
+      previous.append(el('div', { class: 'coffee-last-detail' },
+        'Previous shots could not be loaded.'));
+    }
+    if (historyStore.error || loading) {
+      previous.append(el('div', { class: 'coffee-section-actions' },
+        el('button', { class: 'secondary',
+          'data-live-focus-key': 'retry-coffee-history',
+          ...(loading ? { 'aria-disabled': 'true', 'aria-busy': 'true' } : {}),
+          onclick: () => {
+            if (!historyStore.loading) return loadCoffeeContextHistory();
+          },
+        }, loading ? 'Loading…' : 'Retry')));
+    } else {
+      previous.append(el('div', { class: 'coffee-last-detail' },
+        'Waiting to load previous shots.'));
+    }
   } else if (matches.length) {
     const newest = matches[0];
     const identity = coffeeIdentity(coffee);
@@ -1255,7 +1279,8 @@ function renderCoffeeContext(app) {
         if (!event.currentTarget.isConnected) return;
         expandedPreviousCoffee = event.currentTarget.open ? identity : null;
       } },
-      el('summary', { onclick: () => {
+      el('summary', {
+        'data-live-focus-key': 'previous-coffee-' + identity, onclick: () => {
         expandedPreviousCoffee = disclosure.open ? null : identity;
       } },
         el('div', { class: 'coffee-previous-heading' },
@@ -1270,6 +1295,7 @@ function renderCoffeeContext(app) {
     appendShotResult(detail, data);
     detail.append(el('div', { class: 'coffee-section-actions' },
       el('button', { class: 'backlink',
+        'data-live-focus-key': 'previous-shot-' + newest.id,
         onclick: () => selectShot(newest.id) }, 'View shot'),
       el('button', { class: 'backlink',
         'data-overlay-return-key': 'compare-coffee', onclick: () => {
@@ -1290,6 +1316,7 @@ function renderCoffeeContext(app) {
   }
   if (historyStore.rows !== null && (!matches.length || historyStore.error)) {
     appendOlderCoffeeHistorySearch(previous, {
+      liveFocusKey: 'search-coffee-history',
       actionsClass: 'coffee-section-actions',
       errorClass: 'coffee-last-detail err',
     });
