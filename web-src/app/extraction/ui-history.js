@@ -14,7 +14,55 @@ const SHOTS_LIMIT = 20;
 // its browser resources and the UI can recover. Reads retried after a confirmed
 // metadata write share this budget across attempts.
 const SHOTS_FETCH_TIMEOUT_MS = 10000;
+// A loaded-range refresh can read every page. Its attempts share this deadline
+// so metadata writes cannot keep restarting it indefinitely.
+const SHOTS_REFRESH_TIMEOUT_MS = 60000;
 let historyRevealShotId = null;
+let historyListPosition = null;
+let historyPaginationError = null;
+let historyFooterRefreshError = null;
+
+// Keep the visible shot in place when History is rebuilt or reopened. A card
+// anchor follows changes above it, including newly recorded shots.
+function rememberHistoryListPosition(shotId = null) {
+  const list = document.querySelector('ul.shotlist');
+  if (!list && !document.querySelector('[data-history-action="refresh"]')) return;
+  const row = !list ? null : shotId !== null
+    ? list.querySelector(`li[data-shot-id="${shotId}"]`)
+    : Array.from(list.children).find(item => item.getBoundingClientRect().bottom > 0);
+  const focusedRow = list?.contains(document.activeElement)
+    ? document.activeElement.closest('li[data-shot-id]') : null;
+  const buttons = focusedRow ? Array.from(focusedRow.querySelectorAll('button')) : [];
+  historyListPosition = {
+    atTop: window.scrollY <= 0,
+    id: row ? Number(row.dataset.shotId) : null,
+    top: row ? row.getBoundingClientRect().top : 0,
+    scrollY: window.scrollY,
+    focusId: focusedRow ? Number(focusedRow.dataset.shotId) : null,
+    focusIndex: buttons.indexOf(document.activeElement),
+    focusAction: document.activeElement?.getAttribute?.('data-history-action'),
+  };
+}
+
+function restoreHistoryListPosition() {
+  if (!historyListPosition) return;
+  const position = historyListPosition;
+  const row = !position.atTop && document.querySelector(
+    `ul.shotlist li[data-shot-id="${position.id}"]`);
+  const scrollY = position.atTop ? 0 : row
+    ? window.scrollY + row.getBoundingClientRect().top - position.top
+    : position.scrollY;
+  if (Math.abs(scrollY - window.scrollY) >= 1) window.scrollTo(0, scrollY);
+  if (position.focusIndex >= 0) {
+    const focusedRow = document.querySelector(
+      `ul.shotlist li[data-shot-id="${position.focusId}"]`);
+    focusedRow?.querySelectorAll('button')[position.focusIndex]?.focus({ preventScroll: true });
+  } else if (position.focusAction) {
+    const control = document.querySelector(`[data-history-action="${position.focusAction}"]`) ||
+      document.querySelector('[data-history-action="refresh"]');
+    control?.focus({ preventScroll: true });
+  }
+}
 
 function revealHistoryShotAfterRender(id) {
   historyRevealShotId = id;
@@ -93,17 +141,17 @@ async function fetchBinary(path) {
   });
 }
 
-// Fetch one page (before=0 → newest). Returns { status:304 } when the cached
-// ETag still matches, else { status:200, shots, hasMore, total }. The caller
-// commits the ETag only after applying the response. timeoutMs is the remaining
-// budget for this attempt, including headers and body.
-async function fetchShotsPage(before, signal, timeoutMs) {
+// Fetch one page (before=0 → newest), including its validator and storage
+// identity. A missing or invalid identity is null. The caller commits the
+// validator after applying the response; a matching conditional read returns
+// only { status:304 }. timeoutMs covers headers and body for this attempt.
+async function fetchShotsPage(before, signal, timeoutMs, { conditional = true } = {}) {
   let url = '/app/extraction/shots?limit=' + SHOTS_LIMIT + '&meta=1';
   if (before) url += '&before=' + before;
   const headers = {};
-  // Older pages are not retained separately after page one replaces the list,
-  // so only page one has data available to satisfy a 304.
-  const etag = !before ? historyStore.etagFor(url) : null;
+  // Only page one's validator is retained. Older pages are folded into the
+  // loaded range rather than cached with their own validators.
+  const etag = conditional && !before ? historyStore.etagFor(url) : null;
   if (etag) headers['If-None-Match'] = etag;
   return fetchWithTimeout(
     url, { cache: 'no-store', headers, signal }, async r => {
@@ -114,6 +162,9 @@ async function fetchShotsPage(before, signal, timeoutMs) {
         status: 200,
         url,
         etag: r.headers.get('ETag'),
+        shotStoreNonce: Number.isInteger(j.shotStoreNonce) &&
+          j.shotStoreNonce > 0 && j.shotStoreNonce <= 0xffffffff
+          ? j.shotStoreNonce : null,
         shots: Array.isArray(j.shots) ? j.shots : [],
         hasMore: !!j.hasMore,
         total: typeof j.total === 'number' ? j.total : 0,
@@ -128,6 +179,7 @@ const historyStore = (() => {
   let rows = null;
   let hasMore = false;
   let total = 0;
+  let shotStoreNonce = null;
   // Once requested, history remains available to the Live coffee context and
   // History view for the rest of this page session.
   let requested = false;
@@ -178,8 +230,9 @@ const historyStore = (() => {
   // The deadline limits retries; a completed, unaffected response is usable
   // even if browser timer throttling let the transfer finish late.
   async function readWithMetadataRevalidation(
-      read, apply, { signal, fail = err => { throw err; } } = {}) {
-    let remaining = SHOTS_FETCH_TIMEOUT_MS;
+      read, apply, { signal, timeoutMs = SHOTS_FETCH_TIMEOUT_MS,
+        fail = err => { throw err; } } = {}) {
+    let remaining = timeoutMs;
     const deadline = performance.now() + remaining;
     while (true) {
       if (signal && signal.aborted) return fail(new Error('Read cancelled.'));
@@ -209,10 +262,23 @@ const historyStore = (() => {
       return { status: 'cancelled' };
     }
     if (res.status === 200) {
+      const sameStore = shotStoreNonce !== null &&
+        res.shotStoreNonce === shotStoreNonce;
+      if (before && shotStoreNonce !== null && !sameStore) {
+        invalidate();
+        runBackgroundRefresh();
+        return { status: 'cancelled' };
+      }
+      // Firmware without a nonce can merge within a validated session;
+      // revalidation after reconnect replaces those unidentified rows.
+      const mergeWithoutIdentity = preserveRows && shotStoreNonce === null &&
+        res.shotStoreNonce === null;
       if (before) {
         rows = rows.concat(res.shots);
         hasMore = res.hasMore;
-      } else if (preserveRows && rows) {
+      } else if (!request.refreshRange && rows && (sameStore || mergeWithoutIdentity)) {
+        // Retain older pages across a wake when the storage identity matches.
+        // An overlapping first page keeps the loaded range connected.
         const cachedIds = new Set(rows.map(row => row.id));
         const firstPageConnects = res.shots.length && rows.length &&
           res.shots[0].id >= rows[0].id &&
@@ -232,6 +298,7 @@ const historyStore = (() => {
         hasMore = res.hasMore;
       }
       total = res.total;
+      if (!before) shotStoreNonce = res.shotStoreNonce;
       if (!before && res.etag) etags[res.url] = res.etag;
     }
     if (request.authoritative) {
@@ -245,11 +312,43 @@ const historyStore = (() => {
     return { status: res.status };
   }
 
-  function requestPage(before, preserveRows = false) {
+  // Refresh the displayed range before publishing it, so a failed older-page
+  // read leaves the displayed shots intact. Confirmed metadata writes cause
+  // the entire read to retry through readWithMetadataRevalidation().
+  async function fetchLoadedRange(range, signal, timeoutMs) {
+    const deadline = performance.now() + timeoutMs;
+    const read = before => {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw requestError('timeout', 'History refresh timed out.');
+      return fetchShotsPage(before, signal, Math.min(remaining, SHOTS_FETCH_TIMEOUT_MS),
+        { conditional: false });
+    };
+    const first = await read(0);
+    if (!range.oldestId || first.shotStoreNonce !== range.nonce) return first;
+    let page = first;
+    const shots = [...first.shots];
+    while (page.hasMore && shots.length && shots.at(-1).id > range.oldestId) {
+      const before = shots.at(-1).id;
+      page = await read(before);
+      if (page.shotStoreNonce !== first.shotStoreNonce) {
+        throw new Error('Shot storage changed. Refresh history again.');
+      }
+      if (!page.shots.length || page.shots.some(row => row.id >= before)) {
+        throw new Error('History page did not advance.');
+      }
+      shots.push(...page.shots);
+    }
+    const loaded = shots.filter(row => row.id >= range.oldestId);
+    return { ...first, shots: loaded, total: page.total,
+      hasMore: page.hasMore || loaded.length < shots.length };
+  }
+
+  function requestPage(before, preserveRows = false, refreshRange = null) {
     if (activeRequest) activeRequest.controller.abort();
     const request = {
       before,
       preserveRows,
+      refreshRange,
       authoritative: !before && !preserveRows,
       invalidationGeneration,
       savedShotRevision,
@@ -267,16 +366,19 @@ const historyStore = (() => {
     request.promise = (async () => {
       try {
         return await readWithMetadataRevalidation(
-          timeoutMs => fetchShotsPage(before, request.controller.signal, timeoutMs),
+          timeoutMs => refreshRange
+            ? fetchLoadedRange(refreshRange, request.controller.signal, timeoutMs)
+            : fetchShotsPage(before, request.controller.signal, timeoutMs),
           res => applyShotsPage(request, res),
-          { signal: request.controller.signal });
+          { signal: request.controller.signal,
+            timeoutMs: refreshRange ? SHOTS_REFRESH_TIMEOUT_MS : SHOTS_FETCH_TIMEOUT_MS });
       } catch (err) {
         if (request.controller.signal.aborted || activeRequest !== request) {
           return { status: 'cancelled' };
         }
         if (!before) {
           error = err;
-          failedRequest = { preserveRows };
+          failedRequest = { preserveRows, refreshRange };
         }
         return { status: 'error', error: err };
       } finally {
@@ -322,9 +424,18 @@ const historyStore = (() => {
     return requestAuthoritativePage();
   }
 
-  // Page-one replacement has priority over operations that depend on the
+  function refreshLoaded() {
+    requested = true;
+    if (!storageIsReady()) return Promise.resolve({ status: 'deferred' });
+    if (activeRequest?.refreshRange) return activeRequest.promise;
+    return requestPage(0, false, {
+      oldestId: rows?.at(-1)?.id ?? 0, nonce: shotStoreNonce,
+    });
+  }
+
+  // Page-one revalidation has priority over operations that depend on the
   // current rows. Once it completes, callers recompute their request from the
-  // replacement rather than using cursors or merge assumptions from before it.
+  // validated rows rather than using cursors from before it.
   async function waitForAuthoritativeRequest() {
     let result = null;
     while (activeRequest && activeRequest.authoritative) {
@@ -369,6 +480,7 @@ const historyStore = (() => {
     if (!failedRequest) return { status: 'ready' };
     if (!storageIsReady()) return { status: 'deferred' };
     const request = failedRequest;
+    if (request.refreshRange) return requestPage(0, false, request.refreshRange);
     return request.preserveRows ? refreshPreservingRows()
                                 : requestAuthoritativePage();
   }
@@ -404,7 +516,8 @@ const historyStore = (() => {
           const request = failedRequest;
           // Issue the prerequisite request directly: this pagination operation
           // owns loadMorePromise, which refreshPreservingRows() waits for.
-          const pageOneResult = request.preserveRows
+          const pageOneResult = request.refreshRange
+            ? await requestPage(0, false, request.refreshRange) : request.preserveRows
             ? await requestPage(0, true)
             : await requestAuthoritativePage();
           if (operationGeneration !== invalidationGeneration) {
@@ -535,17 +648,21 @@ const historyStore = (() => {
 
   return {
     get rows() { return rows; },
+    get shotStoreNonce() { return shotStoreNonce; },
     get rowsAreCurrent() {
       return rows !== null && validatedGeneration === invalidationGeneration;
     },
     get hasMore() { return hasMore; },
     get total() { return total; },
     get loading() { return loading; },
+    get refreshingLoaded() { return !!activeRequest?.refreshRange; },
+    get canRefresh() { return storageIsReady() && !loading; },
     get error() { return error; },
     get pagination() { return paginationState(); },
     subscribe,
     ensureLoaded,
     refresh,
+    refreshLoaded,
     refreshPreservingRows,
     retry,
     loadMore,
@@ -562,6 +679,12 @@ const historyStore = (() => {
 
 function switchView(next) {
   if (view === next) return;
+  if (view === 'list') rememberHistoryListPosition();
+  if (next === 'list' && view === 'detail' &&
+      historyListPosition?.id === selectedShotId) {
+    historyListPosition.focusId = selectedShotId;
+    historyListPosition.focusIndex = 0;
+  }
   cancelMetadataEditorLoad();
   view = next;
   if (next !== 'detail') {
@@ -577,6 +700,7 @@ function switchView(next) {
 }
 
 async function selectShot(id) {
+  if (view === 'list') rememberHistoryListPosition(id);
   cancelMetadataEditorLoad();
   selectedShotId = id;
   selectedShot = null;
@@ -689,6 +813,77 @@ async function loadMoreHistory(reportError = message => flashBanner(message, 'ba
   return result;
 }
 
+async function loadOlderHistory() {
+  if (historyStore.pagination.status !== 'ready') return;
+  const hadFocus = document.activeElement?.classList.contains('older-history-action');
+  const previousLastId = historyStore.rows?.at(-1)?.id;
+  historyPaginationError = null;
+  const result = await loadMoreHistory(() => {
+    historyPaginationError = {
+      cursor: historyStore.rows?.at(-1)?.id,
+      shotStoreNonce: historyStore.shotStoreNonce,
+      message: "Couldn't load older shots. Try again.",
+    };
+  });
+  scheduleRender();
+  if (result.status !== 'error' && result.status !== 200) return result;
+  requestAnimationFrame(() => {
+    if (view !== 'list') return;
+    const paging = document.querySelector('.history-pagination');
+    if (!paging || paging.closest('[inert]')) return;
+    if (result.status === 'error' && historyPaginationError) {
+      const rect = paging.getBoundingClientRect();
+      if (rect.top >= window.innerHeight || rect.bottom <= 0) return;
+      paging.scrollIntoView({ block: 'end' });
+    }
+    const restoredToRefresh = historyListPosition?.focusAction === 'older' &&
+      document.activeElement === document.querySelector('[data-history-action="refresh"]');
+    if (hadFocus && (document.activeElement === document.body || restoredToRefresh ||
+        document.activeElement?.classList?.contains('older-history-action'))) {
+      const nextShot = historyStore.rows?.find(row => row.id < previousLastId);
+      const link = result.status === 200 && nextShot &&
+        document.querySelector(`li[data-shot-id="${nextShot.id}"] .shot-open-link`);
+      const control = link || paging.querySelector('button');
+      control?.focus({ preventScroll: result.status === 'error' });
+    }
+  });
+  return result;
+}
+
+function historyLoadedCount() {
+  const loaded = historyStore.rows?.length ?? 0;
+  const total = historyStore.total;
+  return `${loaded} of ${total} ${total === 1 ? 'shot' : 'shots'} loaded`;
+}
+
+function historyHeading() {
+  const refreshing = historyStore.refreshingLoaded;
+  const showError = historyStore.error &&
+    (historyStore.error !== historyFooterRefreshError || !historyStore.rows?.length);
+  const heading = el('div', { class: 'history-heading' },
+    el('h2', { class: 'shot-history-heading' },
+      historyLoadedCount()),
+    el('button', { type: 'button', class: 'backlink history-refresh',
+      'aria-label': refreshing ? 'Refreshing history' : 'Refresh history',
+      title: 'Refresh history',
+      ...(refreshing ? { 'aria-busy': 'true' } : {}),
+      ...(historyStore.error ? { 'aria-describedby': 'history-refresh-error' } : {}),
+      'data-history-action': 'refresh',
+      ...(!historyStore.canRefresh ? { 'aria-disabled': 'true' } : {}),
+      onclick: () => {
+        if (!historyStore.canRefresh) return;
+        historyFooterRefreshError = null;
+        return historyStore.refreshLoaded();
+      },
+    }, uiIcon('refresh'), refreshing ? 'Refreshing…' : 'Refresh'));
+  return showError ? el('div', {}, heading, historyRefreshError()) : heading;
+}
+
+function historyRefreshError() {
+  return el('p', { class: 'err history-pagination-error', id: 'history-refresh-error' },
+    "Couldn't refresh history. Try again.");
+}
+
 function renderHistoryShot(summary) {
   const data = shotSummaryData(summary);
   const { record } = data;
@@ -723,14 +918,10 @@ function renderList(app) {
     }
     return;
   }
-  if (historyStore.error) {
-    app.append(el('div', { class: 'storage-warning' },
-      el('span', {}, 'Shot history may be out of date. '),
-      el('button', { class: 'backlink',
-        onclick: () => historyStore.retry() }, 'Retry')));
-  }
   if (!rows.length) {
+    app.append(historyHeading());
     app.append(el('p', { class: 'empty' }, 'No shots recorded yet.'));
+    restoreHistoryListPosition();
     return;
   }
   const ul = el('ul', { class: 'shotlist' });
@@ -756,19 +947,53 @@ function renderList(app) {
     ul.append(renderHistoryShot(s));
   }
   const section = el('section', {},
-    el('h2', { class: 'shot-history-heading' },
-      `${historyStore.total} ${historyStore.total === 1 ? 'shot' : 'shots'}`), ul);
+    historyHeading(), ul);
   const pagination = historyStore.pagination;
-  if (pagination.status === 'ready' || pagination.status === 'loading') {
-    const loading = pagination.status === 'loading';
-    section.append(el('button', {
-      type: 'button', class: 'loadmore older-history-action',
-      ...(loading ? { 'aria-disabled': 'true' } : {}),
-      onclick: () => {
-        if (historyStore.pagination.status === 'ready') return loadMoreHistory();
-      },
-    }, loading ? 'Loading…' : 'Load older'));
+  if (pagination.status === 'complete' ||
+      historyPaginationError?.shotStoreNonce !== historyStore.shotStoreNonce ||
+      historyPaginationError?.cursor !== rows.at(-1)?.id) {
+    historyPaginationError = null;
   }
+  const paging = el('div', { class: 'history-pagination' },
+    el('p', { class: 'history-loaded-count' }, historyLoadedCount()));
+  const waiting = pagination.status === 'deferred' && historyStore.hasMore;
+  const refreshing = historyStore.refreshingLoaded || (waiting && historyStore.loading);
+  if (pagination.status === 'ready' || pagination.status === 'loading' || waiting || refreshing || historyStore.error) {
+    const loading = pagination.status === 'loading';
+    const retryingRefresh = !!historyStore.error;
+    const inactive = refreshing || (waiting && !retryingRefresh) || loading ||
+      (retryingRefresh && !historyStore.canRefresh);
+    if (retryingRefresh && historyStore.error === historyFooterRefreshError) {
+      paging.append(historyRefreshError());
+    } else if (!retryingRefresh && historyPaginationError) {
+      paging.append(el('p', { class: 'err history-pagination-error', id: 'history-pagination-error' },
+        historyPaginationError.message));
+    }
+    paging.append(el('button', {
+      type: 'button', class: 'loadmore older-history-action',
+      'data-history-action': 'older',
+      ...(inactive ? { 'aria-disabled': 'true' } : {}),
+      ...(retryingRefresh ? { 'aria-describedby': 'history-refresh-error' } : {}),
+      ...(!retryingRefresh && historyPaginationError
+        ? { 'aria-describedby': 'history-pagination-error' } : {}),
+      onclick: () => {
+        if (inactive) return;
+        if (!historyStore.error) return loadOlderHistory();
+        if (!historyStore.canRefresh) return;
+        historyFooterRefreshError = null;
+        return historyStore.retry().then(result => {
+          if (result.status === 'error' && historyStore.error === result.error) {
+            historyFooterRefreshError = result.error;
+            scheduleRender();
+          }
+          return result;
+        });
+      },
+    }, refreshing ? 'Refreshing…' : historyStore.error ? 'Retry' :
+      waiting ? 'Waiting to refresh…' : loading ? 'Loading…' :
+      historyPaginationError ? 'Retry' : 'Load older'));
+  }
+  section.append(paging);
   app.append(section);
   if (historyRevealShotId !== null) {
     const revealShotId = historyRevealShotId;
@@ -781,6 +1006,8 @@ function renderList(app) {
       row.classList.add('recently-edited');
       setTimeout(() => row.classList.remove('recently-edited'), 1800);
     });
+  } else {
+    restoreHistoryListPosition();
   }
 }
 

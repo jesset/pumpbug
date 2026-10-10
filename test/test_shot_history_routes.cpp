@@ -258,6 +258,33 @@ void testMetadataValidatorsSurviveRestartAndRejectErase() {
   assert(fresh.status == 200);
   assert(fresh.responseHeaders.at("X-Shot-Metadata-State") == "absent");
 }
+
+void testListIdentitySurvivesWakeAndChangesAfterErase() {
+  resetStorage();
+  testNvs.setU32("shots", "store_nonce", 0x87654321);
+  ShotStore store;
+  saveShot(store);
+  const auto list = [](ShotStore& current) {
+    WebServer server;
+    server.arguments["meta"] = "1";
+    pump_scale::handleShotHistory(server, current);
+    assert(server.status == 200);
+    const std::string identity =
+        "\"shotStoreNonce\":" + std::to_string(current.shotStoreNonce());
+    assert(server.body.find(identity) != std::string::npos);
+    return server.body;
+  };
+  const std::string before = list(store);
+  ShotStore afterWake;
+  assert(list(afterWake) == before);
+  resetStorage();
+  testNvs.setU32("shots", "store_nonce", 0x12345678);
+  ShotStore afterErase;
+  saveShot(afterErase);
+  assert(list(afterErase) != before);
+  assert(afterErase.erase(1));
+  assert(list(afterErase).find("\"shots\":[]") != std::string::npos);
+}
 }  // namespace
 
 int main() {
@@ -266,5 +293,6 @@ int main() {
   testConditionalDetailChecksAccessAndValidatesCacheMisses();
   testDetailEtagSurvivesMetadataWritesAndRestart();
   testMetadataValidatorsSurviveRestartAndRejectErase();
+  testListIdentitySurvivesWakeAndChangesAfterErase();
   std::puts("OK: shot history HTTP identity and cache contracts");
 }

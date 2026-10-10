@@ -31,6 +31,7 @@ const context = {
   AbortController,
   setTimeout,
   clearTimeout,
+  requestAnimationFrame: callback => callback(),
   confirm: () => true,
   inPumpWindow: current => !!current && current.active &&
     (current.phase === 'RUNNING' || current.phase === 'POST_PUMP'),
@@ -57,7 +58,7 @@ const context = {
     addEventListener(type, listener) { this.listeners[type] = listener; },
     focus() {},
   }),
-  document: { createElementNS: svgElement },
+  document: { createElementNS: svgElement, querySelector: () => null },
   setBanner: (message, kind) => banners.push({ message, kind }),
   flashBanner: (message, kind) => banners.push({ message, kind }),
   localStorage: {
@@ -706,6 +707,7 @@ function coffeeChoiceForm(fields = {}) {
 
 const historyPage = (shots, options = {}) => ({
   status: 200,
+  shotStoreNonce: options.shotStoreNonce ?? null,
   shots,
   hasMore: !!options.hasMore,
   total: options.total == null ? shots.length : options.total,
@@ -1666,11 +1668,29 @@ check(Object.keys(blankEditor.original).length === 0 &&
     historyButtonRequest, repeatedHistoryButtonRequest, busyHistoryButtonRequest,
   ]);
   check(historyButtonRequests === 1 &&
-        banners.length === historyButtonBannerCount + 1 &&
-        banners[banners.length - 1].message.includes('history pagination unavailable') &&
+        banners.length === historyButtonBannerCount &&
+        historyListNodes().some(node => node.attrs?.id === 'history-pagination-error' &&
+          !node.attrs?.role &&
+          node.children.includes("Couldn't load older shots. Try again.")) &&
         historyListNodes().some(node =>
-          node.tag === 'button' && node.children.includes('Load older')),
+          node.tag === 'button' && node.children.includes('Retry') &&
+          node.attrs['aria-describedby'] === 'history-pagination-error'),
     'repeated History activation duplicated a request or its failure feedback');
+  check(historyListNodes().filter(node => node.children.includes('20 of 100 shots loaded'))
+    .length === 2,
+    'History heading and pagination did not both show the loaded count');
+  let finishHistoryRetry;
+  context.fetchShotsPage = () => new Promise(resolve => { finishHistoryRetry = resolve; });
+  const historyRetry = historyListNodes().find(node =>
+    node.tag === 'button' && node.children.includes('Retry')).attrs.onclick();
+  check(!historyListNodes().some(node => node.attrs?.id === 'history-pagination-error'),
+    'retrying older History retained its previous error');
+  finishHistoryRetry(historyPage([{ id: 80 }], { hasMore: false, total: 21 }));
+  await historyRetry;
+  check(historyListNodes().filter(node => node.children.includes('21 of 21 shots loaded'))
+        .length === 2 &&
+        !historyListNodes().some(node => node.attrs?.class?.includes('older-history-action')),
+    'completed History pagination retained its retry action or lost the loaded count');
 
   context.fetchShotsPage = async () => historyPage([], { hasMore: true, total: 1 });
   await context.api.historyStore.refresh();
@@ -2296,7 +2316,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   context.api.renderList(staleHistoryView);
   const staleHistoryText = JSON.stringify(staleHistoryView);
   check(failedSavedRefresh.status === 'error' &&
-        staleHistoryText.includes('Shot history may be out of date.') &&
+        staleHistoryText.includes("Couldn't refresh history. Try again.") &&
         staleHistoryText.includes('Retry'),
     'a background refresh failure left History without manual recovery');
 
@@ -2883,7 +2903,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   const historySummaryView = context.el('main');
   context.api.renderList(historySummaryView);
   check(descendants(historySummaryView).find(node => node.tag === 'h2')
-    .children.includes('1 shot'), 'History heading did not use the singular count');
+    .children.includes('1 of 1 shot loaded'), 'History heading did not use the singular loaded count');
   check(renderedText(historySummaryView).includes('EY 18.6%'),
     'History caller discarded measurements before rendering the summary');
   const historyMetrics = descendants(historySummaryView).filter(node =>
@@ -2970,7 +2990,7 @@ check(Object.keys(blankEditor.original).length === 0 &&
   const pluralHistoryView = context.el('main');
   context.api.renderList(pluralHistoryView);
   check(descendants(pluralHistoryView).find(node => node.tag === 'h2')
-    .children.includes('2 shots'), 'History heading did not use the plural count');
+    .children.includes('1 of 2 shots loaded'), 'History heading did not distinguish loaded shots from total shots');
 
 
   const views = {
@@ -3334,8 +3354,8 @@ check(Object.keys(blankEditor.original).length === 0 &&
   check(orderedLive.children.map(node => node.attrs.class).join('|') ===
     'card now idle|coffee-context|card record last-shot',
     'Live did not put current measurements before the next recipe and last result');
-  if (checkCount !== 371) {
-    throw new Error(`expected 371 assertions, ran ${checkCount}`);
+  if (checkCount !== 374) {
+    throw new Error(`expected 374 assertions, ran ${checkCount}`);
   }
   console.log('OK: shot metadata browser model');
   process.exitCode = 0;

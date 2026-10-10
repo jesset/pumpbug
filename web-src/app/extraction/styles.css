@@ -296,6 +296,12 @@ table.samples td.k { text-align: left; color: var(--dim); }
   cursor: pointer;
 }
 .loadmore:hover { border-color: var(--accent); color: var(--fg); }
+.history-pagination { margin-top: 16px; }
+.history-loaded-count {
+  color: var(--dim); font-size: 12px; text-align: center; margin: 0 0 8px;
+}
+.history-pagination-error { font-size: 13px; line-height: 1.5; margin: 0 0 8px; }
+.history-pagination .loadmore { min-height: 44px; }
 ul.shotlist { list-style: none; padding: 0; margin: 0; }
 ul.shotlist li {
   padding: 14px; background: var(--surface);
@@ -310,8 +316,12 @@ ul.shotlist li.recently-edited {
 }
 .shot-history-heading {
   font-size: 12px; text-transform: none; letter-spacing: 0;
-  font-weight: 500; margin-bottom: 10px;
+  font-weight: 500; margin: 0;
 }
+.history-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.history-refresh { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px; margin: 0; font-size: 12px; }
+.history-refresh .ui-icon { width: 16px; height: 16px; }
+.history-refresh[aria-disabled="true"] { opacity: 0.6; cursor: default; }
 .shot-date {
   display: flex; justify-content: space-between; gap: 8px;
   color: var(--dim); font-size: 12px; margin-bottom: 7px;

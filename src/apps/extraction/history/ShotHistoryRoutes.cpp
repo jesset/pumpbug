@@ -301,6 +301,8 @@ void handleShotList(WebServer& server, ShotStore& store) {
                  nonce);
   }
   j.arrayClose()
+      .key("shotStoreNonce")
+      .u(nonce)
       .key("hasMore")
       .boolean(hasMore)
       .key("total")

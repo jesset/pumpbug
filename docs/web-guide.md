@@ -207,7 +207,7 @@ extraction yield (`EY`) as a percentage.
 
 Select a card to see the full preparation and result details. If the record
 cannot be read, it is listed as `Record unavailable`, and opening it shows a
-message about the issue.
+message about the issue. `Back to history` returns to your place in the list.
 
 Use the pencil button on a card to edit its saved details without opening the
 full shot view.
@@ -215,8 +215,14 @@ full shot view.
 ![Pump Bug browser History list](images/web-guide/history.png)
 
 The first page contains up to 20 shots. Choose `Load older` to show the next
-page below the existing records. Pump Bug stores up to 250 saved shots. When
-the store is full, saving a new shot removes the oldest saved shot.
+page below the existing records. The loaded count shows how much of your history
+is displayed. If loading older shots fails, choose `Retry` beneath the list.
+Choose `Refresh` beside the shot count to reload all loaded shots, including
+older pages, and pick up details changed in another browser. If refreshing
+fails, the displayed shots stay available and you can retry.
+
+Pump Bug stores up to 250 saved shots. When the store is full, saving a new shot
+removes the oldest saved shot.
 
 History and the cumulative shot counter are independent. Resetting the counter
 does not delete history, and the counter can be greater than the number of

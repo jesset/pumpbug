@@ -31,6 +31,16 @@ function renderedHistory(h) {
   return root;
 }
 
+function findElement(root, match) {
+  if (match(root)) return root;
+  for (const child of root.children || []) {
+    if (typeof child !== 'object') continue;
+    const found = findElement(child, match);
+    if (found) return found;
+  }
+  return null;
+}
+
 
 function response(body, status = 200, headers = {}) {
   return {
@@ -117,8 +127,9 @@ function harness({ automatic = false, restoredRecipe = null, deferredWrites = fa
     assert.equal(queue.length, 1, 'expected one request');
     return queue.shift();
   }
-  function reply(request, shots, etag = 'baseline', hasMore = false, total = shots.length) {
-    request.resolve(response({ shots, hasMore, total }, 200, { ETag: etag }));
+  function reply(request, shots, etag = 'baseline', hasMore = false,
+      total = shots.length, shotStoreNonce = null) {
+    request.resolve(response({ shots, hasMore, total, shotStoreNonce }, 200, { ETag: etag }));
   }
   function replyMetadata(request, rating = 1, etag = 'old-metadata') {
     request.resolve(response(rating === null ? {} : { rating }, 200, {
@@ -1562,6 +1573,651 @@ async function testLastShotRefreshPreservesOpenDetail() {
   }
 }
 
+function historyViewport(h) {
+  const viewport = { scrollY: 5200, scrollCalls: 0,
+    scrollTo(_x, y) { this.scrollY = y; ++this.scrollCalls; } };
+  const list = { children: [], contains(control) {
+    return this.children.some(item => item.buttons.includes(control));
+  }, querySelector(selector) {
+    const id = Number(selector.match(/data-shot-id="(\d+)"/)[1]);
+    return this.children.find(item => Number(item.dataset.shotId) === id) || null;
+  } };
+  function card(id, top) {
+    const item = { dataset: { shotId: String(id) }, top,
+      getBoundingClientRect() {
+        return { top: this.top - viewport.scrollY, bottom: this.top - viewport.scrollY + 250 };
+      },
+      querySelectorAll() { return this.buttons; },
+    };
+    item.buttons = [{ closest() { return item; }, focus(options) {
+      assert.equal(options.preventScroll, true);
+      h.context.document.activeElement = this;
+    } }];
+    return item;
+  }
+  h.context.window = viewport;
+  h.context.document.querySelector = selector => selector === 'ul.shotlist'
+    ? list : list.querySelector(selector);
+  h.context.loadShotMetadataForDetail = () => {};
+  h.context.fetchBinary = async () => ({ status: 'ok', shot: { yieldCg: 3900 } });
+  list.children = [card(90, 5500), card(89, 5750)];
+  h.context.document.activeElement = list.children[0].buttons[0];
+  return { viewport, list, card };
+}
+
+async function testHistoryReturnKeepsCardPosition() {
+  for (const status of ['ok', 'missing', 'invalid']) {
+    const h = harness();
+    await h.load([row(90), row(89)]);
+    const { viewport, list, card } = historyViewport(h);
+    h.context.view = 'list';
+    h.context.fetchBinary = async () => ({ status, shot: { yieldCg: 3900 } });
+    await h.context.selectShot(90);
+    viewport.scrollY = 0;
+    h.context.document.activeElement = null;
+    h.context.switchView('list');
+    renderedHistory(h);
+    assert.equal(viewport.scrollY, 5200, status + ': lost History position');
+    assert.equal(h.context.document.activeElement, list.children[0].buttons[0],
+      status + ': did not return focus to the shot');
+    const refresh = h.take();
+    h.reply(refresh, [row(91), row(90), row(89)], 'new-shot');
+    await flush();
+    h.context.rememberHistoryListPosition();
+    list.children[0].top += 250;
+    list.children[1].top += 250;
+    list.children.unshift(card(91, 5500));
+    renderedHistory(h);
+    assert.equal(list.children[1].getBoundingClientRect().top, 300,
+      status + ': a newer shot moved the card after returning');
+    assert.equal(h.context.document.activeElement, list.children[1].buttons[0],
+      status + ': the return refresh lost focus');
+  }
+}
+
+async function testHistoryReturnWhenCardWasRemoved() {
+  const h = harness();
+  await h.load([row(90), row(89)]);
+  const { viewport, list, card } = historyViewport(h);
+  h.context.view = 'list';
+  await h.context.selectShot(90);
+  viewport.scrollY = 0;
+  h.context.document.activeElement = null;
+  h.context.switchView('list');
+  h.reply(h.take(), [row(200)], 'replacement');
+  await flush();
+  list.children = [card(200, 200)];
+  renderedHistory(h);
+  assert.equal(viewport.scrollY, 5200, 'missing card lost the saved scroll fallback');
+  assert.equal(h.context.document.activeElement, null, 'missing card focused a different shot');
+}
+
+async function testReconnectPreservesOlderHistoryAndRetry() {
+  for (const change of ['wake', 'conditional', 'new-shot', 'retention']) {
+    const h = harness({ automatic: true });
+    h.context.document.querySelector = () => null;
+    h.context.requestAnimationFrame = () => {};
+    const range = top => Array.from({ length: 20 }, (_, i) => row(top - i));
+    const initial = h.store.ensureLoaded();
+    h.reply(h.take(), range(60), 'before-sleep', true, 60, 1);
+    await initial;
+    const older = h.store.loadMore();
+    h.reply(h.take(), range(40), 'older', true, 60, 1);
+    await older;
+    const failed = h.context.loadOlderHistory();
+    h.take().reject(new Error('device asleep'));
+    await failed;
+    assert(JSON.stringify(renderedHistory(h)).includes('Retry'));
+
+    h.store.sessionStarted();
+    const deferredView = JSON.stringify(renderedHistory(h));
+    assert(deferredView.includes('Waiting to refresh…') && deferredView.includes('"aria-disabled":"true"'),
+      change + ': revalidation removed the pagination control');
+    assert(deferredView.includes("Couldn't load older shots"),
+      change + ': revalidation removed the failed-page message');
+    assert.equal((await h.store.loadMore()).status, 'deferred');
+    const reconnected = h.store.observeDeviceState('ready');
+    const refresh = h.take();
+    assert.equal(refresh.options.headers['If-None-Match'], 'before-sleep');
+    if (change === 'conditional') refresh.resolve(response(null, 304));
+    else h.reply(refresh, change === 'new-shot' ? range(61) : range(60),
+      'after-wake', true, change === 'new-shot' ? 61 : change === 'retention' ? 50 : 60, 1);
+    await reconnected;
+    assert.equal(h.store.rows.length, change === 'new-shot' ? 41 : 40,
+      change + ': reconnect discarded loaded pages');
+    assert.equal(h.store.rows.at(-1).id, 21);
+    assert(h.store.rowsAreCurrent);
+    assert(JSON.stringify(renderedHistory(h)).includes('Retry'),
+      change + ': reconnect lost the failed-page Retry');
+    const retry = h.context.loadOlderHistory();
+    const next = h.take();
+    assert.equal(next.url, pageUrl + '&before=21');
+    const oldest = change === 'retention' ? range(20).slice(0, 10) : range(20);
+    h.reply(next, oldest, 'oldest', false, change === 'new-shot' ? 61 :
+      change === 'retention' ? 50 : 60, 1);
+    await retry;
+    assert.equal(h.store.rows.length, h.store.total);
+    assert(!JSON.stringify(renderedHistory(h)).includes('Retry'));
+  }
+}
+
+async function testReconnectResetsUnrelatedHistory() {
+  for (const change of ['erase', 'missing-nonce', 'empty', 'disjoint']) {
+    const h = harness({ automatic: true });
+    const initial = h.store.ensureLoaded();
+    h.reply(h.take(), [row(6), row(5)], 'before', true, 6, 1);
+    await initial;
+    const older = h.store.loadMore();
+    h.reply(h.take(), [row(4), row(3)], 'older', true, 6, 1);
+    await older;
+    h.store.sessionStarted();
+    const reconnected = h.store.observeDeviceState('ready');
+    const shots = change === 'empty' ? [] : change === 'disjoint'
+      ? [row(30), row(29)] : [row(6, 5), row(5, 5)];
+    const nonce = change === 'erase' ? 2 : change === 'missing-nonce' ? null : 1;
+    h.reply(h.take(), shots, 'after', false, shots.length, nonce);
+    await reconnected;
+    assert.deepEqual(Array.from(h.store.rows, r => [r.id, r.userMetadata.rating]),
+      shots.map(r => [r.id, r.userMetadata.rating]), change + ': retained unrelated rows');
+    assert(h.store.rowsAreCurrent);
+  }
+}
+
+async function testPaginationRejectsChangedStoreIdentity() {
+  const h = harness({ automatic: true });
+  const initial = h.store.ensureLoaded();
+  h.reply(h.take(), [row(6), row(5)], 'before', true, 6, 1);
+  await initial;
+  const older = h.store.loadMore();
+  h.reply(h.take(), [row(4, 5)], 'erased', true, 6, 2);
+  assert.equal((await older).status, 'cancelled');
+  assert.deepEqual(Array.from(h.store.rows, r => r.id), [6, 5]);
+  assert(!h.store.rowsAreCurrent);
+  const refresh = h.take();
+  assert.equal(refresh.url, pageUrl);
+  h.reply(refresh, [row(6, 5), row(5, 5)], 'new-store', true, 6, 2);
+  await flush();
+  assert(h.store.rowsAreCurrent);
+  assert.equal(h.store.rows[0].userMetadata.rating, 5);
+}
+
+const historyRange = (top, bottom, rating = 1) =>
+  Array.from({ length: top - bottom + 1 }, (_, i) => row(top - i, rating));
+
+async function loadFortyShots(h) {
+  const first = h.store.ensureLoaded();
+  h.reply(h.take(), historyRange(60, 41), 'before', true, 60, 1);
+  await first;
+  const older = h.store.loadMore();
+  h.reply(h.take(), historyRange(40, 21), 'older', true, 60, 1);
+  await older;
+}
+
+async function testManualRefreshUpdatesLoadedRange() {
+  for (const change of ['metadata', 'new-shot', 'retention', 'erase']) {
+    const h = harness();
+    await loadFortyShots(h);
+    h.context.document.querySelector = () => null;
+    const before = h.store.rows;
+    const button = findElement(renderedHistory(h), node =>
+      node.attrs?.['aria-label'] === 'Refresh history');
+    assert(button && !button.attrs['aria-disabled']);
+    const refresh = button.attrs.onclick();
+    assert.equal(button.attrs.onclick(), undefined, 'repeated Refresh opened another request');
+    assert(h.store.refreshingLoaded && !h.store.canRefresh);
+    const first = h.take();
+    assert(!first.options.headers['If-None-Match'], 'manual refresh reused a conditional page');
+    const top = change === 'new-shot' ? 61 : 60;
+    const total = change === 'new-shot' ? 61 : change === 'retention' ? 30 : 60;
+    const nonce = change === 'erase' ? 2 : 1;
+    h.reply(first, historyRange(top, top - 19, 5), 'refreshed', true, total, nonce);
+    await flush();
+    if (change !== 'erase') {
+      assert.equal(h.store.rows, before, 'partially refreshed rows were published');
+      const second = h.take();
+      assert.equal(second.url, pageUrl + '&before=' + (top - 19));
+      const bottom = change === 'retention' ? 31 : top - 39;
+      h.reply(second, historyRange(top - 20, bottom, 5), 'second',
+        change !== 'retention', total, nonce);
+      await flush();
+      if (change === 'new-shot') {
+        const third = h.take();
+        assert.equal(third.url, pageUrl + '&before=22');
+        h.reply(third, historyRange(21, 2, 5), 'third', true, total, nonce);
+      }
+    }
+    assert.equal((await refresh).status, 200);
+    const bottom = change === 'erase' ? 41 : change === 'retention' ? 31 : 21;
+    assert.deepEqual(Array.from(h.store.rows, r => r.id), historyRange(top, bottom).map(r => r.id));
+    assert(h.store.rows.every(r => r.userMetadata.rating === 5), 'older metadata stayed stale');
+    assert.equal(h.store.hasMore, change !== 'retention');
+    assert.equal(h.store.total, total);
+    assert(!h.store.refreshingLoaded && h.store.canRefresh);
+    assert.equal(h.store.etagFor(pageUrl), 'refreshed');
+  }
+}
+
+async function testManualRefreshFailureAndRetry() {
+  for (const failure of ['read', 'identity']) {
+    const h = harness();
+    await loadFortyShots(h);
+    h.context.document.querySelector = () => null;
+    const before = h.store.rows;
+    const refresh = h.store.refreshLoaded();
+    h.reply(h.take(), historyRange(60, 41, 5), 'unpublished', true, 60, 1);
+    await flush();
+    const second = h.take();
+    if (failure === 'read') second.reject(new Error('offline'));
+    else h.reply(second, historyRange(40, 21, 5), 'different-store', true, 60, 2);
+    assert.equal((await refresh).status, 'error');
+    assert.equal(h.store.rows, before);
+    assert.equal(h.store.etagFor(pageUrl), 'before');
+    const retry = findElement(renderedHistory(h), node =>
+      node.attrs?.class === 'loadmore older-history-action');
+    assert(retry && retry.children.includes('Retry') && !retry.attrs.disabled);
+    const pending = retry.attrs.onclick();
+    const first = h.take();
+    assert.equal(first.url, pageUrl, 'retry resumed in the middle of a refresh');
+    h.reply(first, historyRange(60, 41, 5), 'retried', true, 60, 1);
+    await flush();
+    h.reply(h.take(), historyRange(40, 21, 5), 'second', true, 60, 1);
+    await pending;
+    assert.equal(h.store.rows.length, 40);
+    assert(h.store.rows.every(r => r.userMetadata.rating === 5));
+    assert.equal(h.store.error, null);
+  }
+}
+
+async function testManualRefreshOrdersWritesAndPagination() {
+  const h = harness();
+  await loadFortyShots(h);
+  const refresh = h.store.refreshLoaded();
+  const pagination = h.store.loadMore();
+  h.reply(h.take(), historyRange(60, 41), 'stale', true, 60, 1);
+  await flush();
+  const staleOlder = h.take();
+  await h.write('save', 25);
+  h.reply(staleOlder, historyRange(40, 21), 'stale-older', true, 60, 1);
+  await flush();
+  const reread = h.take();
+  assert.equal(reread.url, pageUrl, 'overtaken refresh did not restart the whole range');
+  assert.equal(h.store.rows.find(r => r.id === 25).userMetadata.rating, 5);
+  h.reply(reread, historyRange(60, 41, 5), 'fresh', true, 60, 1);
+  await flush();
+  h.reply(h.take(), historyRange(40, 21, 5), 'fresh-older', true, 60, 1);
+  await refresh;
+  await flush();
+  const final = h.take();
+  assert.equal(final.url, pageUrl + '&before=21');
+  h.reply(final, historyRange(20, 1), 'last', false, 60, 1);
+  await pagination;
+  assert.equal(h.store.rows.length, 60);
+  assert.equal(h.store.rows.find(r => r.id === 25).userMetadata.rating, 5);
+}
+
+async function testManualRefreshCancelledByReconnect() {
+  const h = harness({ automatic: true });
+  await loadFortyShots(h);
+  const refresh = h.store.refreshLoaded();
+  h.reply(h.take(), historyRange(60, 41, 5), 'unpublished', true, 60, 1);
+  await flush();
+  const older = h.take();
+  h.store.sessionStarted();
+  assert(older.options.signal.aborted);
+  const reconnect = h.store.observeDeviceState('ready');
+  h.reply(h.take(), historyRange(61, 42), 'reconnected', true, 61, 1);
+  await reconnect;
+  h.reply(older, historyRange(40, 21, 5), 'obsolete', true, 60, 1);
+  assert.equal((await refresh).status, 'cancelled');
+  assert.equal(h.store.rows.length, 41);
+  assert.equal(h.store.rows.find(r => r.id === 25).userMetadata.rating, 1);
+}
+
+async function testManualRefreshSharesTransferBudget() {
+  for (const timing of ['normal', 'near-deadline', 'expired']) {
+    const h = harness();
+    for (let top = 250; top > 0; top -= 20) {
+      const bottom = Math.max(top - 19, 1);
+      const load = top === 250 ? h.store.ensureLoaded() : h.store.loadMore();
+      h.reply(h.take(), historyRange(top, bottom), 'baseline', bottom > 1, 250, 1);
+      await load;
+    }
+    const before = h.store.rows;
+    const refresh = h.store.refreshLoaded();
+    let elapsedTotal = 0;
+    for (let page = 0; page < 12; ++page) {
+      const request = h.take();
+      assert.equal(request.timeoutMs, Math.min(10000, 60000 - elapsedTotal),
+        'page did not respect both the page and overall deadlines');
+      const elapsed = timing === 'normal' ? 2500 : page < 11 ? 5000
+        : timing === 'expired' ? 5000 : 4500;
+      elapsedTotal += elapsed;
+      h.advance(elapsed);
+      const top = 250 - page * 20;
+      h.reply(request, historyRange(top, top - 19, 5), 'refreshed', true, 250, 1);
+      await flush();
+      assert.equal(h.store.rows, before, 'partial refresh changed displayed shots');
+    }
+    if (timing !== 'expired') {
+      const last = h.take();
+      assert.equal(last.timeoutMs, timing === 'near-deadline' ? 500 : 10000,
+        'last page did not respect both the page and overall deadlines');
+      h.advance(timing === 'near-deadline' ? 250 : 2500);
+      h.reply(last, historyRange(10, 1, 5), 'last', false, 250, 1);
+      assert.equal((await refresh).status, 200);
+      assert.equal(h.store.rows.length, 250);
+      assert(h.store.rows.every(item => item.userMetadata.rating === 5));
+    } else {
+      assert.equal((await refresh).status, 'error');
+      assert.equal(h.pages.length, 0, 'refresh opened another page after its deadline');
+      assert.equal(h.store.rows, before);
+    }
+  }
+}
+
+async function testManualRefreshRetriesShareOverallDeadline() {
+  const h = harness();
+  await loadFortyShots(h);
+  const refresh = h.store.refreshLoaded();
+  for (let attempt = 0; attempt < 3; ++attempt) {
+    const head = h.take();
+    assert.equal(head.timeoutMs, 10000);
+    h.advance(9000);
+    h.reply(head, historyRange(60, 41), 'obsolete', true, 60, 1);
+    await flush();
+    const older = h.take();
+    assert.equal(older.timeoutMs, 10000);
+    await h.write('save', 25);
+    h.advance(9000);
+    h.reply(older, historyRange(40, 21), 'obsolete', true, 60, 1);
+    await flush();
+  }
+  const last = h.take();
+  assert.equal(last.url, pageUrl, 'metadata write did not restart the entire range');
+  assert.equal(last.timeoutMs, 6000, 'metadata write reset the overall deadline');
+  h.advance(6000);
+  h.reply(last, historyRange(60, 41), 'unpublished', true, 60, 1);
+  assert.equal((await refresh).status, 'error');
+  assert.equal(h.pages.length, 0, 'expired refresh kept reading older pages');
+  assert.equal(h.store.rows.length, 40);
+  assert.equal(h.store.rows.find(item => item.id === 25).userMetadata.rating, 5,
+    'failed refresh lost a confirmed write');
+  assert.equal(h.store.etagFor(pageUrl), 'before');
+}
+
+async function testEmptyHistoryCanBeRefreshed() {
+  const h = harness();
+  await h.load([]);
+  const button = findElement(renderedHistory(h), node =>
+    node.attrs?.['aria-label'] === 'Refresh history');
+  assert(button && !button.attrs['aria-disabled']);
+  const refresh = button.attrs.onclick();
+  const first = h.take();
+  assert(!first.options.headers['If-None-Match']);
+  h.reply(first, [row(1)], 'new-shot', false, 1, 1);
+  await refresh;
+  assert.equal(h.store.rows.length, 1);
+  assert.equal(h.store.total, 1);
+}
+
+async function testHistoryTopAndUnchangedPosition() {
+  for (const atTop of [true, false]) {
+    const h = harness();
+    await h.load([row(90), row(89)]);
+    const { viewport, list, card } = historyViewport(h);
+    if (atTop) viewport.scrollY = 0;
+    h.context.rememberHistoryListPosition();
+    renderedHistory(h);
+    assert.equal(viewport.scrollCalls, 0, 'unchanged History caused a scroll');
+    for (const item of list.children) item.top += 250;
+    list.children.unshift(card(91, 5500));
+    renderedHistory(h);
+    assert.equal(viewport.scrollY, atTop ? 0 : 5450,
+      atTop ? 'new shot was scrolled off the top' : 'new shot moved the reading position');
+    assert.equal(viewport.scrollCalls, atTop ? 0 : 1);
+  }
+}
+
+async function testDeferredHistoryFooterOffersRecovery() {
+  const h = harness();
+  await loadFortyShots(h);
+  h.context.document.querySelector = () => null;
+  h.store.sessionStarted();
+  assert(JSON.stringify(renderedHistory(h)).includes('Waiting to refresh…'));
+  const refresh = h.store.ensureLoaded();
+  assert(JSON.stringify(renderedHistory(h)).includes('Refreshing…'));
+  h.take().reject(new Error('revalidation failed'));
+  await refresh;
+  const failed = renderedHistory(h);
+  assert(!JSON.stringify(failed).includes('Refreshing…'));
+  const retry = findElement(failed, node => node.attrs?.class === 'loadmore older-history-action');
+  assert(retry.children.includes('Retry') && !retry.attrs.disabled);
+  const pending = retry.attrs.onclick();
+  assert.equal(h.store.pagination.status, 'deferred');
+  h.reply(h.take(), historyRange(60, 41), 'recovered', true, 60, 1);
+  await pending;
+  assert.equal(h.store.pagination.status, 'ready');
+  assert.equal(h.store.rows.length, 40);
+}
+
+async function testOlderHistorySuccessKeepsKeyboardFocus() {
+  for (const outcome of ['more', 'complete', 'focus-moved']) {
+    const h = harness();
+    await h.load([row(3)], true, 3);
+    const ui = historyControlViewport(h);
+    const frames = [];
+    h.context.requestAnimationFrame = callback => frames.push(callback);
+    h.context.scheduleRender = () => frames.push(() => ui.render());
+    h.context.view = 'list';
+    ui.render();
+    ui.control('older').focus();
+    const older = ui.control('older').attrs.onclick();
+    if (outcome === 'focus-moved') ui.control('refresh').focus();
+    h.reply(h.take(), outcome === 'complete' ? [row(2), row(1)] : [row(2)],
+      'older', outcome !== 'complete', 3);
+    await older;
+    while (frames.length) frames.shift()();
+    assert.equal(h.context.document.activeElement, outcome === 'focus-moved'
+      ? ui.control('refresh')
+      : h.context.document.querySelector('li[data-shot-id="2"] .shot-open-link'),
+      outcome + ': pagination remount lost or stole focus');
+  }
+}
+
+function historyControlViewport(h) {
+  let root;
+  function query(node, selector) {
+    const id = selector.match(/data-shot-id="(\d+)"/)?.[1];
+    if (id) {
+      node = node && findElement(node, item => item.dataset?.shotId === id);
+      if (!selector.endsWith('.shot-open-link')) return node;
+      selector = '.shot-open-link';
+    }
+    const action = selector.match(/^\[data-history-action="(\w+)"\]$/)?.[1];
+    return node && findElement(node, item => action
+      ? item.attrs?.['data-history-action'] === action
+      : selector.startsWith('.') ? item.classList?.contains(selector.slice(1))
+      : item.tag === (selector === 'ul.shotlist' ? 'ul' : selector));
+  }
+  h.context.window = { scrollY: 0, scrollTo(_x, y) { this.scrollY = y; } };
+  h.context.document.body = {};
+  h.context.document.activeElement = h.context.document.body;
+  h.context.el = (tag, attrs, ...children) => {
+    const node = element(tag, attrs, ...children);
+    node.classList = { contains: name => (node.attrs.class || '').split(/\s+/).includes(name) };
+    node.getAttribute = name => node.attrs[name];
+    node.focus = () => {
+      if (!node.attrs.disabled) h.context.document.activeElement = node;
+    };
+    node.contains = target => !!findElement(node, item => item === target);
+    node.closest = selector => selector === 'li[data-shot-id]'
+      ? findElement(root, item => item.tag === 'li' && item.contains(node)) : null;
+    node.querySelector = selector => query(node, selector);
+    node.querySelectorAll = selector => {
+      const matches = [];
+      findElement(node, item => { if (item.tag === selector) matches.push(item); return false; });
+      return matches;
+    };
+    node.getBoundingClientRect = () => ({ top: 0, bottom: 250 });
+    return node;
+  };
+  h.context.document.querySelector = selector => query(root, selector);
+  return {
+    leave() {
+      root = element('main');
+      h.context.document.activeElement = h.context.document.body;
+    },
+    render() {
+      if (root) h.context.rememberHistoryListPosition();
+      h.context.document.activeElement = h.context.document.body;
+      root = element('main');
+      h.context.renderList(root);
+      return root;
+    },
+    control(action) {
+      return h.context.document.querySelector(`[data-history-action="${action}"]`);
+    },
+  };
+}
+
+async function testRefreshKeepsControlFocus() {
+  for (const initial of ['empty', 'complete', 'more']) {
+    const h = harness();
+    await h.load(initial === 'empty' ? [] : [row(2)], initial === 'more',
+      initial === 'empty' ? 0 : initial === 'more' ? 2 : 1);
+    const ui = historyControlViewport(h);
+    ui.render();
+    ui.control('refresh').focus();
+    const refresh = ui.control('refresh').attrs.onclick();
+    ui.render();
+    assert.equal(h.context.document.activeElement, ui.control('refresh'));
+    assert.equal(ui.control('refresh').attrs['aria-label'], 'Refreshing history');
+    assert.equal(ui.control('refresh').attrs['aria-busy'], 'true');
+    assert.equal(ui.control('refresh').attrs['aria-disabled'], 'true');
+    h.take().reject(new Error('offline'));
+    await refresh;
+    ui.render();
+    assert.equal(h.context.document.activeElement, ui.control('refresh'));
+    assert.equal(ui.control('refresh').attrs['aria-busy'], undefined);
+
+    const action = initial === 'empty' ? 'refresh' : 'older';
+    ui.control(action).focus();
+    const retry = ui.control(action).attrs.onclick();
+    ui.render();
+    assert.equal(h.context.document.activeElement, ui.control(action));
+    assert.equal(ui.control(action).attrs.disabled, undefined);
+    assert.equal(ui.control(action).attrs['aria-disabled'], 'true');
+    h.reply(h.take(), initial === 'empty' ? [] : [row(2)], 'recovered',
+      initial === 'more', initial === 'empty' ? 0 : initial === 'more' ? 2 : 1);
+    await retry;
+    ui.render();
+    assert.equal(h.context.document.activeElement,
+      ui.control(initial === 'complete' ? 'refresh' : action),
+      initial + ': refresh completion lost focus');
+    h.context.rememberHistoryListPosition();
+    ui.leave();
+    ui.render();
+    assert.equal(h.context.document.activeElement,
+      ui.control(initial === 'complete' ? 'refresh' : action),
+      initial + ': returning from another view overwrote the saved focus');
+  }
+}
+
+async function testRefreshFailureHasOneMessage() {
+  const h = harness();
+  await h.load([row(2)], true, 2);
+  h.context.document.querySelector = () => null;
+  for (const action of ['refresh', 'older']) {
+    const button = findElement(renderedHistory(h), node =>
+      node.attrs?.['data-history-action'] === action);
+    const refresh = button.attrs.onclick();
+    h.take().reject(new Error('offline'));
+    await refresh;
+    const root = renderedHistory(h);
+    const messages = [];
+    findElement(root, node => {
+      if (node.attrs?.id === 'history-refresh-error') messages.push(node);
+      return false;
+    });
+    assert.equal(messages.length, 1, 'refresh failure appeared twice');
+    assert.equal(messages[0].attrs.role, undefined,
+      'remounting a refresh failure would announce it again');
+    const paging = findElement(root, node => node.attrs?.class === 'history-pagination');
+    assert.equal(!!findElement(paging, node => node === messages[0]), action === 'older',
+      'refresh failure was not beside its initiating action');
+    const retry = findElement(root, node =>
+      node.attrs?.['data-history-action'] === action);
+    assert.equal(retry.attrs['aria-describedby'], messages[0].attrs.id);
+  }
+}
+
+async function testRefreshRetryWaitsForStorage() {
+  const h = harness();
+  await h.load([row(2)], true, 2);
+  h.context.document.querySelector = () => null;
+  const refresh = h.store.refreshLoaded();
+  h.take().reject(new Error('offline'));
+  await refresh;
+  h.store.observeDeviceState('unknown', false, false);
+  const retry = findElement(renderedHistory(h), node =>
+    node.attrs?.['data-history-action'] === 'older');
+  assert(retry.children.includes('Retry'));
+  assert.equal(retry.attrs['aria-disabled'], 'true');
+  assert.equal(retry.attrs.disabled, undefined);
+  assert.equal(retry.attrs.onclick(), undefined);
+  assert.equal(h.pages.length, 0, 'unavailable Retry started a transfer');
+}
+
+async function testBackgroundRefreshFailureUsesHeading() {
+  for (const previousResult of ['success', 'failure']) {
+    for (const cause of ['reconnect', 'shot-saved']) {
+      const h = harness({ automatic: true });
+      await h.load([row(3), row(2)], true, 3);
+      h.context.document.querySelector = () => null;
+      const refresh = h.store.refreshLoaded();
+      h.take().reject(new Error('initial refresh failed'));
+      await refresh;
+      const retryButton = findElement(renderedHistory(h), node =>
+        node.attrs?.['data-history-action'] === 'older');
+      const retry = retryButton.attrs.onclick();
+      const request = h.take();
+      if (previousResult === 'success') h.reply(request, [row(3), row(2)], 'retried', true, 3);
+      else request.reject(new Error('footer retry failed'));
+      await retry;
+      if (previousResult === 'failure') {
+        const paging = findElement(renderedHistory(h), node =>
+          node.attrs?.class === 'history-pagination');
+        assert(findElement(paging, node => node.attrs?.id === 'history-refresh-error'));
+      }
+      if (cause === 'reconnect') h.store.sessionStarted();
+      const background = cause === 'reconnect'
+        ? h.store.observeDeviceState('ready') : h.store.shotSaved();
+      h.take().reject(new Error('background refresh failed'));
+      await background;
+      const root = renderedHistory(h);
+      const paging = findElement(root, node => node.attrs?.class === 'history-pagination');
+      assert(findElement(root, node => node.attrs?.id === 'history-refresh-error'));
+      assert(!findElement(paging, node => node.attrs?.id === 'history-refresh-error'),
+        cause + ' after footer ' + previousResult + ': background error stayed in footer');
+      assert.equal(h.store.rows.length, 2);
+    }
+  }
+}
+
+async function testHistoryOverscrollStaysAtTop() {
+  const h = harness();
+  await h.load([row(90), row(89)]);
+  const { viewport, list, card } = historyViewport(h);
+  viewport.scrollY = -16;
+  h.context.rememberHistoryListPosition();
+  viewport.scrollY = 0;
+  for (const item of list.children) item.top += 250;
+  list.children.unshift(card(91, 5500));
+  renderedHistory(h);
+  assert.equal(viewport.scrollY, 0, 'overscrolling hid a new shot above the screen');
+  assert.equal(viewport.scrollCalls, 0);
+}
+
 (async () => {
   const active = [
     testPageWrites, testUncachedWritesAndConditionalResponses,
@@ -1587,6 +2243,18 @@ async function testLastShotRefreshPreservesOpenDetail() {
     testConflictDraftCanBeRecovered, testOverlappingWritesConfirmedInRequestOrder,
     testRecipeRefreshOutcomes, testBackToDraftRequiresOverwriteChoice,
     testMetadataDownloadsIdentifyDrafts,
+    testHistoryReturnKeepsCardPosition, testHistoryReturnWhenCardWasRemoved,
+    testReconnectPreservesOlderHistoryAndRetry, testReconnectResetsUnrelatedHistory,
+    testPaginationRejectsChangedStoreIdentity,
+    testManualRefreshUpdatesLoadedRange, testManualRefreshFailureAndRetry,
+    testManualRefreshOrdersWritesAndPagination, testManualRefreshCancelledByReconnect,
+    testManualRefreshSharesTransferBudget, testManualRefreshRetriesShareOverallDeadline,
+    testEmptyHistoryCanBeRefreshed,
+    testHistoryTopAndUnchangedPosition, testDeferredHistoryFooterOffersRecovery,
+    testOlderHistorySuccessKeepsKeyboardFocus,
+    testRefreshKeepsControlFocus, testRefreshFailureHasOneMessage,
+    testRefreshRetryWaitsForStorage, testBackgroundRefreshFailureUsesHeading,
+    testHistoryOverscrollStaysAtTop,
   ];
   for (const scenario of active) {
     await test(scenario.name, async () => {

@@ -184,6 +184,7 @@ function bannerFlashActive() {
 
 function render() {
   const app = document.getElementById('app');
+  if (view === 'list') rememberHistoryListPosition();
   app.replaceChildren();
   renderBanner();
   synchronizeMetadataOverlayState();
