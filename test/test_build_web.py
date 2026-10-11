@@ -2,8 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import importlib.util
+from html.parser import HTMLParser
 from pathlib import Path
+import struct
+import tempfile
 import unittest
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -16,8 +20,87 @@ SPEC.loader.exec_module(build_web)
 
 
 class BuildWebTest(unittest.TestCase):
+    def test_static_assets_are_copied_and_removed_with_their_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "web-src"
+            output = root / "web"
+            (source / "assets/nested").mkdir(parents=True)
+            asset = source / "assets/nested/icon.png"
+            content = b"\x89PNG\r\n\x1a\n\x00\xff"
+            asset.write_bytes(content)
+            with patch.multiple(build_web, SRC_DIR=source, OUT_DIR=output):
+                self.assertEqual(build_web.build(), (0, 0))
+                copied = output / "assets/nested/icon.png"
+                self.assertEqual(copied.read_bytes(), content)
+                asset.unlink()
+                self.assertEqual(build_web.build(), (0, 1))
+                self.assertFalse(copied.exists())
+
+    def test_static_html_is_copied_without_page_processing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "web-src"
+            output = root / "web"
+            (source / "assets").mkdir(parents=True)
+            (source / "home").mkdir()
+            content = '<!doctype html><title>{{PUMP_BUG_VERSION}}</title>'
+            (source / "assets/index.html").write_text(content)
+            (source / "home/index.html").write_text(content)
+            with patch.multiple(build_web, SRC_DIR=source, OUT_DIR=output):
+                self.assertEqual(build_web.build(), (1, 0))
+                self.assertEqual((output / "assets/index.html").read_text(), content)
+                self.assertNotIn(
+                    "{{PUMP_BUG_VERSION}}", (output / "home/index.html").read_text()
+                )
+                (source / "assets/index.html").unlink()
+                self.assertEqual(build_web.build(), (1, 1))
+                self.assertFalse((output / "assets/index.html").exists())
+
+    def test_missing_static_output_is_rebuilt_with_an_unchanged_stamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "web-src"
+            output = root / "web"
+            (source / "assets").mkdir(parents=True)
+            (source / "assets/icon.svg").write_text("<svg />")
+            stamp = root / "stamp"
+            with patch.multiple(build_web, SRC_DIR=source, OUT_DIR=output, STAMP=stamp):
+                build_web.main()
+                original_stamp = stamp.read_bytes()
+                copied = output / "assets/icon.svg"
+                copied.unlink()
+                build_web.main()
+                self.assertEqual(copied.read_text(), "<svg />")
+                self.assertEqual(stamp.read_bytes(), original_stamp)
+
+    def test_every_page_links_to_the_shipped_icons(self):
+        class IconLinks(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.links = []
+
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if tag == "link" and attrs.get("rel") in ("icon", "apple-touch-icon"):
+                    self.links.append(attrs)
+
+        for page in build_web.gather_pages():
+            with self.subTest(page=page.relative_to(build_web.SRC_DIR)):
+                parser = IconLinks()
+                parser.feed(build_web.inline_html(page))
+                self.assertEqual(len(parser.links), 3)
+                for link in parser.links:
+                    path = build_web.SRC_DIR / link["href"].lstrip("/")
+                    self.assertTrue(path.is_file(), str(path))
+                    if path.suffix == ".png":
+                        png = path.read_bytes()
+                        self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+                        width, height = struct.unpack(">II", png[16:24])
+                        self.assertEqual(link["sizes"], f"{width}x{height}")
+
     def test_generated_pages_have_one_aggregate_spdx_header(self):
-        pages = sorted(build_web.SRC_DIR.rglob("index.html"))
+        pages = build_web.gather_pages()
         self.assertTrue(pages)
 
         for page in pages:

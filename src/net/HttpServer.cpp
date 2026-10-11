@@ -342,6 +342,12 @@ void HttpServer::_sendMdnsRedirect(WebServer& server) {
   body += product::PRODUCT_NAME;
   body +=
       "</title>"
+      "<link rel=\"icon\" href=\"/assets/favicon.png\" type=\"image/png\" "
+      "sizes=\"32x32\">"
+      "<link rel=\"icon\" href=\"/assets/favicon.svg\" type=\"image/svg+xml\" "
+      "sizes=\"any\">"
+      "<link rel=\"apple-touch-icon\" href=\"/assets/apple-touch-icon.png\" "
+      "sizes=\"180x180\">"
       "<style>"
       "body{font:14px ui-monospace,\"SF Mono\",Menlo,monospace;"
       "background:#000;color:#fff;padding:32px 16px;text-align:center;"

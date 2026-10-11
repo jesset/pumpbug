@@ -75,6 +75,10 @@ name does not resolve, use the IP address shown on the same device screen. An
 IP address can change when the router reconnects the device, so the hostname
 is preferable when it works.
 
+On iPhone or iPad, you can add Pump Bug to the home screen by opening the
+sharing menu in Safari and choosing `Add to Home Screen`. You may need to pair
+again when opening it from there.
+
 The home page has three areas:
 
 - `Shot Dashboard` opens the Live and History views.

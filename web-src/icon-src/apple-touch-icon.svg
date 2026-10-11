@@ -1,0 +1,46 @@
+<!-- SPDX-FileCopyrightText: 2026 ludable -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+
+<!-- Export apple-touch-icon.png as an opaque 180x180 RGB PNG without an alpha
+     channel. Preserve colour information and omit EXIF, XMP and resolution metadata.
+     Browser-tab drawing: ../assets/favicon.svg. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>Pump Bug</title>
+  <defs>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#e1e3e4" />
+      <stop offset=".45" stop-color="#f2f3f3" />
+      <stop offset="1" stop-color="#cdd1d3" />
+    </linearGradient>
+  </defs>
+  <path fill="url(#metal)" d="M0 0h512v512H0z" />
+  <g transform="rotate(-7 256 256)">
+    <path fill="none" stroke="#1b1917" stroke-width="20"
+          stroke-linecap="round" stroke-linejoin="round"
+          d="M142 182h-26q-20 0-26 22l-4 12
+             M142 282h-26q-20 0-26 22l-4 12
+             M142 382h-26q-20 0-26 22l-4 12
+             M370 182h26q20 0 26 22l4 12
+             M370 282h26q20 0 26 22l4 12
+             M370 382h26q20 0 26 22l4 12" />
+    <rect x="135" y="65" width="242" height="382" rx="46"
+          fill="#383431" stroke="#1b1917" stroke-width="18" />
+    <rect x="161" y="98" width="190" height="180" rx="28" fill="#ded0b8" />
+    <g fill="#634932" stroke="#ded0b8" stroke-width="6" stroke-linecap="round">
+      <g transform="rotate(-24 212 164)">
+        <ellipse cx="212" cy="164" rx="24" ry="27" stroke="none" />
+        <path fill="none" d="M210 137c19 17-15 37 5 54" />
+      </g>
+      <g transform="rotate(24 301 164)">
+        <ellipse cx="301" cy="164" rx="24" ry="27" stroke="none" />
+        <path fill="none" d="M303 137c-19 17 15 37-5 54" />
+      </g>
+    </g>
+    <path fill="none" stroke="#634932" stroke-width="3"
+          stroke-linecap="round" stroke-linejoin="round"
+          transform="translate(229 199) scale(2.45)"
+          d="M2 12h5l3-8 4 16 3-8h5" />
+    <rect x="200" y="329" width="112" height="38" rx="19"
+          fill="#c7b08b" stroke="#1b1917" stroke-width="12" />
+  </g>
+</svg>

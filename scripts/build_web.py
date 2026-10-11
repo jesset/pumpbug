@@ -10,7 +10,8 @@ file's leading SPDX lines. One SPDX block is emitted for the generated page;
 the remaining JS content is passed through unchanged.
 
 The output mirrors the web-src/ tree under web/, where embed_web.py picks
-it up and gzips each file as a static asset. Generated HTML files carry a
+it up and gzips each file as a static asset. Files in web-src/assets/ are
+copied unchanged to web/assets/. Generated HTML files carry a
 "do not edit" banner; only files under web-src/ should be edited by hand.
 
 Outputs are only rewritten when sources change (tracked via a stamp file)
@@ -258,6 +259,17 @@ def gather_sources():
     return sorted(p for p in SRC_DIR.rglob("*") if p.is_file())
 
 
+def gather_static_assets():
+    return sorted(p for p in (SRC_DIR / "assets").rglob("*") if p.is_file())
+
+
+def gather_pages():
+    return sorted(
+        p for p in SRC_DIR.rglob("index.html")
+        if p.relative_to(SRC_DIR).parts[0] != "assets"
+    )
+
+
 def compute_hash(sources) -> str:
     h = hashlib.sha256()
     # Include this script's own bytes so edits to the inliner invalidate
@@ -275,7 +287,7 @@ def compute_hash(sources) -> str:
 
 
 def build() -> tuple[int, int]:
-    pages = sorted(SRC_DIR.rglob("index.html"))
+    pages = gather_pages()
     expected = set()
     for src in pages:
         rel = src.relative_to(SRC_DIR)
@@ -284,12 +296,22 @@ def build() -> tuple[int, int]:
         out.write_text(inline_html(src))
         expected.add(out.resolve())
 
-    # Remove generated index.html files whose source has been deleted or
-    # renamed; otherwise embed_web.py would keep embedding stale pages.
+    for src in gather_static_assets():
+        out = OUT_DIR / src.relative_to(SRC_DIR)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(src.read_bytes())
+        expected.add(out.resolve())
+
+    # Remove generated pages and copied assets whose sources have been deleted
+    # or renamed; otherwise embed_web.py would keep embedding stale files.
     removed = 0
     if OUT_DIR.is_dir():
         for stale in OUT_DIR.rglob("index.html"):
             if stale.resolve() not in expected:
+                stale.unlink()
+                removed += 1
+        for stale in (OUT_DIR / "assets").rglob("*"):
+            if stale.is_file() and stale.resolve() not in expected:
                 stale.unlink()
                 removed += 1
     return len(pages), removed
@@ -304,13 +326,13 @@ def main() -> None:
         STAMP.exists()
         and STAMP.read_text().strip() == current
         and all((OUT_DIR / p.relative_to(SRC_DIR)).exists()
-                for p in SRC_DIR.rglob("index.html"))
+                for p in [*gather_pages(), *gather_static_assets()])
     ):
         return
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     n, removed = build()
     STAMP.write_text(current + "\n")
-    suffix = f", removed {removed} stale page(s)" if removed else ""
+    suffix = f", removed {removed} stale file(s)" if removed else ""
     print(f"[build_web] inlined {n} page(s) from web-src/{suffix}")
 
 

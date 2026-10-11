@@ -2,8 +2,13 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 
 @import "../shared/ui.css";
+body { padding-top: 32px; }
 a { color: var(--accent); }
-.page-head { margin-bottom: 20px; }
+.page-head { justify-content: center; margin-bottom: 20px; }
+.page-head h1 {
+  margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em;
+}
+.brand-icon { display: block; flex-shrink: 0; border-radius: 10px; }
 .msg {
   padding: 12px 14px; margin: 0 0 16px;
   border-radius: 8px; font-size: 0.8125rem;
