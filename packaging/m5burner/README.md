@@ -43,10 +43,20 @@ In the macOS application, choose **Start** without pressing the separate
 **Erase** button. In web M5Burner, clear **Erase whole flash before burning
 (recommended)** before choosing **Start**.
 
-Test the catalog package on a device before publishing each release. The first
-test installation from 0.1.x must preserve shots and reset settings. Configure
-the device again, install the same package a second time without a full-chip
-erase, and confirm that both settings and shots remain.
+Test the catalog package on a device before publishing each release, always
+installing without a full-chip erase. Each check starts from a device running
+the named release.
+
+**From the previous release.** Configure Wi-Fi, pairing and a target alert, and
+record a few shots. Install the package and confirm that the settings and shots
+remain. Save details on a shot recorded by the previous release, reopen it, and
+confirm that its recording and details are intact. Install the same package
+again and confirm that settings, shots and the saved details remain.
+
+**From 0.1.x.** Record a few shots. Install the package and confirm that the
+shots remain and settings have been reset once. Configure the device again,
+install the same package a second time, and confirm that both settings and
+shots remain.
 
 For a package-only rerun using an existing release build:
 

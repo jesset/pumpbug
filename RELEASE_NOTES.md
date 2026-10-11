@@ -1,5 +1,77 @@
 # Release Notes
 
+## v0.3.0
+
+With v0.3.0, your shot history can include how each shot was prepared and how
+it tasted, alongside its measured yield and timing. You can add coffee and
+preparation details, compare shots made with the same coffee, and reuse a saved
+recipe for the next shot.
+
+This version also includes a much enhanced web experience and many reliability
+improvements.
+
+### Prepare the next shot
+
+Using the web interface, you can now enter the coffee details and preparation
+for your next shot, or reuse a previous shot's recipe. Set the grind, dose and
+target yield, and apply the recipe's target to the device's yield alert.
+
+If the browser is connected while brewing, the recipe selected at the start
+is attached to the completed shot.
+
+### Record the results
+
+After brewing, add a rating, tasting notes or tags to keep what you tasted
+with what you measured. You can also edit the coffee and preparation details,
+or add them to shots already in your history.
+
+If you measure TDS, enter it with the dose to calculate extraction yield from
+the recorded beverage weight.
+
+### Browse history by coffee
+
+You can now group shots with the same coffee (name, roaster and roast date
+must match). Open a stack to compare shots made with that coffee, then return
+to the grouped view. Stacks include the shots loaded in the browser; loading
+older history can add more shots to a coffee's stack.
+
+There's also a new refresh button to pick up details changed in another
+browser.
+
+### Redesigned web experience
+
+The revamped Live dashboard puts current readings first, with the next-shot
+recipe and last-shot results below. Chart legends identify the plotted lines
+and pump events.
+
+Coffee, recipe and shot editors bring the related fields together, scroll
+independently on phones, and keep keyboard focus in place while the dashboard
+updates.
+
+The main menu, pairing, Wi-Fi settings and logs share the dashboard's visual
+design. Pump Bug also has an icon for browser tabs and Home Screen shortcuts.
+
+### Device usability
+
+- A completion tone signals that shot measurement has finished and the cup
+  can be removed.
+- Holding A while `LIVE` is idle tares the scale, including after a shot.
+- After a flush, the idle timer returns to the last shot's duration.
+- Opening saved shots, saving details and applying targets from the browser
+  postpone automatic sleep.
+
+### Reliability
+
+- Brief scale disturbances when lifting the cup after the pump stops are less
+  likely to throw off the recovered final yield.
+- Newly recorded shots are verified after saving and include integrity checks
+  to help detect damaged recordings.
+- Shot-details drafts stay editable while the device sleeps and can be saved
+  after it wakes or restarts. If another browser changes the saved details,
+  you can review both versions before choosing which to keep.
+- If Pump Bug can't join the saved Wi-Fi network at startup, you can now retry
+  from the device without restarting it or repeating setup.
+
 ## v0.2.0
 
 Settings will now survive subsequent updates. Until now, every M5Burner
