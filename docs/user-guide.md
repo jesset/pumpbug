@@ -46,33 +46,33 @@ A full-chip erase deletes all device data.
 
 Back up important shots before installing firmware.
 
-### M5Burner
+### WebBurner
 
-M5Burner is the recommended installation method for most users. It is M5Stack's
-official firmware installer for Windows, macOS, and Linux.
+[WebBurner](https://burner.m5stack.com/) is M5Stack's browser-based firmware
+installer and the recommended installation method for most users. From 0.3.0
+onward, Pump Bug is published only in the WebBurner catalog. Use a computer
+with a browser that supports USB serial access, such as desktop Chrome.
 
-1. Download and install [M5Burner from M5Stack](https://docs.m5stack.com/en/uiflow/m5burner/intro).
-2. Open M5Burner, search for **Pump Bug**, and download it from the StickS3
-   catalog.
-3. Connect the M5StickS3 directly to the computer with a USB data cable.
+1. Open WebBurner on the computer.
+2. Connect the M5StickS3 directly to the computer with a USB data cable.
+3. Choose **StickS3** in the catalog and search for **Pump Bug**.
 4. On the Pump Bug firmware page, select the latest stable version from the
    version menu, then choose **Burn**.
-5. M5Burner identifies Pump Bug as unofficial firmware. Review its notice and
-   choose **Continue**.
-6. In the burn dialog, select the device's serial port and leave the baud rate
-   at its default. In the macOS application, choose **Start** without pressing
-   the separate **Erase** button. In web M5Burner, clear **Erase whole flash
-   before burning (recommended)**, then choose **Start**.
-7. Wait until M5Burner reaches `Finished` without reporting any errors. It
+5. If an unofficial-firmware notice appears, review it and choose **Continue**.
+   When the browser asks for serial access, select the device's USB serial
+   port and grant access.
+6. Leave the baud rate at its default. Uncheck **Erase whole flash before
+   burning (recommended)** to preserve device data, then choose **Start**.
+7. Wait until WebBurner reaches `Finished` without reporting any errors. It
    normally puts the device into download mode and restarts it automatically.
 8. Once Pump Bug has started, disconnect the cable if desired.
 
-If M5Burner cannot start the installation, put the M5StickS3 into download mode
+If WebBurner cannot start the installation, put the M5StickS3 into download mode
 manually: hold its side power/reset button for about two seconds, then release
-it when the internal green LED flashes. The screen may remain blank. Refresh
-the port list afterward, since the device may reconnect with a different port
-name. If the device does not restart after M5Burner reaches `Finished`, press
-the side power/reset button once.
+it when the internal green LED flashes. The screen may remain blank. Select
+the USB serial port again afterward, since the device may reconnect with a
+different port name. If it does not restart after WebBurner reaches `Finished`,
+press the side power/reset button once.
 
 Do not disconnect the USB cable while the firmware is being written.
 
@@ -395,7 +395,7 @@ pairings, counters, and stored diagnostics from the flash areas used by the
 installed firmware, then restarts the device. It does not erase unused flash
 areas, which may contain data left by another firmware version. Before
 transferring the device to someone else, perform a full-chip erase with
-M5Burner. Download anything you want to keep before either operation.
+WebBurner. Download anything you want to keep before either operation.
 
 ## Troubleshooting
 

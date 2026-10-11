@@ -15,8 +15,10 @@ dist/pump-bug-<version>.bin
 dist/SHA256SUMS
 ```
 
-The `.bin` is a merged image starting at flash offset `0x0000`. M5Burner's web
-and macOS publishing tools accept this file as the hardware package.
+The `.bin` is a merged image starting at flash offset `0x0000`. Use
+[WebBurner](https://burner.m5stack.com/) to upload it as the hardware package
+and manage Pump Bug's catalog listing and release versions. Releases from
+0.3.0 onward are published only through WebBurner.
 
 The StickS3 image layout is fixed by PlatformIO and the project's partition
 table:
@@ -39,13 +41,17 @@ Pump Bug 0.1.x and resets settings once at the relocated NVS address. Later
 updates installed without a full-chip erase preserve both settings and shots.
 A full-chip erase deletes all device data.
 
-In the macOS application, choose **Start** without pressing the separate
-**Erase** button. In web M5Burner, clear **Erase whole flash before burning
-(recommended)** before choosing **Start**.
+In WebBurner, uncheck **Erase whole flash before burning (recommended)**
+before choosing **Start**. See the
+[installation instructions](../../docs/user-guide.md#webburner)
+for browser requirements, USB serial access and download-mode troubleshooting.
 
-Test the catalog package on a device before publishing each release, always
-installing without a full-chip erase. Each check starts from a device running
-the named release.
+Before publishing, confirm that Pump Bug's StickS3 listing and the candidate
+version are available in WebBurner for testing.
+
+Test the catalog package through WebBurner on a device before publishing each
+release, always installing without a full-chip erase. Each check starts from a
+device running the named release.
 
 **From the previous release.** Configure Wi-Fi, pairing and a target alert, and
 record a few shots. Install the package and confirm that the settings and shots
