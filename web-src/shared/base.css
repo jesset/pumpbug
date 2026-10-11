@@ -26,8 +26,3 @@ html, body {
 }
 body { padding: 24px 16px; max-width: 480px; margin: 0 auto; }
 h1 { font-size: 1.2rem; margin: 0 0 24px; color: var(--accent); }
-.home {
-  display: inline-block; margin: 0 0 12px;
-  font-size: 0.8125rem; color: var(--dim); text-decoration: none;
-}
-.home:hover { color: var(--accent); }

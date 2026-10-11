@@ -1,7 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 ludable */
 /* SPDX-License-Identifier: AGPL-3.0-only */
 
-/* Shared interface palette, typography, icons and page headers. Import this
+/* Shared interface palette, typography and component styles. Import this
    before page-specific rules; it includes the defaults from base.css. */
 @import "./base.css";
 
@@ -12,6 +12,8 @@
   --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --measurement-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --primary-fill: #176b99;
+  --selected-bg: #283743;
+  --selected-fg: #a8dcff;
 }
 html, body { font-family: var(--ui-font); }
 body { padding-top: 16px; }
@@ -25,4 +27,18 @@ body { padding-top: 16px; }
 .page-head h1 {
   font-size: 19px; font-weight: 650; color: var(--fg);
   margin: 0; margin-right: auto; letter-spacing: -0.03em;
+}
+.page-head .home {
+  display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; flex-shrink: 0; margin: 0 -8px 0 0;
+  color: var(--dim); text-decoration: none;
+}
+.page-head .home:hover { color: var(--accent); }
+button:focus-visible, a:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 3px;
+}
+.tabs button:focus-visible { outline-offset: -2px; }
+.panel {
+  padding: 16px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 10px;
 }

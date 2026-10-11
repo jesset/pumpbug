@@ -20,7 +20,6 @@ a { color: var(--accent); }
   color: var(--fg);
 }
 .card:hover { border-color: var(--accent); }
-a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .destination-icon { width: 24px; height: 24px; color: var(--accent); }
 .card-copy { min-width: 0; flex: 1; }
 .card-title { display: block; font-size: 1rem; font-weight: 600; }

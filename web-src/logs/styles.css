@@ -7,20 +7,12 @@ body { max-width: 720px; }
 a { color: var(--accent); }
 .muted { color: var(--dim); font-size: 0.8125rem; line-height: 1.5; }
 .empty { padding: 16px 0; margin: 0; }
-.log-panel {
-  padding: 16px; background: var(--surface);
-  border: 1px solid var(--border); border-radius: 10px;
-}
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
 
 .page-head { margin-bottom: 20px; }
-.page-head .home {
-  display: flex; align-items: center; justify-content: center;
-  width: 44px; height: 44px; flex-shrink: 0; margin: 0 -8px 0 0;
-}
 #copy-log {
   min-height: 44px; padding: 8px 12px; font: inherit; font-size: 0.8125rem;
   background: transparent; color: var(--accent);
@@ -28,9 +20,6 @@ a { color: var(--accent); }
 }
 #copy-log:hover:not(:disabled) { text-decoration: underline; }
 #copy-log:disabled { color: var(--dim); cursor: default; opacity: 0.65; }
-button:focus-visible, a:focus-visible, .table-scroll:focus-visible {
-  outline: 2px solid var(--accent); outline-offset: 3px;
-}
 
 /* Tab bar */
 .tabs {
@@ -45,7 +34,7 @@ button:focus-visible, a:focus-visible, .table-scroll:focus-visible {
   border: 0; border-radius: 6px; cursor: pointer; line-height: 1.35;
 }
 .tab:hover { color: var(--fg); }
-.tab.active { color: #a8dcff; background: #283743; }
+.tab.active { color: var(--selected-fg); background: var(--selected-bg); }
 
 /* Section bar: row count + clear */
 .bar {
@@ -61,6 +50,7 @@ button:focus-visible, a:focus-visible, .table-scroll:focus-visible {
 
 /* Log table */
 .table-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
+.table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
 th {
   text-align: left; font-weight: normal; color: var(--dim);
