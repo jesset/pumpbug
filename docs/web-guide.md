@@ -383,6 +383,8 @@ The browser `Logs` page is mainly for troubleshooting and support. It contains:
 Most tabs require a paired browser. The crash summary remains readable without
 pairing so a crash that affected saved authorization does not hide the evidence.
 
+Choose `Copy log` to copy the current log, including its raw JSON, for support.
+
 Where shown, `Clear` permanently erases that diagnostic log after confirmation.
 It is not available for `BLE scan` or `Scale msgs`, and it does not delete shot
 history.

@@ -10,14 +10,20 @@
     <link data-inline rel="stylesheet" href="./styles.css">
   </head>
   <body>
-    <a class="home" href="/">← Home</a>
-    <div class="page-head">
+    <header class="page-head">
       <h1>Logs</h1>
-      <button id="copy-log" type="button" aria-label="Copy current log" disabled>Copy current log</button>
+      <button id="copy-log" type="button" disabled>Copy log</button>
+      <a class="home" href="/" aria-label="Home" title="Home">
+        <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" focusable="false">
+          <path d="m3 10 9-7 9 7M5 9v12h5v-7h4v7h5V9" />
+        </svg>
+      </a>
       <span id="copy-status" class="sr-only" role="status" aria-live="polite"></span>
-    </div>
-    <nav id="tabs" class="tabs"></nav>
-    <main id="app"><p class="muted">Loading…</p></main>
+    </header>
+    <nav id="tabs" class="tabs" aria-label="Diagnostic logs"></nav>
+    <main id="app" class="log-panel"><p class="muted">Loading…</p></main>
     <!-- api.js declares the fetch helpers; app.js declares state and kicks
          off the first poll at its bottom. -->
     <script data-inline src="./api.js"></script>

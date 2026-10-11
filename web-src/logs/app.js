@@ -7,7 +7,7 @@
 // Polling pauses while the page is hidden to spare the device's radio.
 
 const POLL_MS = 5000;
-const COPY_BUTTON_LABEL = 'Copy current log';
+const COPY_BUTTON_LABEL = 'Copy log';
 
 const TABS = [
   // `key` is the wire name (?log=) and COLS/cache key; `label` is the UI title.
@@ -255,13 +255,17 @@ function renderUnauthedContent() {
 
 function renderTabs() {
   const nav = document.getElementById('tabs');
-  nav.innerHTML = '';
-  TABS.forEach(t => {
-    const b = document.createElement('button');
+  TABS.forEach((t, index) => {
+    let b = nav.querySelector('button[data-log="' + t.key + '"]');
+    if (!b) {
+      b = document.createElement('button');
+      b.dataset.log = t.key;
+      b.textContent = t.label;
+      b.onclick = () => selectTab(t.key);
+      nav.insertBefore(b, nav.children[index] || null);
+    }
     b.className = 'tab' + (t.key === tab ? ' active' : '');
-    b.textContent = t.label;
-    b.onclick = () => selectTab(t.key);
-    nav.appendChild(b);
+    b.setAttribute('aria-pressed', t.key === tab ? 'true' : 'false');
   });
 }
 
@@ -363,11 +367,8 @@ function powerHtml(log) {
 // (no ETag). `busy` means an on-device app is holding the radio, so scanning is
 // paused; recognized scales are highlighted and floated to the top.
 function bleScanHtml(d) {
-  if (d.busy) {
-    return '<p class="muted empty">Scale in use — scan unavailable.</p>';
-  }
   // The scan is driven by the on-device firmware; the web view is read-only.
-  if (!d.active) {
+  if (d.busy || !d.active) {
     return '<p class="muted empty">Open <strong>Diagnostics → BLE scan</strong> ' +
       'on the device to start scanning.</p>';
   }
@@ -458,9 +459,37 @@ function renderTable() {
     html = barHtml(log, entries.length, 'entries') + tableHtml(COLS[tab], entries);
   }
 
+  const oldScrolls = Array.from(app.querySelectorAll('.table-scroll'));
+  const focusedScroll = oldScrolls.indexOf(document.activeElement);
+  const scrollLefts = oldScrolls.map(scroll => scroll.dataset.log === tab ? scroll.scrollLeft : 0);
+  const focusedClear = app.querySelector('button.clear') === document.activeElement &&
+    document.activeElement.dataset.log === tab;
   app.innerHTML = html;
+  // Keep wide diagnostic tables scrollable within the page. The wrapper
+  // takes keyboard focus so Safari users can scroll it with arrow keys.
+  app.querySelectorAll('table').forEach((table, index) => {
+    const scroll = document.createElement('div');
+    scroll.className = 'table-scroll';
+    scroll.dataset.log = tab;
+    scroll.tabIndex = 0;
+    scroll.setAttribute('role', 'region');
+    let section = table.previousElementSibling;
+    while (section && !section.classList.contains('section')) section = section.previousElementSibling;
+    const label = TABS.find(t => t.key === tab).label +
+      (section ? ' — ' + section.textContent : '') + ' log table';
+    scroll.setAttribute('aria-label', label);
+    table.before(scroll);
+    scroll.append(table);
+    scroll.scrollLeft = scrollLefts[index] || 0;
+    if (index === focusedScroll && oldScrolls[index].dataset.log === tab) {
+      scroll.focus({ preventScroll: true });
+    }
+  });
   const btn = app.querySelector('button.clear');
-  if (btn) btn.onclick = onClear;
+  if (btn) {
+    btn.onclick = onClear;
+    if (focusedClear) btn.focus({ preventScroll: true });
+  }
 }
 
 function render() {
@@ -486,7 +515,7 @@ function currentLogText() {
   const lines = ['Pump Bug logs: ' + title];
   let tables = 0;
 
-  document.querySelectorAll('#app > .section, #app > .bar, #app > table').forEach(el => {
+  document.querySelectorAll('#app > .section, #app > .bar, #app > .table-scroll').forEach(el => {
     if (el.classList.contains('section')) {
       lines.push('', '[' + el.textContent.trim() + ']');
       return;
