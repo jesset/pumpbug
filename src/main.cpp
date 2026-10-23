@@ -9,15 +9,19 @@
 #include "MainNavigation.h"
 #include "apps/backflush/BackflushScreen.h"
 #include "apps/extraction/ExtractionApp.h"
+#include "apps/machine/MachineStatusScreen.h"
 #include "apps/onboarding/OnboardingScreen.h"
 #include "apps/system/StorageRecoveryScreen.h"
 #include "apps/wifi/WifiStatusScreen.h"
 #include "ble/BleScaleService.h"
+#include "ble/lamarzocco/LmCloudClient.h"
+#include "ble/lamarzocco/LmMachineStore.h"
 #include "diagnostics/DiagnosticsModule.h"
 #include "diagnostics/HeapMonitor.h"
 #include "diagnostics/PanicDump.h"
 #include "diagnostics/reset_reason.h"
 #include "net/HttpServer.h"
+#include "net/MachineRoutes.h"
 #include "net/NetworkServicesHost.h"
 #include "net/SseServer.h"
 #include "net/WifiManager.h"
@@ -44,6 +48,13 @@ ExtractionApp extractionApp{vibrationSensor};
 BackflushScreen backflushScreen{vibrationSensor};
 OnboardingScreen onboardingScreen;
 WifiStatusScreen wifiStatusScreen;
+
+// La Marzocco machine link: provisioning data (NVS), the one-shot cloud
+// client used during setup, and the on-device status screen. The Bluetooth
+// link itself is described in docs/lamarzocco.md.
+LmMachineStore machineStore;
+lm::LmCloudClient machineCloud;
+MachineStatusScreen machineStatusScreen{machineStore};
 
 Menu mainMenu;
 NetworkServicesHost onlineServices;
@@ -99,6 +110,13 @@ void setup() {
   // automatically; other mount failures are presented by MainNavigation.
   storage::mount();
   extractionApp.begin();
+  machineStore.load();
+  {
+    // Feed the BLE manager the provisioned machine address (if any) before
+    // any screen can express link intent.
+    const LmMachineStore::Machine m = machineStore.snapshot();
+    if (m.provisioned) bleScale.setMachineAddress(m.address);
+  }
 
   // Seed wall clock from RTC (if present); SNTP fires later in loop()
   // once STA is up.
@@ -120,6 +138,7 @@ void setup() {
   onlineServices.registerBuiltInRoutes();
   diagnostics::registerPanicRoute(httpServer);
   extractionApp.registerWith(httpServer, sseServer);
+  registerMachineRoutes(httpServer, machineStore, machineCloud);
   diagnosticsModule.begin(httpServer);
   onlineServices.startIfConfigured();
 
@@ -133,6 +152,7 @@ void setup() {
       Menu::Item::open("Reset Counter", extractionApp.resetShotCounterScreen()),
       Menu::Item::open("Backflush", backflushScreen),
       Menu::Item::open("Wi-Fi", wifiStatusScreen),
+      Menu::Item::open("La Marzocco", machineStatusScreen),
   };
   mainMenuItems.push_back(
       Menu::Item::open("Diagnostics", diagnosticsModule.menu()));

@@ -379,6 +379,10 @@ bool WifiManager::retrySta(bool persist) {
   return startSta(ssid.c_str(), pass.c_str(), persist);
 }
 
+bool WifiManager::reapplyStaPowerSave() {
+  return setPowerSave(_staPowerSave.load(std::memory_order_relaxed));
+}
+
 bool WifiManager::setPowerSave(wifi::PowerSave mode) {
   const auto apply = [](wifi_ps_type_t requested) {
     // Keep Arduino's desired-mode cache aligned, then apply the mode directly.

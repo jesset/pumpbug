@@ -298,3 +298,27 @@ add_test(NAME test_extraction_header_js COMMAND "${NODE_EXECUTABLE}"
   "${PROJECT_SOURCE_DIR}/web-src/app/extraction/app.js"
   "${PROJECT_SOURCE_DIR}/web-src/app/extraction/constants.js"
   "${PROJECT_SOURCE_DIR}/web-src/app/extraction/stream.js")
+
+add_host_test(
+  test_lm_crypto
+  "${PROJECT_SOURCE_DIR}/src/ble/lamarzocco/LmCrypto.cpp"
+)
+add_host_test(
+  test_lm_notification
+  "${PROJECT_SOURCE_DIR}/src/ble/lamarzocco/LmNotification.cpp"
+  "${PROJECT_SOURCE_DIR}/src/ble/lamarzocco/LmJson.cpp"
+)
+add_host_test(
+  test_lm_cloud_models
+  "${PROJECT_SOURCE_DIR}/src/ble/lamarzocco/LmCloudModels.cpp"
+  "${PROJECT_SOURCE_DIR}/src/ble/lamarzocco/LmJson.cpp"
+)
+
+add_host_test(
+  test_brew_signal_mux
+  "${PROJECT_SOURCE_DIR}/src/ble/lamarzocco/BrewSignalMux.cpp"
+)
+
+add_host_test(
+  test_lm_gatt
+)

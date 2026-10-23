@@ -15,6 +15,9 @@ interface and a browser interface over Wi-Fi.
   browser, follow live extractions, manage history, and use diagnostic logs.
 - Open [the visual system overview](docs/overview.html) for the major components
   and the data that passes between them.
+- Read [the La Marzocco machine-link guide](docs/lamarzocco.md) for the
+  protocol, provisioning flow, and current status of the machine timing
+  source.
 - Read [`src/main.cpp`](src/main.cpp) for boot and runtime composition.
 - Read [`src/apps/extraction/ExtractionRecorder.h`](src/apps/extraction/ExtractionRecorder.h)
   for the extraction state machine.
@@ -116,6 +119,7 @@ wake behavior, and audio after changes to those areas.
 | `src/apps/backflush/` | Vibration-driven backflush timer  |
 | `src/vibration/` | Accelerometer processing and pump-window detection |
 | `src/ble/` | Acaia protocol, scale connection, and Bluetooth radio management |
+| `src/ble/lamarzocco/` | La Marzocco machine link: cloud provisioning, shot-counter codec, NVS store |
 | `src/net/` | Wi-Fi, authentication, HTTP, and server-sent events |
 | `src/power/` | Sleep, battery, scale-radio, and speaker power policy |
 | `src/ui/` | Display, navigation, layout, theme, and reusable controls |
@@ -139,6 +143,24 @@ when the recorder should consider scale readings.
 Start with [`src/vibration/VibrationSensor.cpp`](src/vibration/VibrationSensor.cpp)
 and
 [`src/vibration/VibrationWindowTrigger.h`](src/vibration/VibrationWindowTrigger.h).
+
+### Reading the machine (La Marzocco)
+
+On machines with the connected gateway module, Pump Bug reads the machine's
+own brew events over Bluetooth for exact pump timing. The gateway exposes
+two services — an operational one (token-gated) and a connection one (open,
+entered by holding the brew paddle left while powering on). Pump Bug tries
+both, so it works in either mode. When live, the machine's own brew timer
+replaces the accelerometer's 0.3–0.5 s detection window; if the link drops
+mid-shot, vibration takes over within the same tick.
+
+Setup runs from the web interface: a Bluetooth scan finds the machine, and
+a one-time cloud sign-in fetches its identity (credentials are not stored
+on the device). The device menu shows the link state and whether machine
+timing or vibration fallback is active.
+
+Start with [`docs/lamarzocco.md`](docs/lamarzocco.md) and
+[`src/ble/lamarzocco/`](src/ble/lamarzocco/).
 
 ### Reading the scale
 

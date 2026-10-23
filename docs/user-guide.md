@@ -322,6 +322,18 @@ for on-device measurement.
 Read the [Pump Bug web interface guide](web-guide.md) for Wi-Fi setup, browser
 pairing, history, settings, diagnostics, and browser troubleshooting.
 
+## La Marzocco machine link
+
+If your espresso machine is a La Marzocco with the connected module
+(Linea Mini, Linea Micra, GS3, and related models), the device can read the
+machine's own brew events over Bluetooth for exact shot timing instead of
+inferring the pump from vibration. Set it up from the web interface's
+**La Marzocco** card (see the web guide); the device menu's
+**La Marzocco** item shows the stored machine and can forget it.
+
+While Pump Bug uses the machine, the La Marzocco phone app and Home
+Assistant cannot — the machine talks to one Bluetooth client at a time.
+
 ## Espresso machine compatibility
 
 Pump Bug's vibration detection has been tested on a La Marzocco Linea Mini and

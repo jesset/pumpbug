@@ -16,6 +16,7 @@
 #include "ble/BleStartupRetryPolicy.h"
 #include "ble/ScanPolicy.h"
 #include "ble/bluetooth_controller_state.h"
+#include "ble/lamarzocco/LmNotification.h"
 #include "ble/scale_time.h"
 
 // Forward-declare NimBLE types so this header stays NimBLE-free for includers.
@@ -446,6 +447,39 @@ class BleScaleService {
   void disarmMessageLog();
   MsgLogSnapshot messageLogSnapshot() const;
 
+  // ---- La Marzocco machine link ------------------------------------------
+  //
+  // A second, independent central connection to the espresso machine's
+  // gateway (see docs/lamarzocco.md). Gateway firmware that removed the
+  // authentication characteristic (v7.4.x era) serves shot-counter
+  // notifications without any token, so the link needs only an address.
+  //
+  // All NimBLE work runs on this service's manager task like every other
+  // client; notification parsing happens on the BLE host task under a small
+  // mutex. The link never initiates while the scale state machine is using
+  // the radio to scan or connect, but an established machine connection
+  // coexists with the scale's.
+  struct MachineSnapshot {
+    enum class Link : uint8_t { Off, Idle, Backoff, Subscribed };
+    Link link = Link::Off;
+    uint32_t lastEventMs = 0;   // host time of the last parsed notification
+    uint32_t lastStopMs = 0;    // host time of the last derived stop/flush
+    bool brewing = false;       // machine currently reports a shot running
+    uint8_t notifications = 0;  // wrapped counter, diagnostics only
+    uint32_t nextAttemptMs = 0;
+  };
+
+  // Configure the machine's address (from provisioning storage) and express
+  // intent. Safe from any task; the manager task picks changes up.
+  void setMachineAddress(const uint8_t address[6]);
+  void setMachineWanted(bool wanted);
+  bool machineWanted() const {
+    return _machineWanted.load(std::memory_order_acquire);
+  }
+
+  // Atomic copy of the link state for the UI and web routes.
+  MachineSnapshot machineSnapshot() const;
+
  private:
   enum class CmdType : uint8_t {
     Tare,
@@ -454,6 +488,7 @@ class BleScaleService {
     SetScanPolicy,
     StopController,
     StartController,
+    MachineSetWanted,
   };
   struct Cmd {
     CmdType type;
@@ -547,6 +582,39 @@ class BleScaleService {
 
   NimBLEClient* _client = nullptr;
   NimBLERemoteCharacteristic* _writeChar = nullptr;
+
+  // --- La Marzocco machine link (manager-owned client) --------------------
+  enum class MachineLinkState : uint8_t {
+    Off,       // not wanted / not configured
+    Idle,      // wanted, waiting for a free radio moment
+    Backoff,   // connect or subscribe failed; retry at _machineNextAttemptMs
+    Subscribed // connected with shot-counter notifications armed
+  };
+  MachineLinkState _machineState = MachineLinkState::Off;
+  NimBLEClient* _machineClient = nullptr;
+  uint8_t _machineAddr[6] = {};
+  std::atomic<bool> _machineAddrSet{false};
+  std::atomic<bool> _machineWanted{false};
+  std::atomic<bool> _machineDisconnectFlag{false};
+  // First notification after a subscribe is the machine replaying its last
+  // state (possibly hours old) — drop it. Set by the manager before
+  // subscribing, cleared by the host task when the first notify lands.
+  std::atomic<bool> _machineReplayPending{false};
+  uint32_t _machineNextAttemptMs = 0;
+  uint32_t _machineBackoffMs = 1000;
+  // Single-writer (BLE host task) tracker for notification → state updates.
+  lm::LmBrewingTracker _machineTracker;
+  // Published snapshot (under _mutex).
+  MachineSnapshot _machineSnap;
+
+  class MachineClientCallbacks;
+  MachineClientCallbacks* _machineClientCallbacks = nullptr;
+
+  void serviceMachineLink(uint32_t nowMs);
+  bool machineRadioFree() const;
+  bool machineConnectAndSubscribe();
+  void teardownMachineClient();
+  void onMachineNotify(const uint8_t* data, size_t len, uint32_t nowMs);
 
   class ScanCallbacks;
   class ClientCallbacks;

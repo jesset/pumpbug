@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "AcaiaScaleDriver.h"
+#include "ble/lamarzocco/LmGatt.h"
 #include "diagnostics/RuntimeEventLog.h"
 #include "util/monotonic.h"
 
@@ -50,6 +51,10 @@ constexpr uint32_t HEARTBEAT_PERIOD_MS = 2000;
 constexpr uint32_t RESUBSCRIBE_PERIOD_MS = 1000;
 constexpr uint8_t MAX_RESUBSCRIBE_ATTEMPTS = 5;
 constexpr uint32_t MANAGER_TICK_MS = 100;
+// La Marzocco machine link tuning.
+constexpr uint32_t MACHINE_CONNECT_TIMEOUT_MS = 6000;
+constexpr uint32_t MACHINE_BACKOFF_MIN_MS = 1000;
+constexpr uint32_t MACHINE_BACKOFF_MAX_MS = 60000;
 constexpr uint32_t CONNECT_TIMEOUT_MS = 8000;
 constexpr uint8_t CMD_QUEUE_DEPTH = 8;
 constexpr int8_t NIMBLE_TX_POWER_DBM = 9;
@@ -61,6 +66,20 @@ bool initializeNimble() {
     M5_LOGE("BleScaleService: NimBLE init failed");
     return false;
   }
+  // The machine's shot-counter notifications are 60-120 byte JSON documents;
+  // at the default 23-byte ATT MTU they cannot be delivered at all. Request
+  // a larger MTU for every connection (the scale's short frames are
+  // unaffected).
+  NimBLEDevice::setMTU(247);
+  // Pair WITH bonding for the machine link: the gateway distinguishes
+  // bonded clients (keys stored) from merely-encrypted links, and gates its
+  // GATT (reads, notifications) behind the bond.
+  NimBLEDevice::setSecurityAuth(/*bonding=*/true, /*mitm=*/false,
+                                /*secureConnections=*/true);
+  NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC |
+                                   BLE_SM_PAIR_KEY_DIST_ID);
+  NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC |
+                                   BLE_SM_PAIR_KEY_DIST_ID);
   if (!NimBLEDevice::setPower(NIMBLE_TX_POWER_DBM)) {
     M5_LOGE("BleScaleService: NimBLE transmit-power setup failed");
     NimBLEDevice::deinit(false);
@@ -436,6 +455,7 @@ void BleScaleService::managerLoop() {
       enterMode(_mode);
     }
     runMode(_mode);
+    serviceMachineLink(millis());
     vTaskDelay(pdMS_TO_TICKS(MANAGER_TICK_MS));
   }
 }
@@ -524,6 +544,14 @@ void BleScaleService::drainCommands() {
         }
         _controllerRequestPending.store(false, std::memory_order_release);
         break;
+
+      case CmdType::MachineSetWanted:
+        // The link state machine in serviceMachineLink() reacts next tick;
+        // the atomic also lets machineSnapshot() report intent immediately.
+        _machineWanted.store(cmd.arg != 0, std::memory_order_release);
+        M5_LOGI("BleScaleService: machine link %s",
+                cmd.arg != 0 ? "wanted" : "released");
+        break;
     }
   }
 }
@@ -540,6 +568,13 @@ bool BleScaleService::processControllerTransition() {
     }
     _scanActive = false;
     _diagMode = false;
+    teardownMachineClient();
+    _machineState = MachineLinkState::Off;
+    {
+      xSemaphoreTake(_mutex, portMAX_DELAY);
+      _machineSnap = MachineSnapshot{};
+      xSemaphoreGive(_mutex);
+    }
 
     // Retain stack-owned objects to avoid allocation churn across repeated
     // controller restarts. exitMode() has already removed the live client.
@@ -1228,6 +1263,264 @@ void BleScaleService::onEvent(const AcaiaV2::Event& ev) {
       LOGV("BleScaleService: event type %u (unhandled)",
            static_cast<unsigned>(ev.type));
       break;
+  }
+  xSemaphoreGive(_mutex);
+}
+
+// ---- La Marzocco machine link ----------------------------------------------
+
+class BleScaleService::MachineClientCallbacks : public NimBLEClientCallbacks {
+ public:
+  explicit MachineClientCallbacks(BleScaleService* owner) : _owner(owner) {}
+  void onConnect(NimBLEClient* c) override {
+    M5_LOGI("Machine link: connected to %s",
+            c->getPeerAddress().toString().c_str());
+  }
+  void onAuthenticationComplete(NimBLEConnInfo& info) override {
+    M5_LOGI("Machine link: auth complete (encrypted=%d bonded=%d)",
+            info.isEncrypted() ? 1 : 0, info.isBonded() ? 1 : 0);
+  }
+  void onDisconnect(NimBLEClient* c, int reason) override {
+    M5_LOGI("Machine link: disconnected (reason %d)", reason);
+    _owner->_machineDisconnectFlag.store(true, std::memory_order_release);
+  }
+
+ private:
+  BleScaleService* _owner;
+};
+
+void BleScaleService::setMachineAddress(const uint8_t address[6]) {
+  std::memcpy(_machineAddr, address, 6);
+  _machineAddrSet.store(true, std::memory_order_release);
+}
+
+void BleScaleService::setMachineWanted(bool wanted) {
+  if (!_cmdQueue) {
+    _machineWanted.store(wanted, std::memory_order_release);
+    return;
+  }
+  const Cmd cmd{CmdType::MachineSetWanted, wanted ? 1u : 0u};
+  if (xQueueSend(_cmdQueue, &cmd, 0) != pdPASS) {
+    M5_LOGW("Machine link: setMachineWanted queue full");
+  }
+}
+
+BleScaleService::MachineSnapshot BleScaleService::machineSnapshot() const {
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  MachineSnapshot s = _machineSnap;
+  xSemaphoreGive(_mutex);
+  return s;
+}
+
+bool BleScaleService::machineRadioFree() const {
+  // The initiator coexists with an active scanner on this controller, and
+  // the default scale scan policy (pause=0) never idles when the scale is
+  // absent — requiring an idle radio would starve the machine link forever.
+  // Keep deferring only for the diagnostics scan, whose results an extra
+  // connection would not disturb but whose lease is short anyway.
+  if (_mode == Mode::DiagScan && _scanActive.load(std::memory_order_acquire))
+    return false;
+  return true;
+}
+
+void BleScaleService::serviceMachineLink(uint32_t nowMs) {
+  if (controllerState() != ControllerState::Running) return;
+
+  const bool wanted = _machineWanted.load(std::memory_order_acquire);
+  const bool configured = _machineAddrSet.load(std::memory_order_acquire);
+
+  if (!wanted || !configured) {
+    if (_machineState != MachineLinkState::Off) {
+      teardownMachineClient();
+      _machineState = MachineLinkState::Off;
+      xSemaphoreTake(_mutex, portMAX_DELAY);
+      _machineSnap = MachineSnapshot{};
+      xSemaphoreGive(_mutex);
+    }
+    return;
+  }
+
+  switch (_machineState) {
+    case MachineLinkState::Off:
+      _machineBackoffMs = MACHINE_BACKOFF_MIN_MS;
+      _machineNextAttemptMs = nowMs;
+      _machineState = MachineLinkState::Idle;
+      [[fallthrough]];
+    case MachineLinkState::Idle:
+    case MachineLinkState::Backoff:
+      if (_machineDisconnectFlag.exchange(false, std::memory_order_acq_rel)) {
+        teardownMachineClient();
+      }
+      if (static_cast<int32_t>(nowMs - _machineNextAttemptMs) < 0) break;
+      if (!machineRadioFree()) break;  // try again next tick
+      if (machineConnectAndSubscribe()) {
+        _machineState = MachineLinkState::Subscribed;
+        _machineBackoffMs = MACHINE_BACKOFF_MIN_MS;
+      } else {
+        teardownMachineClient();
+        _machineNextAttemptMs = nowMs + _machineBackoffMs;
+        _machineBackoffMs = std::min(_machineBackoffMs * 2,
+                                      MACHINE_BACKOFF_MAX_MS);
+        _machineState = MachineLinkState::Backoff;
+      }
+      break;
+
+    case MachineLinkState::Subscribed:
+      if (_machineDisconnectFlag.exchange(false, std::memory_order_acq_rel)) {
+        M5_LOGW("Machine link: lost connection; reconnecting");
+        runtimeEventLog.pushNetFailure(
+            diagnostics::NetSource::Ble,
+            static_cast<uint16_t>(diagnostics::BleFailureCode::Disconnect),
+            "machine link lost");
+        teardownMachineClient();
+        _machineState = MachineLinkState::Backoff;
+        _machineNextAttemptMs = nowMs + _machineBackoffMs;
+        _machineBackoffMs =
+            std::min(_machineBackoffMs * 2, MACHINE_BACKOFF_MAX_MS);
+      }
+      break;
+  }
+
+  // Publish link state for diagnostics.
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  using L = MachineSnapshot::Link;
+  _machineSnap.link = _machineState == MachineLinkState::Subscribed
+                          ? L::Subscribed
+                          : (_machineState == MachineLinkState::Backoff
+                                 ? L::Backoff
+                                 : L::Idle);
+  _machineSnap.nextAttemptMs = _machineNextAttemptMs;
+  xSemaphoreGive(_mutex);
+}
+
+bool BleScaleService::machineConnectAndSubscribe() {
+  if (!_machineClientCallbacks)
+    _machineClientCallbacks = new MachineClientCallbacks(this);
+
+  if (!_machineClient) {
+    _machineClient = NimBLEDevice::createClient();
+    if (!_machineClient) {
+      M5_LOGE("Machine link: createClient failed");
+      return false;
+    }
+    _machineClient->setClientCallbacks(_machineClientCallbacks,
+                                       /*deleteCallbacks=*/false);
+    _machineClient->setConnectionParams(24, 48, 0, 400);
+    _machineClient->setConnectTimeout(MACHINE_CONNECT_TIMEOUT_MS);
+    _machineClient->setConnectRetries(0);
+  }
+
+  NimBLEAddress addr(_machineAddr, BLE_ADDR_PUBLIC);
+  M5_LOGI("Machine link: connecting to %s", addr.toString().c_str());
+  const uint32_t t0 = millis();
+  if (!_machineClient->connect(addr, /*deleteAttibutes=*/true)) {
+    M5_LOGW("Machine link: connect failed after %u ms", millis() - t0);
+    return false;
+  }
+  M5_LOGI("Machine link: connected in %u ms (MTU %u)", millis() - t0,
+          static_cast<unsigned>(_machineClient->getMTU()));
+
+  // The gateway gates its GATT behind an encrypted link for clients it has
+  // no bond with (reads return N/A and notifications never arrive). Try to
+  // pair; the bond persists in NimBLE's store across reboots.
+  const bool secured = _machineClient->secureConnection();
+  M5_LOGI("Machine link: secureConnection -> %d", secured ? 1 : 0);
+
+  // The gateway serves d30a (operational, token-gated) or d10a
+  // (pairing/connection mode, notifications open) — try both.
+  NimBLERemoteService* service = _machineClient->getService(lm::kServiceUuid);
+  if (service == nullptr) {
+    service = _machineClient->getService(lm::kPairingServiceUuid);
+  }
+  if (service == nullptr) {
+    M5_LOGW("Machine link: gateway service not found");
+    return false;
+  }
+  NimBLERemoteCharacteristic* shot =
+      service->getCharacteristic(lm::kShotCounterUuid);
+  if (shot == nullptr) {
+    M5_LOGW("Machine link: shot-counter characteristic not found");
+    return false;
+  }
+  M5_LOGI("Machine link: shot char props notify=%d indicate=%d",
+          shot->canNotify() ? 1 : 0, shot->canIndicate() ? 1 : 0);
+
+  // The machine replays its last notification on subscribe; drop it. The
+  // flag is armed before subscribe so the callback can consume it even if
+  // the replay arrives during the subscribe call itself.
+  _machineReplayPending.store(true, std::memory_order_release);
+  const bool ok = shot->subscribe(
+      /*notifications=*/true,
+      [this](NimBLERemoteCharacteristic*, uint8_t* data, size_t len,
+             bool) { onMachineNotify(data, len, millis()); });
+  if (!ok) {
+    M5_LOGW("Machine link: subscribe failed");
+    _machineReplayPending.store(false, std::memory_order_release);
+    return false;
+  }
+  M5_LOGI("Machine link: subscribed to shot counter");
+
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  _machineSnap = MachineSnapshot{};
+  _machineSnap.link = MachineSnapshot::Link::Subscribed;
+  xSemaphoreGive(_mutex);
+  return true;
+}
+
+void BleScaleService::teardownMachineClient() {
+  if (_machineClient) {
+    if (_machineClient->isConnected()) {
+      _machineClient->disconnect();
+    }
+    NimBLEDevice::deleteClient(_machineClient);
+    _machineClient = nullptr;
+  }
+  _machineTracker.reset();
+  _machineDisconnectFlag.store(false, std::memory_order_release);
+}
+
+void BleScaleService::onMachineNotify(const uint8_t* data, size_t len,
+                                      uint32_t nowMs) {
+  // BLE host task. Runs only while subscribed; parsing is a bounded scan of
+  // a small document, and the tracker is single-writer on this task.
+  if (_machineReplayPending.exchange(false, std::memory_order_acq_rel)) {
+    M5_LOGI("Machine link: dropped replayed notification");
+    return;
+  }
+  M5_LOGD("Machine link: notification (%u bytes)", static_cast<unsigned>(len));
+  // NUL padding is not part of the JSON.
+  while (len > 0 && data[len - 1] == 0) --len;
+  lm::LmBrewingData brewing;
+  lm::LmTelemetry telemetry;
+  if (!lm::parseNotification(reinterpret_cast<const char*>(data), len,
+                             brewing, telemetry)) {
+    M5_LOGW("Machine link: unparsable notification (%u bytes)",
+            static_cast<unsigned>(len));
+    return;
+  }
+  if (brewing.empty()) {
+    // Telemetry-only notification: refreshes link freshness, nothing else.
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    _machineSnap.lastEventMs = nowMs;
+    _machineSnap.notifications++;
+    xSemaphoreGive(_mutex);
+    return;
+  }
+  lm::LmBrewingTracker::Update update;
+  const bool derived = _machineTracker.process(brewing, update);
+  if (!derived) return;
+
+  M5_LOGI("Machine link: state=%u timer=%.2fs", static_cast<unsigned>(update.state),
+          update.timerS);
+
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  _machineSnap.lastEventMs = nowMs;
+  _machineSnap.notifications++;
+  _machineSnap.brewing = update.state == lm::LmBrewState::Brewing;
+  if (update.state == lm::LmBrewState::BrewingStopped ||
+      update.state == lm::LmBrewState::Flushed) {
+    _machineSnap.lastStopMs = nowMs;
+    _machineSnap.brewing = false;
   }
   xSemaphoreGive(_mutex);
 }

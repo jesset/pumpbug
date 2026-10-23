@@ -367,6 +367,30 @@ The device's `WI-FI` screen also offers these controls:
 - `Network` starts the setup wizard to change networks.
 - `Unpair` removes browser authorizations without forgetting the network.
 
+## La Marzocco machine setup
+
+Machines with the La Marzocco connected module (Linea Mini, Linea Micra,
+GS3, and related models) can hand Pump Bug their own brew events over
+Bluetooth, replacing pump-vibration estimates with exact start/stop timing.
+The **La Marzocco** card on the home page sets this up in two steps:
+
+1. **Find the machine.** The device scans for Bluetooth advertisers named
+   like `MINI_xxx` and lists what it hears. The machine must be on, and no
+   other Bluetooth client (the La Marzocco phone app, or Home Assistant)
+   may be connected to it — the machine talks to one client at a time.
+2. **Sign in** with the La Marzocco account the machine is registered to.
+   Pump Bug contacts the cloud once, fetches the machine's Bluetooth token,
+   and keeps only that token — the username and password are never stored.
+   A manual token entry is available for use without cloud access.
+
+The setup stores the machine's address, serial, and token on the device.
+**Forget machine** erases them; saved shots are not affected. The same
+status is visible on the device under Menu → La Marzocco.
+
+The machine link currently provisions the machine; using its events for
+shot timing ships separately (see
+[the machine-link guide](lamarzocco.md) for details).
+
 ## Diagnostic logs
 
 The browser `Logs` page is mainly for troubleshooting and support. It contains:

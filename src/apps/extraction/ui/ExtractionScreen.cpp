@@ -294,6 +294,14 @@ void drawFlowUnit(LGFX_Sprite* c, ui::PersistentSprite& unfilledBuffer,
 
 }  // namespace
 
+pump_scale::BrewSignalMux::MachineState
+ExtractionScreen::machineStateForMux(uint32_t nowMs) {
+  const BleScaleService::MachineSnapshot ms = bleScale.machineSnapshot();
+  return _machineDeriver.derive(
+      nowMs, ms.link == BleScaleService::MachineSnapshot::Link::Subscribed,
+      ms.lastEventMs, ms.brewing, ms.lastStopMs);
+}
+
 bool ExtractionScreen::startVibrationSensor() {
   if (_sensorRunning) return true;
   _sensorRunning = _sensor.begin(recordPumpTransition);
@@ -304,6 +312,10 @@ void ExtractionScreen::onEnter() {
   power::powerManager.setForegroundFullPerformanceRequired(false);
   if (!startVibrationSensor()) M5_LOGE("VibrationSensor begin failed");
   bleScale.enable();
+  // The machine link shares the scale's radio lifecycle: wanted while LIVE
+  // holds the foreground, released when it leaves. The link stays dormant
+  // unless a machine address was provisioned.
+  bleScale.setMachineWanted(true);
   _lastSensorSeq = 0;
   _lastSensorData = VibrationSensor::Data{};
   _lastScaleSnap = BleScaleService::Snapshot{};
@@ -348,6 +360,7 @@ void ExtractionScreen::onExit() {
     _sensorRunning = false;
   }
   bleScale.disable();
+  bleScale.setMachineWanted(false);
   // Reset in-flight recorder state and wake SSE readers so /state and /current
   // stop reporting a stale RUNNING/POST_PUMP. /last is preserved so
   // accepted-shot history survives, per the controller's contract.
@@ -463,8 +476,11 @@ ScreenResult ExtractionScreen::tick() {
   // locked work and wakes SSE readers when web-visible state changed, then
   // hands back what the UI needs to react to without touching the recorder
   // again.
+  const PumpSignalObservation pumpForRecorder =
+      _brewMux.tick(_lastSensorData.pumpSignal, machineStateForMux(millis()),
+                    millis());
   const auto outcome = _controller.tick(
-      millis(), _lastSensorData.pumpSignal, snap, _configuredTargetCoeffs,
+      millis(), pumpForRecorder, snap, _configuredTargetCoeffs,
       wallclock::utcNow(), newScaleSample, scaleStateChanged);
   if (outcome.latestAcceptedShotSaved != _latestAcceptedShotSaved) {
     _latestAcceptedShotSaved = outcome.latestAcceptedShotSaved;

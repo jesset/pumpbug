@@ -1,5 +1,33 @@
 # Release Notes
 
+## Unreleased
+
+Add the La Marzocco machine link: Pump Bug can now read the espresso
+machine's own brew events over Bluetooth for exact shot timing instead of
+inferring the pump window from vibration. Verified end-to-end on a Linea
+Mini with gateway firmware v7.4.2.
+
+The gateway exposes two Bluetooth services: an operational service
+(token-gated notifications) and a connection service (open notifications).
+Pump Bug tries both, so it works in either mode. On firmware that removed
+token issuance (v7.4.x era), the connection service — entered by holding
+the brew paddle left while powering on — delivers the full brew event
+stream (start, per-second timer updates, stop with reason) without any
+token or authentication.
+
+Setup runs from the new La Marzocco page in the web interface: a Bluetooth
+scan finds the machine, and a one-time sign-in to the La Marzocco cloud
+fetches its identity (account credentials are never stored on the device).
+The device menu gains a La Marzocco status screen showing the link state
+and whether machine timing or vibration fallback is active.
+
+When the machine link is live, the recorder uses the machine's own brew
+timer for exact pump start/stop instead of the accelerometer's 0.3–0.5 s
+detection window. If the link drops mid-shot, the recorder falls back to
+vibration within the same tick. The vibration path remains the default for
+machines without a Bluetooth gateway or when the link is inactive.
+
+
 ## v0.3.0
 
 With v0.3.0, your shot history can include how each shot was prepared and how

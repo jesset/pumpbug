@@ -94,6 +94,11 @@ class WifiManager {
   // the same boot. The maximum mode preserves the connection but may add
   // latency.
   bool setPowerSave(wifi::PowerSave mode);
+
+  // Re-apply the currently-configured STA power-save mode after a transient
+  // override (e.g. the La Marzocco provisioning run disables modem sleep
+  // for its TLS burst). Restores the design default, not a hardcoded level.
+  bool reapplyStaPowerSave();
   // Reads the mode applied by the ESP-IDF Wi-Fi driver.
   bool readPowerSave(wifi::PowerSave& mode) const;
 

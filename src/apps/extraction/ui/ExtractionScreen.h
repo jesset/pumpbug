@@ -17,6 +17,7 @@
 #include "apps/extraction/TargetAlert.h"
 #include "apps/extraction/TargetStore.h"
 #include "ble/BleScaleService.h"
+#include "ble/lamarzocco/BrewSignalMux.h"
 #include "ui/Screen.h"
 #include "ui/button.h"
 #include "ui/chrome/BatteryIndicator.h"
@@ -93,6 +94,12 @@ class ExtractionScreen : public Screen {
   bool wantsStatusBar() const override;
 
   bool startVibrationSensor();
+
+  // Snapshot of the La Marzocco machine link, shaped for BrewSignalMux.
+  // Tracks the previous stop timestamp so stop edges derive from level data.
+  pump_scale::BrewSignalMux::MachineState machineStateForMux(
+      uint32_t nowMs);
+  pump_scale::MachineLinkDeriver _machineDeriver;
   void allocateRenderingBuffers();
 
   // Sets the live title for a specialized firmware. The caller owns the text,
@@ -101,6 +108,7 @@ class ExtractionScreen : public Screen {
 
  private:
   VibrationSensor& _sensor;
+  pump_scale::BrewSignalMux _brewMux;
   bool _sensorRunning = false;
 
   // The headless coordination engine that owns the recorder, cross-task mutex,
